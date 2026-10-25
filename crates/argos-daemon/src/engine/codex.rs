@@ -265,6 +265,7 @@ impl State {
                     input_tokens: last["inputTokens"].as_u64().unwrap_or(0),
                     output_tokens: last["outputTokens"].as_u64().unwrap_or(0),
                     cost_usd: None,
+                    context_window: params["tokenUsage"]["modelContextWindow"].as_u64(),
                 });
                 vec![]
             }
@@ -336,7 +337,7 @@ mod tests {
     // Messages de la forme observée avec codex-cli 0.164.0 (docs/PHASE-1.md).
     const TURN_STARTED: &str = r#"{"method":"turn/started","params":{"threadId":"t1","turn":{"id":"turn-1","status":"inProgress"}}}"#;
     const AGENT_MESSAGE: &str = r#"{"method":"item/completed","params":{"threadId":"t1","turnId":"turn-1","completedAtMs":1,"item":{"type":"agentMessage","id":"m1","text":"42","phase":null}}}"#;
-    const TOKEN_USAGE: &str = r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"t1","turnId":"turn-1","tokenUsage":{"total":{"inputTokens":50,"outputTokens":3},"last":{"totalTokens":25,"inputTokens":20,"cachedInputTokens":7,"cacheWriteInputTokens":0,"outputTokens":5,"reasoningOutputTokens":0},"modelContextWindow":null}}}"#;
+    const TOKEN_USAGE: &str = r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"t1","turnId":"turn-1","tokenUsage":{"total":{"inputTokens":50,"outputTokens":3},"last":{"totalTokens":25,"inputTokens":20,"cachedInputTokens":7,"cacheWriteInputTokens":0,"outputTokens":5,"reasoningOutputTokens":0},"modelContextWindow":272000}}}"#;
     const TURN_COMPLETED: &str = r#"{"method":"turn/completed","params":{"threadId":"t1","turn":{"id":"turn-1","status":"completed","error":null}}}"#;
 
     #[test]
@@ -356,7 +357,8 @@ mod tests {
                 usage: Some(Usage {
                     input_tokens: 20,
                     output_tokens: 5,
-                    cost_usd: None
+                    cost_usd: None,
+                    context_window: Some(272_000),
                 }),
             }]
         );

@@ -377,7 +377,7 @@ async fn tokens_die_with_their_session() {
     let address = serve(&w).await;
     let id = w.agent.id.clone();
     let client = Client::new(&w, &address, &id);
-    assert_eq!(client.tools().await.len(), 14);
+    assert_eq!(client.tools().await.len(), 17);
 
     w.supervisor.send(&id, "bonjour").await.unwrap();
     until(&mut w.events, |event| is_message(event, &id, "reply 1")).await;

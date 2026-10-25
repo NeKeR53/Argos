@@ -10,10 +10,12 @@ use crate::engine::{
     EngineError, EngineEvent, EventStream, McpServer, Session, SessionControl, SessionSpec,
     prepare_codex_home,
 };
+use crate::memory::Memory;
 use crate::registry::{NewAgent, Registry, RegistryError};
 use argos_core::protocol::{AgentStatus, DaemonEvent};
-use argos_core::{AgentId, AgentRecord, AgentState, EngineKind};
+use argos_core::{AgentId, AgentRecord, AgentState, EngineKind, Level, Usage};
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -22,6 +24,8 @@ use tokio::sync::{Mutex as AsyncMutex, broadcast, watch};
 
 /// Délai laissé à un process pour sortir après un parking ou un kill.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Remplissage du contexte qui déclenche la compaction contrôlée (D24).
+const COMPACT_AT: f64 = 0.7;
 
 #[derive(Debug, Clone)]
 pub struct SupervisorSettings {
@@ -70,6 +74,9 @@ struct Inner {
     halted: Mutex<HashSet<AgentId>>,
     /// Jetons MCP des sessions en cours → agent appelant.
     tokens: Mutex<HashMap<String, AgentId>>,
+    /// Agents à qui l'on a demandé de vider leur contexte dans leur mémoire.
+    compacting: Mutex<HashSet<AgentId>>,
+    memory: Memory,
     events: broadcast::Sender<DaemonEvent>,
     generations: AtomicU64,
     settings: SupervisorSettings,
@@ -92,11 +99,18 @@ impl Supervisor {
                 running: Mutex::default(),
                 halted: Mutex::default(),
                 tokens: Mutex::default(),
+                compacting: Mutex::default(),
+                memory: Memory::new(settings.home.join("memory")),
                 events,
                 generations: AtomicU64::new(0),
                 settings,
             }),
         }
+    }
+
+    /// Les mémoires de l'Assistant et des Agents.
+    pub fn memory(&self) -> &Memory {
+        &self.inner.memory
     }
 
     /// Flux de tous les événements des agents.
@@ -331,6 +345,7 @@ impl Supervisor {
                         usage,
                     });
                     self.publish_status(&id);
+                    self.watch_context(&id, usage);
                 }
                 EngineEvent::Exited { code, stderr_tail } => {
                     // D'abord prévenir qui attend cette sortie (parking, stop) : il tient
@@ -397,7 +412,118 @@ impl Supervisor {
             prepare_codex_home(&home, &settings.user_codex_home)?;
             spec.codex_home = Some(home);
         }
+        if record.level.has_memory() {
+            let memory = &self.inner.memory;
+            memory.ensure(&record.id)?;
+            memory.write_state(&record.id, &self.render_state(record)?)?;
+            spec.instructions = Some(memory.digest(&record.id)?);
+        }
         Ok(spec)
+    }
+
+    /// L'état structuré d'un agent, réécrit dans sa mémoire à chaque réveil (D23).
+    fn render_state(&self, record: &AgentRecord) -> Result<String> {
+        let registry = self.registry();
+        let mut state = String::from("# État (tenu par Argos, réécrit à chaque réveil)\n\n");
+        match &record.charter {
+            Some(charter) => {
+                let _ = writeln!(state, "- Rôle : Agent « {} »", charter.name);
+                let _ = writeln!(state, "- Périmètre : {}", charter.scope);
+            }
+            None => {
+                let _ = writeln!(state, "- Rôle : {}", record.level);
+            }
+        }
+        let _ = writeln!(
+            state,
+            "- Moteur : {} ({})\n- Répertoire de travail : {}",
+            record.engine,
+            record.model.as_deref().unwrap_or("modèle par défaut"),
+            record.workdir.display()
+        );
+        let children = registry.children(&record.id)?;
+        let title = match record.level {
+            Level::Assistant => "Tes Agents",
+            _ => "Tes Workers",
+        };
+        let _ = writeln!(state, "\n## {title}");
+        if children.is_empty() {
+            state.push_str("- aucun\n");
+        }
+        for child in &children {
+            match &child.charter {
+                Some(charter) => {
+                    let _ = writeln!(
+                        state,
+                        "- « {} » ({}) — {} — {}",
+                        charter.name, child.id, charter.scope, child.state
+                    );
+                }
+                None => {
+                    let task = registry.task_of_worker(&child.id)?;
+                    let task = task.map_or("sans tâche".into(), |task| {
+                        format!("tâche {} [{}] {}", task.id, task.state, task.title)
+                    });
+                    let _ = writeln!(state, "- {} — {} — {task}", child.id, child.state);
+                }
+            }
+        }
+        if record.level == Level::Agent {
+            let board = registry.board(&record.id)?;
+            state.push_str("\n## Ton board\n");
+            if board.missions.is_empty() && board.tasks.is_empty() {
+                state.push_str("- vide\n");
+            }
+            for mission in &board.missions {
+                let _ = writeln!(state, "- Mission {} : {}", mission.id, mission.text);
+            }
+            for task in &board.tasks {
+                let _ = writeln!(state, "  - {} [{}] {}", task.id, task.state, task.title);
+            }
+        }
+        Ok(state)
+    }
+
+    /// Compaction contrôlée (D24) : passé le seuil, l'agent est prié d'écrire dans sa
+    /// mémoire ce qui doit survivre ; le tour suivant fini, sa session repart à neuf.
+    fn watch_context(&self, id: &AgentId, usage: Option<Usage>) {
+        let flushing = locked(&self.inner.compacting).remove(id);
+        if flushing {
+            tokio::spawn(self.clone().renew_session(id.clone()));
+            return;
+        }
+        let Some(fill) = usage.and_then(|usage| usage.context_fill()) else {
+            return;
+        };
+        let has_memory = self
+            .record(id)
+            .is_ok_and(|record| record.level.has_memory());
+        if fill < COMPACT_AT || !has_memory {
+            return;
+        }
+        locked(&self.inner.compacting).insert(id.clone());
+        let prompt = format!(
+            "[Argos] Ton contexte est rempli à {:.0} %. Avant qu'il soit vidé, mets ta mémoire à jour avec memory_write : index.md (l'essentiel), journal.md (ce qui s'est passé), notes/ (le détail utile). Réponds ensuite seulement « prêt » : ta prochaine session repartira de ta mémoire.",
+            fill * 100.0
+        );
+        let supervisor = self.clone();
+        let id = id.clone();
+        tokio::spawn(async move {
+            if supervisor.send(&id, prompt).await.is_err() {
+                locked(&supervisor.inner.compacting).remove(&id);
+            }
+        });
+    }
+
+    /// Parke l'agent et oublie sa session : le prochain réveil repart de sa mémoire.
+    async fn renew_session(self, id: AgentId) {
+        if self.park(&id).await.is_ok() && self.registry().clear_session(&id).is_ok() {
+            let _ = self.inner.memory.log(
+                &id,
+                "contexte compacté : la session suivante repart de la mémoire",
+            );
+            self.publish_status(&id);
+        }
     }
 
     fn revoke_tokens(&self, id: &AgentId) {

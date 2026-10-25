@@ -256,12 +256,23 @@ pub enum TurnOutcome {
     Failed { message: String },
 }
 
-/// Consommation d'un tour. `input_tokens` inclut les tokens servis par le cache.
+/// Consommation d'un tour. `input_tokens` inclut les tokens servis par le cache : c'est
+/// la taille du contexte envoyé au modèle pour ce tour.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cost_usd: Option<f64>,
+    /// Taille de la fenêtre de contexte du modèle, si le moteur la donne.
+    pub context_window: Option<u64>,
+}
+
+impl Usage {
+    /// Part de la fenêtre de contexte occupée par ce tour (0 à 1).
+    pub fn context_fill(&self) -> Option<f64> {
+        let window = self.context_window.filter(|window| *window > 0)?;
+        Some(self.input_tokens as f64 / window as f64)
+    }
 }
 
 #[cfg(test)]

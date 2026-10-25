@@ -21,6 +21,45 @@ pub struct Tool {
 
 /// Les outils d'un niveau, tels qu'annoncés par `tools/list`.
 pub fn tools_for(level: Level) -> Vec<Tool> {
+    let mut tools = level_tools(level);
+    if level.has_memory() {
+        tools.extend(memory_tools());
+    }
+    tools
+}
+
+/// Mémoire persistante de l'Assistant et des Agents (D23–D24).
+fn memory_tools() -> Vec<Tool> {
+    vec![
+        tool(
+            "memory_read",
+            "Lit un fichier de ta mémoire (index.md, journal.md, state.md, notes/<nom>.md). Sans argument, liste les fichiers.",
+            &[("file", "Le fichier à lire.")],
+            &[],
+        ),
+        tool(
+            "memory_write",
+            "Écrit dans ta mémoire : index.md (l'essentiel, court), journal.md (ce qui s'est passé), notes/<nom>.md (le détail). Chaque écriture est historisée.",
+            &[
+                ("file", "index.md, journal.md ou notes/<nom>.md."),
+                ("content", "Le contenu."),
+                (
+                    "mode",
+                    "Remplacer le fichier ou ajouter à la fin. Par défaut : remplacer.",
+                ),
+            ],
+            &["file", "content"],
+        ),
+        tool(
+            "memory_search",
+            "Cherche un mot ou une expression dans toute ta mémoire.",
+            &[("query", "Ce qu'il faut chercher.")],
+            &["query"],
+        ),
+    ]
+}
+
+fn level_tools(level: Level) -> Vec<Tool> {
     match level {
         Level::Assistant => vec![
             tool(
@@ -256,6 +295,7 @@ fn tool(
             let choices: &[&str] = match *key {
                 "engine" => &["claude", "codex"],
                 "outcome" => &["progress", "done", "blocked"],
+                "mode" => &["replace", "append"],
                 "state" => &["pending", "in_progress", "blocked", "done", "cancelled"],
                 _ => &[],
             };
@@ -376,6 +416,11 @@ pub async fn call(
         (Level::Assistant, "retire_agent") | (Level::Agent, "retire_worker") => {
             let target = child(supervisor, caller, text(args, target_key)?)?;
             supervisor.retire(&target.id).await.map_err(said)?;
+            journal(
+                supervisor,
+                &caller.id,
+                &format!("{} retiré", label(&target)),
+            );
             Ok(format!("{} retiré.", label(&target)))
         }
         (Level::Agent, "report_to_assistant") => {
@@ -392,6 +437,22 @@ pub async fn call(
                     .registry()
                     .set_mission_state(&mission.id, MissionState::Done)
                     .map_err(said)?;
+                journal(
+                    supervisor,
+                    &caller.id,
+                    &format!("mission {} close : {summary}", mission.id),
+                );
+                if let Some(parent) = &caller.parent {
+                    journal(
+                        supervisor,
+                        parent,
+                        &format!(
+                            "mission {} close par {} : {summary}",
+                            mission.id,
+                            label(caller)
+                        ),
+                    );
+                }
             }
             let kind = match mission {
                 Some(mission) => format!("Rapport sur la mission {mission}"),
@@ -412,8 +473,50 @@ pub async fn call(
         (Level::Worker, "escalate_to_agent") => {
             deliver(supervisor, caller, "Question", text(args, "question")?).await
         }
+        (Level::Assistant | Level::Agent, "memory_read") => {
+            let memory = supervisor.memory();
+            memory.ensure(&caller.id).map_err(said)?;
+            match optional(args, "file") {
+                Some(file) => memory.read(&caller.id, file),
+                None => Ok(memory.list(&caller.id).map_err(said)?.join("\n")),
+            }
+        }
+        (Level::Assistant | Level::Agent, "memory_write") => {
+            let memory = supervisor.memory();
+            memory.ensure(&caller.id).map_err(said)?;
+            let file = text(args, "file")?;
+            let append = optional(args, "mode") == Some("append");
+            memory.write(&caller.id, file, text(args, "content")?, append)?;
+            Ok(format!("{file} mis à jour."))
+        }
+        (Level::Assistant | Level::Agent, "memory_search") => {
+            let found = supervisor
+                .memory()
+                .search(&caller.id, text(args, "query")?)
+                .map_err(said)?;
+            if found.is_empty() {
+                return Ok("Rien trouvé.".into());
+            }
+            Ok(found
+                .iter()
+                .take(50)
+                .map(|hit| format!("{}:{} {}", hit.file, hit.line, hit.text))
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
         _ => Err(format!("outil inconnu pour un {} : {name}", caller.level)),
     }
+}
+
+/// Ajoute un fait au journal d'un agent, au nom du daemon (D23). Appelé seulement pour
+/// l'Assistant et les Agents ; une erreur d'écriture n'empêche pas l'action elle-même.
+fn journal(supervisor: &Supervisor, agent: &AgentId, fact: &str) {
+    let mut fact = fact.replace('\n', " ");
+    if fact.chars().count() > 300 {
+        fact = fact.chars().take(300).collect::<String>() + "…";
+    }
+    let memory = supervisor.memory();
+    let _ = memory.ensure(agent).and_then(|()| memory.log(agent, &fact));
 }
 
 fn create_agent(
@@ -444,6 +547,11 @@ fn create_agent(
             }),
         })
         .map_err(said)?;
+    journal(
+        supervisor,
+        &caller.id,
+        &format!("{} créé : {}", label(&agent), text(args, "scope")?),
+    );
     Ok(format!(
         "Agent « {name} » créé ({}), au repos jusqu'à sa première mission. Répertoire : {}.",
         agent.id,
@@ -461,6 +569,21 @@ async fn assign_mission(
         .registry()
         .add_mission(&target.id, text(args, "mission")?)
         .map_err(said)?;
+    journal(
+        supervisor,
+        &caller.id,
+        &format!(
+            "mission {} confiée à {} : {}",
+            mission.id,
+            label(&target),
+            mission.text
+        ),
+    );
+    journal(
+        supervisor,
+        &target.id,
+        &format!("mission {} reçue : {}", mission.id, mission.text),
+    );
     supervisor
         .send(
             &target.id,
@@ -489,6 +612,12 @@ async fn cancel_mission(
     for worker in &workers {
         supervisor.stop(worker).await.map_err(said)?;
     }
+    journal(supervisor, &caller.id, &format!("mission {id} annulée"));
+    journal(
+        supervisor,
+        &mission.agent,
+        &format!("mission {id} annulée par l'Assistant"),
+    );
     supervisor
         .send(
             &mission.agent,
@@ -582,6 +711,13 @@ async fn report_task(
                     },
                 )
                 .map_err(said)?;
+            if let (Some(state), Some(parent)) = (state, &caller.parent) {
+                journal(
+                    supervisor,
+                    parent,
+                    &format!("tâche {} {state} : {summary}", task.id),
+                );
+            }
             match state {
                 Some(state) => format!("Rapport sur la tâche {} ({state})", task.id),
                 None => format!("Rapport sur la tâche {}", task.id),

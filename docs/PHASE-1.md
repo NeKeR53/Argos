@@ -44,7 +44,7 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 | T4 ✅ | Serveur MCP par niveau | Endpoint MCP, jetons par agent, outils L0 (gestion des Agents), L1 (Workers + board), L2 (compte rendu, escalade) | T3 |
 | T5 | Contrats des agents | Prompts système par niveau : l'Assistant route des missions et résume ; l'Agent planifie avant d'exécuter ; le Worker fait une tâche et rend compte | T4 |
 | T6 ✅ | Boards et missions | Mission → tâches, Worker lié à une tâche, repriorisation déterministe, remontée résumée | T4 |
-| T7 | Mémoire | Dossier par agent (index, journal, notes, enfants), git local, digest chargé au démarrage, outil d'écriture mémoire, compaction avant saturation | T4 |
+| T7 ✅ | Mémoire | Dossier par agent (index, journal, notes, enfants), git local, digest chargé au démarrage, outil d'écriture mémoire, compaction avant saturation | T4 |
 | T8 | Politique de modèles | Profils en TOML, résolution profil → moteur + modèle, repli sur quota épuisé, plafonds | T1 |
 | T9 | GUI console | Connexion WS, arbre des agents, chat avec l'Assistant, fenêtre d'Agent en chat texte, panic stop | T3 |
 | T10 | Recette | Le scénario de réussite de bout en bout, avec de vrais moteurs | tout |
@@ -132,3 +132,18 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
 - **Protocole** : commande `board { agent }`, réponse `board { board }` (lecture seule pour la GUI).
 - **Pas fait** : la préemption automatique (parker le Worker d'une mission moins prioritaire quand une autre passe en tête), prévue en option par D14. La repriorisation ne fait que réordonner.
 - **Tests** : 8 tests du board, 6 tests MCP de plus (plan obligatoire, rapport qui met à jour la tâche, mission sur le board, annulation qui arrête les Workers, ordre du board), 1 test d'API.
+
+## T7 — Ce qui est en place
+
+- **Une mémoire par Assistant et par Agent** (jamais pour un Worker), dans `$ARGOS_HOME/memory/<id>/`, hors du projet de l'utilisateur. Markdown compatible Obsidian. Module `argos_daemon::memory`.
+  - **Tenus par l'agent** : `index.md` (l'essentiel, court), `journal.md` (chronologique), `notes/<nom>.md` (le détail).
+  - **Tenu par le daemon** : `state.md`, réécrit à chaque réveil (rôle, périmètre, moteur, répertoire, enfants avec leur état ou leur tâche, board pour un Agent).
+  - **Journal alimenté par le daemon** (deuxième étage de D23) : Agent créé, mission confiée / reçue / close / annulée, tâche terminée ou bloquée, retrait, compaction.
+- **Git local** dans chaque dossier mémoire : chaque écriture est commitée (auteur « Argos », sans hooks ni signature). Il sert de journal d'annulation (D25). Sans git installé, la mémoire marche sans historique.
+- **Digest au réveil (D24)** : le prompt système de la session (`--append-system-prompt` pour Claude, `developerInstructions` pour Codex) reçoit l'index, l'état, les 20 dernières lignes du journal et la liste des fichiers, borné à 12 000 caractères. Il est recalculé à chaque réveil, reprise comprise.
+- **Outils** (Assistant et Agents) : `memory_read` (sans argument : liste), `memory_write` (`replace` ou `append`), `memory_search`. Seuls `index.md`, `journal.md` et `notes/<nom>.md` sont inscriptibles ; `state.md` est en lecture seule ; aucun chemin ne sort du dossier.
+- **Compaction contrôlée (D24)** : quand un tour occupe 70 % de la fenêtre de contexte ou plus, le daemon demande à l'agent de mettre sa mémoire à jour, puis de répondre « prêt ». Ce tour fini, il parke l'agent et oublie sa session : le réveil suivant ouvre une session neuve, qui repart du digest.
+  - La fenêtre vient des moteurs : `modelUsage.<modèle>.contextWindow` chez Claude, `modelContextWindow` chez Codex. Nouveau champ `Usage.context_window`, et `Usage::context_fill()`.
+- **Mémoire automatique de Claude coupée** : `--settings '{"autoMemoryEnabled": false}'`. Vérifié : `memory_paths` disparaît de l'init.
+- **Pas fait** : le miroir Obsidian synchronisé sur le Mac (phase 4).
+- **Tests** : 7 tests du module, 5 de bout en bout (outils MCP, digest au réveil, Worker sans mémoire, double journal d'une mission, compaction complète jusqu'à la session neuve). Les 4 tests réels repassent avec la mémoire branchée (2026-10-25).

@@ -41,6 +41,9 @@ fn arguments(spec: &SessionSpec, session_id: &str) -> Vec<String> {
         "--setting-sources",
         "project",
         "--strict-mcp-config",
+        // La mémoire est celle d'Argos (D23) : pas de mémoire automatique concurrente.
+        "--settings",
+        r#"{"autoMemoryEnabled": false}"#,
         // Provisoire, en attendant les garde-fous (D34).
         "--permission-mode",
         "acceptEdits",
@@ -167,6 +170,10 @@ impl State {
                     + tokens("cache_read_input_tokens"),
                 output_tokens: tokens("output_tokens"),
                 cost_usd: result["total_cost_usd"].as_f64(),
+                // Un seul modèle par session : sa fenêtre est celle de la session.
+                context_window: result["modelUsage"]
+                    .as_object()
+                    .and_then(|models| models.values().find_map(|m| m["contextWindow"].as_u64())),
             }),
         }
     }
@@ -199,7 +206,7 @@ mod tests {
     // Lignes de la forme observée avec claude 2.1.310 (docs/PHASE-1.md).
     const ASSISTANT_TEXT: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"42"}],"model":"claude-haiku-5-5","stop_reason":null},"parent_tool_use_id":null,"session_id":"a6ade44e"}"#;
     const ASSISTANT_THINKING: &str = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"","signature":"CAQS"}]},"session_id":"a6ade44e"}"#;
-    const RESULT_SUCCESS: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"42","session_id":"a6ade44e","total_cost_usd":0.0076878,"usage":{"input_tokens":2,"cache_creation_input_tokens":38428,"cache_read_input_tokens":0,"output_tokens":4}}"#;
+    const RESULT_SUCCESS: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"42","session_id":"a6ade44e","total_cost_usd":0.0076878,"usage":{"input_tokens":2,"cache_creation_input_tokens":38428,"cache_read_input_tokens":0,"output_tokens":4},"modelUsage":{"claude-haiku-5-5":{"inputTokens":2,"outputTokens":4,"contextWindow":1000000,"maxOutputTokens":128000}}}"#;
     const RESULT_INTERRUPTED: &str = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"a6ade44e","usage":{"input_tokens":1,"output_tokens":0}}"#;
 
     #[test]
@@ -234,6 +241,7 @@ mod tests {
                     input_tokens: 38430,
                     output_tokens: 4,
                     cost_usd: Some(0.0076878),
+                    context_window: Some(1_000_000),
                 }),
             }]
         );

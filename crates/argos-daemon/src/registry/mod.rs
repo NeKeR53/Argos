@@ -258,6 +258,16 @@ impl Registry {
         self.update_living(id, "session_id = ?2", session_id)
     }
 
+    /// Oublie la session du moteur : le prochain réveil en ouvre une neuve (compaction).
+    pub fn clear_session(&self, id: &AgentId) -> Result<()> {
+        self.require(id)?;
+        self.db.execute(
+            "UPDATE agents SET session_id = NULL WHERE id = ?1",
+            [id.as_str()],
+        )?;
+        Ok(())
+    }
+
     /// Retire un agent et tous ses descendants ; rend les identifiants retirés.
     pub fn retire(&self, id: &AgentId) -> Result<Vec<AgentId>> {
         let agent = self.require(id)?;

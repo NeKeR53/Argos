@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Faux `claude -p --input-format stream-json` : sorties de forme réelle, sans tokens.
 # Le contenu du message choisit le comportement : SLOW attend une interruption,
-# TOOL utilise un outil, CRASH sort en erreur, HANG bloque avec un process enfant.
+# TOOL utilise un outil, CRASH sort en erreur, HANG bloque avec un process enfant,
+# FULL rapporte un contexte rempli à 90 %.
 # Les arguments reçus sont écrits dans .fake-args (répertoire de travail).
 set -u
 printf '%s\n' "$@" > .fake-args
@@ -48,6 +49,10 @@ while IFS= read -r line; do
       sleep 60 &
       echo $! > .child-pid
       wait ;;
+    *FULL*)
+      turn=$((turn + 1))
+      assistant_text
+      printf '{"type":"result","subtype":"success","is_error":false,"result":"reply %s","session_id":"%s","total_cost_usd":0.001,"usage":{"input_tokens":90,"output_tokens":2},"modelUsage":{"fake":{"contextWindow":100}}}\n' "$turn" "$session" ;;
     *)
       turn=$((turn + 1))
       assistant_text
