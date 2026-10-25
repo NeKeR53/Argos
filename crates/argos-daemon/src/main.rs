@@ -1,8 +1,8 @@
 use argos_core::{AgentRecord, EngineKind, Level};
-use argos_daemon::api;
 use argos_daemon::config::{Config, load_or_create_token};
 use argos_daemon::registry::{Registry, RegistryError};
 use argos_daemon::supervisor::{Supervisor, SupervisorSettings};
+use argos_daemon::{api, mcp};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
@@ -38,12 +38,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let user_home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
+    let mcp_listener = TcpListener::bind(config.mcp.listen).await?;
+    let mcp_url = format!("http://{}", mcp_listener.local_addr()?);
     let supervisor = Supervisor::new(
         registry,
         SupervisorSettings {
             home: home.clone(),
             user_codex_home: user_home.join(".codex"),
             programs: program_overrides(),
+            mcp_url: Some(mcp_url.clone()),
         },
     );
     let listener = TcpListener::bind(config.api.listen).await?;
@@ -52,9 +55,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener.local_addr()?,
         token_path.display()
     );
+    println!("serveur MCP des agents sur {mcp_url}/mcp/<jeton de session>");
 
     tokio::select! {
         served = api::serve(listener, supervisor.clone(), token) => served?,
+        served = mcp::serve(mcp_listener, supervisor.clone()) => served?,
         _ = tokio::signal::ctrl_c() => println!("arrêt demandé : parking des sessions en cours"),
     }
     supervisor.shutdown().await;

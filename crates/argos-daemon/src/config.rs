@@ -21,12 +21,31 @@ model = "claude-opus-5-5"
 [api]
 # Adresse de l'API WebSocket. Locale seulement : les autres nœuds passent par SSH (D32).
 listen = "127.0.0.1:7878"
+
+[mcp]
+# Adresse du serveur MCP par lequel les agents pilotent leurs enfants. Locale seulement.
+listen = "127.0.0.1:7879"
 "#;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub assistant: AssistantConfig,
     pub api: ApiConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct McpConfig {
+    pub listen: SocketAddr,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([127, 0, 0, 1], 7879)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,9 +112,12 @@ mod tests {
             "[assistant]\nengine = \"codex\"\n[api]\nlisten = \"127.0.0.1:9000\"\n",
         )
         .unwrap();
+        assert_eq!(config.mcp.listen, "127.0.0.1:7879".parse().unwrap());
         let edited = Config::load_or_create(&path).unwrap();
         assert_eq!(edited.assistant.engine, EngineKind::Codex);
         assert_eq!(edited.assistant.model, None);
+        // Une config d'avant T4, sans [mcp], reste valide.
+        assert_eq!(edited.mcp.listen, "127.0.0.1:7879".parse().unwrap());
     }
 
     #[test]

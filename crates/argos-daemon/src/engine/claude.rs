@@ -57,6 +57,26 @@ fn arguments(spec: &SessionSpec, session_id: &str) -> Vec<String> {
     if let Some(instructions) = &spec.instructions {
         args.extend(["--append-system-prompt".into(), instructions.clone()]);
     }
+    if !spec.mcp_servers.is_empty() {
+        let servers: serde_json::Map<String, Value> = spec
+            .mcp_servers
+            .iter()
+            .map(|server| {
+                (
+                    server.name.clone(),
+                    json!({"type": "http", "url": server.url}),
+                )
+            })
+            .collect();
+        args.extend([
+            "--mcp-config".into(),
+            json!({"mcpServers": servers}).to_string(),
+        ]);
+        // En mode -p, un outil non autorisé est refusé : ceux d'Argos le sont d'office.
+        for server in &spec.mcp_servers {
+            args.extend(["--allowedTools".into(), format!("mcp__{}", server.name)]);
+        }
+    }
     args
 }
 
@@ -249,6 +269,29 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn argos_mcp_servers_are_passed_and_allowed() {
+        let mut spec = SessionSpec::new(EngineKind::Claude, "/tmp");
+        spec.mcp_servers = vec![super::super::McpServer {
+            name: "argos".into(),
+            url: "http://127.0.0.1:7879/mcp/jeton".into(),
+        }];
+        let args = arguments(&spec, "id");
+        let config = args
+            .windows(2)
+            .find(|w| w[0] == "--mcp-config")
+            .map(|w| serde_json::from_str::<Value>(&w[1]).unwrap())
+            .expect("--mcp-config");
+        assert_eq!(
+            config,
+            json!({"mcpServers": {"argos": {"type": "http", "url": "http://127.0.0.1:7879/mcp/jeton"}}})
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--allowedTools", "mcp__argos"])
+        );
     }
 
     #[test]

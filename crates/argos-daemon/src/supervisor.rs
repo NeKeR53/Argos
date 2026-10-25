@@ -7,12 +7,13 @@
 //! récente du même agent.
 
 use crate::engine::{
-    EngineError, EngineEvent, EventStream, Session, SessionControl, SessionSpec, prepare_codex_home,
+    EngineError, EngineEvent, EventStream, McpServer, Session, SessionControl, SessionSpec,
+    prepare_codex_home,
 };
-use crate::registry::{Registry, RegistryError};
+use crate::registry::{NewAgent, Registry, RegistryError};
 use argos_core::protocol::{AgentStatus, DaemonEvent};
 use argos_core::{AgentId, AgentRecord, AgentState, EngineKind};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -30,6 +31,9 @@ pub struct SupervisorSettings {
     pub user_codex_home: PathBuf,
     /// Binaires à lancer à la place de `claude` / `codex` (tests).
     pub programs: HashMap<EngineKind, PathBuf>,
+    /// Adresse du serveur MCP d'Argos (`http://127.0.0.1:7879`). Sans elle, les agents
+    /// tournent sans les outils d'Argos.
+    pub mcp_url: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -42,6 +46,8 @@ pub enum SupervisorError {
     Io(#[from] std::io::Error),
     #[error("{0} est retiré")]
     Retired(AgentId),
+    #[error("{0} est en cours d'arrêt")]
+    Stopping(AgentId),
 }
 
 pub type Result<T> = std::result::Result<T, SupervisorError>;
@@ -59,6 +65,11 @@ struct Inner {
     /// Agents dont le process tourne, avec leur drapeau « tour en cours ». Lisible sans
     /// attendre le verrou d'un agent (qui peut être pris par un démarrage lent).
     running: Mutex<HashMap<AgentId, Arc<AtomicBool>>>,
+    /// Agents en cours de stop : aucun réveil tant que le stop n'est pas fini (sinon le
+    /// rapport tardif d'un Worker relancerait l'Agent qu'on arrête).
+    halted: Mutex<HashSet<AgentId>>,
+    /// Jetons MCP des sessions en cours → agent appelant.
+    tokens: Mutex<HashMap<String, AgentId>>,
     events: broadcast::Sender<DaemonEvent>,
     generations: AtomicU64,
     settings: SupervisorSettings,
@@ -79,6 +90,8 @@ impl Supervisor {
                 registry: Mutex::new(registry),
                 slots: Mutex::default(),
                 running: Mutex::default(),
+                halted: Mutex::default(),
+                tokens: Mutex::default(),
                 events,
                 generations: AtomicU64::new(0),
                 settings,
@@ -112,6 +125,43 @@ impl Supervisor {
         self.registry()
             .get(id)?
             .ok_or_else(|| RegistryError::NotFound(id.clone()).into())
+    }
+
+    /// Enfants non retirés d'un agent, avec leur état d'exécution.
+    pub fn children(&self, id: &AgentId) -> Result<Vec<AgentStatus>> {
+        let children = self.registry().children(id)?;
+        Ok(children
+            .into_iter()
+            .map(|record| self.status(record))
+            .collect())
+    }
+
+    /// Crée un agent dans le registre (il commence parké) et le signale.
+    pub fn create(&self, new: NewAgent) -> Result<AgentRecord> {
+        let record = self.registry().create(new)?;
+        self.publish_status(&record.id);
+        Ok(record)
+    }
+
+    /// Dossier où ranger le répertoire de travail d'un nouvel Agent.
+    pub fn agents_dir(&self) -> PathBuf {
+        self.inner.settings.home.join("agents")
+    }
+
+    /// Émet un jeton MCP pour `id`, valable jusqu'à la fin de sa session en cours.
+    pub fn mcp_token(&self, id: &AgentId) -> String {
+        let token = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        locked(&self.inner.tokens).insert(token.clone(), id.clone());
+        token
+    }
+
+    /// L'agent auquel ce jeton MCP a été donné.
+    pub fn agent_for_token(&self, token: &str) -> Option<AgentId> {
+        locked(&self.inner.tokens).get(token).cloned()
     }
 
     /// Message à un agent. Un agent parké est d'abord réveillé : sa session reprend.
@@ -166,11 +216,16 @@ impl Supervisor {
         // Le parent d'abord : arrêté, il ne peut plus relancer de Worker.
         let mut targets = vec![id.clone()];
         targets.extend(self.registry().descendants(id)?);
+        locked(&self.inner.halted).extend(targets.iter().cloned());
         let mut stopped = vec![];
-        for target in targets {
-            if self.kill(&target).await {
-                stopped.push(target);
+        for target in &targets {
+            if self.kill(target).await {
+                stopped.push(target.clone());
             }
+        }
+        let mut halted = locked(&self.inner.halted);
+        for target in &targets {
+            halted.remove(target);
         }
         Ok(stopped)
     }
@@ -205,7 +260,23 @@ impl Supervisor {
         if record.state == AgentState::Retired {
             return Err(SupervisorError::Retired(id.clone()));
         }
-        let (control, events) = Session::spawn(self.spec_for(&record)?).await?.split();
+        {
+            let halted = locked(&self.inner.halted);
+            if halted.contains(id) || record.parent.as_ref().is_some_and(|p| halted.contains(p)) {
+                return Err(SupervisorError::Stopping(id.clone()));
+            }
+        }
+        let spawned = match self.spec_for(&record) {
+            Ok(spec) => Session::spawn(spec).await.map_err(SupervisorError::from),
+            Err(error) => Err(error),
+        };
+        let (control, events) = match spawned {
+            Ok(session) => session.split(),
+            Err(error) => {
+                self.revoke_tokens(id);
+                return Err(error);
+            }
+        };
         let registered = {
             let registry = self.registry();
             registry
@@ -214,6 +285,7 @@ impl Supervisor {
         };
         if let Err(error) = registered {
             control.kill();
+            self.revoke_tokens(id);
             return Err(error.into());
         }
 
@@ -301,6 +373,7 @@ impl Supervisor {
     /// La session d'un agent a disparu : il redevient parké (sauf s'il est retiré).
     fn settle(&self, id: &AgentId) {
         locked(&self.inner.running).remove(id);
+        self.revoke_tokens(id);
         // Échoue seulement pour un agent retiré, qui doit le rester.
         let _ = self.registry().set_state(id, AgentState::Parked);
         self.publish_status(id);
@@ -313,12 +386,22 @@ impl Supervisor {
         spec.model = record.model.clone();
         spec.resume = record.session_id.clone();
         spec.program = settings.programs.get(&record.engine).cloned();
+        if let Some(base) = &settings.mcp_url {
+            spec.mcp_servers = vec![McpServer {
+                name: "argos".into(),
+                url: format!("{base}/mcp/{}", self.mcp_token(&record.id)),
+            }];
+        }
         if record.engine == EngineKind::Codex {
             let home = settings.home.join("codex").join(record.id.as_str());
             prepare_codex_home(&home, &settings.user_codex_home)?;
             spec.codex_home = Some(home);
         }
         Ok(spec)
+    }
+
+    fn revoke_tokens(&self, id: &AgentId) {
+        locked(&self.inner.tokens).retain(|_, holder| holder != id);
     }
 
     fn slot(&self, id: &AgentId) -> Arc<AsyncMutex<Option<Live>>> {

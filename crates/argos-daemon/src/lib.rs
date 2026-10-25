@@ -3,5 +3,7 @@
 pub mod api;
 pub mod config;
 pub mod engine;
+pub mod mcp;
 pub mod registry;
 pub mod supervisor;
+pub mod tools;

@@ -41,7 +41,7 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 | T1 ✅ | Adaptateurs de moteur | Lancer une session `claude` et `codex`, envoyer des tours, lire le flux normalisé, interrompre, reprendre par session-id. Faux CLI pour les tests | T0 |
 | T2 ✅ | Arbre et registre | Modèle agent (id, niveau, parent, moteur, modèle, état, charte), persistance SQLite, réhydratation au démarrage | T1 |
 | T3 ✅ | Plan de contrôle + API WS | stop/kill du sous-arbre, park/resume, inspect ; API WebSocket (commandes + flux d'événements) | T2 |
-| T4 | Serveur MCP par niveau | Endpoint MCP, jetons par agent, outils L0 (gestion des Agents), L1 (Workers + board), L2 (compte rendu, escalade) | T3 |
+| T4 ✅ | Serveur MCP par niveau | Endpoint MCP, jetons par agent, outils L0 (gestion des Agents), L1 (Workers + board), L2 (compte rendu, escalade) | T3 |
 | T5 | Contrats des agents | Prompts système par niveau : l'Assistant route des missions et résume ; l'Agent planifie avant d'exécuter ; le Worker fait une tâche et rend compte | T4 |
 | T6 | Boards et missions | Mission → tâches, Worker lié à une tâche, repriorisation déterministe, remontée résumée | T4 |
 | T7 | Mémoire | Dossier par agent (index, journal, notes, enfants), git local, digest chargé au démarrage, outil d'écriture mémoire, compaction avant saturation | T4 |
@@ -95,3 +95,22 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
   - un stop attend que le réveil en cours du même agent soit fini (jusqu'à 60 s pour une initialisation Codex) ;
   - un client trop lent perd des événements et doit se resynchroniser avec `tree`.
 - **Tests** : 9 tests du superviseur et 6 de l'API, sur faux CLI. Essai réel le 2026-10-25 : daemon + client WebSocket Node, réveil de l'Assistant (haiku), réponse relayée en direct, parking, arrêt propre par Ctrl-C.
+- `ARGOS_CLAUDE_BIN` / `ARGOS_CODEX_BIN` remplacent les moteurs du daemon (par exemple par les faux CLI) pour essayer la GUI sans tokens.
+
+## T4 — Ce qui est en place
+
+- **Serveur MCP** (`argos_daemon::mcp`, sur `axum`, `[mcp] listen`, défaut `127.0.0.1:7879`). Sous-ensemble du protocole HTTP « streamable » servi en JSON simple, sans session ni flux SSE : `initialize` (version du client acceptée), `ping`, `tools/list`, `tools/call` ; notifications acquittées en 202. Choisi plutôt que le SDK `rmcp` : quatre méthodes, stables d'une version du protocole à l'autre.
+- **Un jeton par session** : au réveil, le superviseur émet un jeton et donne à l'agent l'URL `/mcp/<jeton>`. Le jeton identifie l'appelant et fixe ses outils ; il est révoqué quand la session s'arrête (un jeton inconnu reçoit 404).
+- **Injection dans les moteurs** :
+  - Claude : `--mcp-config` en JSON, plus `--allowedTools mcp__argos`, sinon le mode `-p` refuse l'outil.
+  - Codex : la config du `CODEX_HOME` isolé est réécrite à chaque session avec `[mcp_servers.argos]` et `default_tools_approval_mode = "approve"`. Sans ce réglage, `approvalPolicy: never` fait refuser chaque appel faute d'approbation (constaté sur le vrai Codex).
+- **Outils** (`argos_daemon::tools`) :
+  - Assistant : `list_agents`, `create_agent`, `send_to_agent`, `inspect_agent`, `interrupt_agent`, `park_agent`, `stop_agent`, `retire_agent`.
+  - Agent : `spawn_worker`, `list_workers`, `send_to_worker`, `inspect_worker`, `interrupt_worker`, `park_worker`, `stop_worker`, `retire_worker`, `report_to_assistant`, `escalate_to_user`.
+  - Worker : `report_to_agent`, `escalate_to_agent`.
+- **Autorité (D13)** vérifiée à chaque appel : la cible doit être un enfant direct et non retiré. Un Agent se désigne par son id ou son nom, un Worker par son id. Une erreur d'outil revient à l'agent comme résultat lisible (`isError`), pas comme erreur de protocole.
+- **Moteur et modèle par défaut** d'un enfant : ceux du parent (D21), en attendant la politique de modèles (T8).
+- **Comptes rendus et escalades** : ils arrivent au parent comme un nouveau message préfixé (`[Rapport de …]`, `[Escalade pour l'utilisateur de …]`, `[Question de …]`), qui le réveille au besoin. Aucun appel n'attend la fin du travail d'un enfant.
+- **Stop protégé** : pendant un stop, ni l'agent ni ses enfants ne peuvent être réveillés. Le rapport tardif d'un Worker ne relance donc pas l'Agent qu'on arrête.
+- **Nouveaux agents** : répertoire par défaut `$ARGOS_HOME/agents/<nom>-<suffixe>` ; un Worker travaille dans le répertoire de son Agent.
+- **Tests** : 9 tests MCP sur faux CLI (jeton, niveaux, création, mission, Worker, rapport, autorité, révocation), 3 unitaires. Tests réels (ignorés par défaut) : un Assistant sur `claude` (haiku) puis sur `codex` (gpt-6-luna) appelle `list_agents` et répond le bon nombre d'Agents. Passés le 2026-10-25.

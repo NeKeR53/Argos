@@ -30,6 +30,15 @@ pub struct SessionSpec {
     pub program: Option<PathBuf>,
     /// `CODEX_HOME` isolé, obligatoire pour Codex (voir [`prepare_codex_home`]).
     pub codex_home: Option<PathBuf>,
+    /// Serveurs MCP donnés à l'agent (celui d'Argos, avec le jeton de la session).
+    pub mcp_servers: Vec<McpServer>,
+}
+
+/// Un serveur MCP HTTP.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpServer {
+    pub name: String,
+    pub url: String,
 }
 
 impl SessionSpec {
@@ -42,6 +51,7 @@ impl SessionSpec {
             resume: None,
             program: None,
             codex_home: None,
+            mcp_servers: vec![],
         }
     }
 

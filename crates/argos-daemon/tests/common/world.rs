@@ -62,6 +62,7 @@ pub fn world() -> World {
             (EngineKind::Claude, fixture("fake-claude")),
             (EngineKind::Codex, fixture("fake-codex")),
         ]),
+        mcp_url: None,
     };
     let supervisor = Supervisor::new(registry, settings);
     let events = supervisor.subscribe();

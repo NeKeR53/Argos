@@ -3,7 +3,8 @@
 
 use super::process::{self, Spawned};
 use super::{
-    Command, EngineError, EngineEvent, Events, Session, SessionSpec, TurnOutcome, Usage, forward,
+    Command, EngineError, EngineEvent, Events, McpServer, Session, SessionSpec, TurnOutcome, Usage,
+    forward,
 };
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -30,11 +31,34 @@ pub fn prepare_codex_home(dir: &Path, user_codex_home: &Path) -> io::Result<()> 
     Ok(())
 }
 
+/// Réécrit la config du `CODEX_HOME` isolé : seulement les serveurs MCP de la session
+/// (leur URL porte un jeton qui change à chaque session).
+fn write_config(home: &Path, servers: &[McpServer]) -> io::Result<()> {
+    let mut table = toml::Table::new();
+    if !servers.is_empty() {
+        let servers: toml::Table = servers
+            .iter()
+            .map(|server| {
+                let mut entry = toml::Table::new();
+                entry.insert("url".into(), server.url.clone().into());
+                // Sinon, avec `approvalPolicy: never`, chaque appel serait refusé faute
+                // d'approbation : les outils donnés par Argos sont approuvés d'office.
+                entry.insert("default_tools_approval_mode".into(), "approve".into());
+                (server.name.clone(), entry.into())
+            })
+            .collect();
+        table.insert("mcp_servers".into(), servers.into());
+    }
+    fs::create_dir_all(home)?;
+    fs::write(home.join("config.toml"), table.to_string())
+}
+
 pub(super) async fn spawn(spec: SessionSpec) -> Result<Session, EngineError> {
     let home = spec
         .codex_home
         .as_ref()
         .ok_or_else(|| EngineError::Config("une session Codex exige un CODEX_HOME isolé".into()))?;
+    write_config(home, &spec.mcp_servers)?;
     let mut command = tokio::process::Command::new(spec.program());
     command
         .arg("app-server")
@@ -451,6 +475,34 @@ mod tests {
             Some("argos/spawn_worker")
         );
         assert_eq!(item(r#"{"type":"reasoning"}"#), None);
+    }
+
+    #[test]
+    fn the_config_holds_only_the_session_mcp_servers() {
+        let home = tempfile::tempdir().unwrap();
+        let server = McpServer {
+            name: "argos".into(),
+            url: "http://127.0.0.1:7879/mcp/jeton".into(),
+        };
+        write_config(home.path(), &[server]).unwrap();
+        let config: toml::Table = fs::read_to_string(home.path().join("config.toml"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            config["mcp_servers"]["argos"]["url"].as_str(),
+            Some("http://127.0.0.1:7879/mcp/jeton")
+        );
+        assert_eq!(
+            config["mcp_servers"]["argos"]["default_tools_approval_mode"].as_str(),
+            Some("approve")
+        );
+
+        write_config(home.path(), &[]).unwrap();
+        assert_eq!(
+            fs::read_to_string(home.path().join("config.toml")).unwrap(),
+            ""
+        );
     }
 
     #[test]
