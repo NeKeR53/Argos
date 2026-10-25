@@ -2,7 +2,7 @@
 //! JSON sur une trame texte. Le client envoie des [`Request`] ; le daemon répond par
 //! [`ServerMessage::Reply`] (même `id`) et pousse en continu des [`ServerMessage::Event`].
 
-use crate::{AgentId, AgentRecord, TurnOutcome, Usage};
+use crate::{AgentId, AgentRecord, Board, TurnOutcome, Usage};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -21,6 +21,10 @@ pub enum Command {
     /// L'arbre courant (agents non retirés).
     Tree,
     Inspect {
+        agent: AgentId,
+    },
+    /// Le board d'un Agent (missions, tâches).
+    Board {
         agent: AgentId,
     },
     /// Message à un agent ; un agent parké est réveillé.
@@ -71,6 +75,9 @@ pub enum Reply {
     },
     Agent {
         agent: AgentStatus,
+    },
+    Board {
+        board: Board,
     },
     /// Commande exécutée ; `affected` liste les agents touchés (stop, retrait…).
     Done {

@@ -175,6 +175,78 @@ pub struct AgentRecord {
     pub created_at: u64,
 }
 
+/// État d'une tâche du board d'un Agent (D17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskState {
+    Pending,
+    InProgress,
+    Blocked,
+    Done,
+    Cancelled,
+    /// Son Worker a disparu (crash, retrait) : à relancer.
+    Interrupted,
+}
+
+text_form!(TaskState {
+    Pending => "pending",
+    InProgress => "in_progress",
+    Blocked => "blocked",
+    Done => "done",
+    Cancelled => "cancelled",
+    Interrupted => "interrupted",
+});
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissionState {
+    Open,
+    Done,
+    Cancelled,
+}
+
+text_form!(MissionState {
+    Open => "open",
+    Done => "done",
+    Cancelled => "cancelled",
+});
+
+/// Demande de haut niveau confiée à un Agent par l'Assistant (D19).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Mission {
+    pub id: String,
+    pub agent: AgentId,
+    pub text: String,
+    pub state: MissionState,
+    pub created_at: u64,
+}
+
+/// Unité de travail du board d'un Agent, exécutée par un Worker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Task {
+    pub id: String,
+    pub agent: AgentId,
+    pub mission: Option<String>,
+    pub title: String,
+    pub detail: Option<String>,
+    pub state: TaskState,
+    /// Le Worker qui s'en charge ou s'en est chargé.
+    pub worker: Option<AgentId>,
+    /// Dernier compte rendu du Worker.
+    pub result: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Le board d'un Agent, dans l'ordre de priorité : missions ouvertes, puis tâches de ces
+/// missions et tâches hors mission non terminées.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Board {
+    pub agent: AgentId,
+    pub missions: Vec<Mission>,
+    pub tasks: Vec<Task>,
+}
+
 /// Issue d'un tour d'agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -238,6 +310,19 @@ mod tests {
         check(&[Level::Assistant, Level::Agent, Level::Worker]);
         check(&[EngineKind::Claude, EngineKind::Codex]);
         check(&[AgentState::Active, AgentState::Parked, AgentState::Retired]);
+        check(&[
+            TaskState::Pending,
+            TaskState::InProgress,
+            TaskState::Blocked,
+            TaskState::Done,
+            TaskState::Cancelled,
+            TaskState::Interrupted,
+        ]);
+        check(&[
+            MissionState::Open,
+            MissionState::Done,
+            MissionState::Cancelled,
+        ]);
     }
 
     #[test]

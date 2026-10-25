@@ -183,6 +183,39 @@ async fn panic_stop_reaches_workers_through_the_cascade() {
 }
 
 #[tokio::test]
+async fn the_board_of_an_agent_can_be_read() {
+    let w = world();
+    let mission = w
+        .supervisor
+        .registry()
+        .add_mission(&w.agent.id, "éclairage")
+        .unwrap();
+    let mut client = connect(&serve(&w).await).await;
+    match ask(
+        &mut client,
+        1,
+        Command::Board {
+            agent: w.agent.id.clone(),
+        },
+    )
+    .await
+    {
+        Reply::Board { board } => assert_eq!(board.missions, vec![mission]),
+        other => panic!("board attendu, reçu {other:?}"),
+    }
+    // L'Assistant n'a pas de board.
+    let reply = ask(
+        &mut client,
+        2,
+        Command::Board {
+            agent: w.assistant.id.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(reply, Reply::Error { .. }));
+}
+
+#[tokio::test]
 async fn errors_come_back_as_replies() {
     let w = world();
     let mut client = connect(&serve(&w).await).await;

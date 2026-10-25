@@ -1,5 +1,10 @@
-//! Registre des agents : l'arbre Assistant → Agents → Workers, persisté en SQLite.
-//! Il applique les règles de la hiérarchie (D1, D13, D20) et ne décide rien d'autre.
+//! Registre des agents : l'arbre Assistant → Agents → Workers, persisté en SQLite, avec
+//! les boards des Agents (`board`). Il applique les règles de la hiérarchie (D1, D13, D17,
+//! D20) et ne décide rien d'autre.
+
+mod board;
+
+pub use board::{Position, TaskUpdate};
 
 use argos_core::{AgentId, AgentRecord, AgentState, Charter, EngineKind, Level};
 use rusqlite::types::Type;
@@ -23,6 +28,12 @@ pub enum RegistryError {
     InvalidCharter(String),
     #[error("schéma du registre en version {found}, attendu {expected}")]
     SchemaVersion { found: i64, expected: i64 },
+    #[error("mission inconnue : {0}")]
+    MissionNotFound(String),
+    #[error("tâche inconnue : {0}")]
+    TaskNotFound(String),
+    #[error("board : {0}")]
+    Board(String),
 }
 
 pub type Result<T> = std::result::Result<T, RegistryError>;
@@ -51,9 +62,11 @@ pub struct Registry {
     db: Connection,
 }
 
-const SCHEMA_VERSION: i64 = 1;
+/// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
+const MIGRATIONS: [&str; 2] = [AGENTS_SCHEMA, board::SCHEMA];
+const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
-const SCHEMA: &str = "
+const AGENTS_SCHEMA: &str = "
 CREATE TABLE agents (
     id         TEXT PRIMARY KEY,
     level      TEXT NOT NULL CHECK (level IN ('assistant', 'agent', 'worker')),
@@ -90,20 +103,19 @@ impl Registry {
         db.pragma_update(None, "foreign_keys", true)?;
         db.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         let found: i64 = db.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        match found {
-            0 => {
-                let tx = db.unchecked_transaction()?;
-                tx.execute_batch(SCHEMA)?;
-                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-                tx.commit()?;
+        if !(0..=SCHEMA_VERSION).contains(&found) {
+            return Err(RegistryError::SchemaVersion {
+                found,
+                expected: SCHEMA_VERSION,
+            });
+        }
+        if found < SCHEMA_VERSION {
+            let tx = db.unchecked_transaction()?;
+            for migration in &MIGRATIONS[found as usize..] {
+                tx.execute_batch(migration)?;
             }
-            SCHEMA_VERSION => {}
-            _ => {
-                return Err(RegistryError::SchemaVersion {
-                    found,
-                    expected: SCHEMA_VERSION,
-                });
-            }
+            tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            tx.commit()?;
         }
         Ok(Self { db })
     }
@@ -266,12 +278,14 @@ impl Registry {
                 [id.as_str()],
             )?;
         }
+        // Un Worker retiré en pleine tâche la laisse interrompue, à relancer.
+        board::interrupt_tasks_of(&tx, &retired)?;
         tx.commit()?;
         Ok(retired)
     }
 
     /// Au démarrage, aucun process n'a survécu : les agents qui tournaient sont parkés,
-    /// les Workers qui tournaient sont retirés (D10).
+    /// les Workers qui tournaient sont retirés et leurs tâches interrompues (D10).
     pub fn rehydrate(&self) -> Result<Rehydration> {
         let tx = self.db.unchecked_transaction()?;
         let ids = |filter: &str| -> Result<Vec<AgentId>> {
@@ -295,6 +309,7 @@ impl Registry {
             "UPDATE agents SET state = 'retired' WHERE state = 'active' AND level = 'worker'",
             [],
         )?;
+        board::interrupt_tasks_of(&tx, &report.lost_workers)?;
         tx.commit()?;
         Ok(report)
     }

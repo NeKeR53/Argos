@@ -43,7 +43,7 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 | T3 ✅ | Plan de contrôle + API WS | stop/kill du sous-arbre, park/resume, inspect ; API WebSocket (commandes + flux d'événements) | T2 |
 | T4 ✅ | Serveur MCP par niveau | Endpoint MCP, jetons par agent, outils L0 (gestion des Agents), L1 (Workers + board), L2 (compte rendu, escalade) | T3 |
 | T5 | Contrats des agents | Prompts système par niveau : l'Assistant route des missions et résume ; l'Agent planifie avant d'exécuter ; le Worker fait une tâche et rend compte | T4 |
-| T6 | Boards et missions | Mission → tâches, Worker lié à une tâche, repriorisation déterministe, remontée résumée | T4 |
+| T6 ✅ | Boards et missions | Mission → tâches, Worker lié à une tâche, repriorisation déterministe, remontée résumée | T4 |
 | T7 | Mémoire | Dossier par agent (index, journal, notes, enfants), git local, digest chargé au démarrage, outil d'écriture mémoire, compaction avant saturation | T4 |
 | T8 | Politique de modèles | Profils en TOML, résolution profil → moteur + modèle, repli sur quota épuisé, plafonds | T1 |
 | T9 | GUI console | Connexion WS, arbre des agents, chat avec l'Assistant, fenêtre d'Agent en chat texte, panic stop | T3 |
@@ -114,3 +114,21 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
 - **Stop protégé** : pendant un stop, ni l'agent ni ses enfants ne peuvent être réveillés. Le rapport tardif d'un Worker ne relance donc pas l'Agent qu'on arrête.
 - **Nouveaux agents** : répertoire par défaut `$ARGOS_HOME/agents/<nom>-<suffixe>` ; un Worker travaille dans le répertoire de son Agent.
 - **Tests** : 9 tests MCP sur faux CLI (jeton, niveaux, création, mission, Worker, rapport, autorité, révocation), 3 unitaires. Tests réels (ignorés par défaut) : un Assistant sur `claude` (haiku) puis sur `codex` (gpt-6-luna) appelle `list_agents` et répond le bon nombre d'Agents. Passés le 2026-10-25.
+
+## T6 — Ce qui est en place
+
+- **Missions et tâches en base** (schéma v2 ; les bases v1 sont migrées automatiquement, les migrations s'enchaînent selon `PRAGMA user_version`). Module `registry::board`. Types partagés dans `argos-core` : `Mission`, `Task`, `Board`, `MissionState` (`open` / `done` / `cancelled`), `TaskState` (`pending` / `in_progress` / `blocked` / `done` / `cancelled` / `interrupted`). Identifiants courts et lisibles : `m-1a2b3c4d`, `t-…`.
+- **Seul un Agent vivant a un board** ; une tâche ne se rattache qu'à une mission ouverte de son propre board.
+- **Ordre de priorité explicite** : missions et tâches ont un rang ; le board se lit missions ouvertes d'abord (dans leur ordre), puis leurs tâches, puis les tâches hors mission non terminées. Réprioriser une mission réordonne ses tâches avec elle.
+- **Planifier avant d'exécuter, mécaniquement (D17)** : `spawn_worker` prend l'identifiant d'une tâche du board (à faire, bloquée ou interrompue), la passe `in_progress` et la lie au Worker. Le Worker reçoit son titre, son détail et le contexte de la mission. Sans tâche inscrite, pas de Worker.
+- **Tenue déterministe du board** :
+  - le compte rendu d'un Worker (`report_to_agent`, `outcome` `done` / `blocked` / `progress`) met à jour l'état et le résultat de sa tâche, puis prévient l'Agent ;
+  - un Worker retiré en pleine tâche, ou perdu dans un crash (réhydratation), laisse sa tâche `interrupted`, prête à repartir avec un nouveau Worker (D10) ;
+  - annuler une mission annule ses tâches non terminées et arrête leurs Workers.
+- **Nouveaux outils** :
+  - Assistant : `assign_mission` (inscrit la mission et réveille l'Agent), `prioritize_mission`, `cancel_mission` ; `inspect_agent` montre le board.
+  - Agent : `board`, `add_task`, `update_task`, `reorder_task` ; `report_to_assistant` clôt une mission avec `mission` + `outcome: done`.
+  - `send_to_agent` reste pour les simples messages (réponses aux questions).
+- **Protocole** : commande `board { agent }`, réponse `board { board }` (lecture seule pour la GUI).
+- **Pas fait** : la préemption automatique (parker le Worker d'une mission moins prioritaire quand une autre passe en tête), prévue en option par D14. La repriorisation ne fait que réordonner.
+- **Tests** : 8 tests du board, 6 tests MCP de plus (plan obligatoire, rapport qui met à jour la tâche, mission sur le board, annulation qui arrête les Workers, ordre du board), 1 test d'API.

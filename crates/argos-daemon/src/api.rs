@@ -124,6 +124,9 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         Command::Inspect { agent } => Reply::Agent {
             agent: supervisor.inspect(&agent).map_err(said)?,
         },
+        Command::Board { agent } => Reply::Board {
+            board: supervisor.registry().board(&agent).map_err(said)?,
+        },
         Command::Send { agent, text } => {
             addressable(supervisor, &agent)?;
             supervisor.send(&agent, text).await.map_err(said)?;

@@ -2,7 +2,7 @@
 
 mod common;
 
-use argos_core::{AgentId, Level};
+use argos_core::{AgentId, Level, TaskState};
 use common::world::{World, is_message, until, world};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -179,34 +179,155 @@ async fn a_mission_wakes_the_agent_named_by_the_assistant() {
     until(&mut w.events, |event| is_message(event, &agent, "reply 1")).await;
 }
 
+/// Inscrit une tâche sur le board de l'Agent par son outil ; rend son id.
+async fn add_task(agent: &Client, w: &World, title: &str) -> String {
+    let (added, error) = agent.call("add_task", json!({"title": title})).await;
+    assert!(!error, "{added}");
+    let board = w.supervisor.registry().board(&w.agent.id).unwrap();
+    board.tasks.last().unwrap().id.clone()
+}
+
 #[tokio::test]
-async fn an_agent_spawns_a_worker_on_a_task() {
+async fn an_agent_spawns_a_worker_on_a_task_of_its_board() {
     let mut w = world();
     let address = serve(&w).await;
     let agent = Client::new(&w, &address, &w.agent.id);
+    let task = add_task(&agent, &w, "liste les ampoules").await;
 
-    let (spawned, error) = agent
-        .call("spawn_worker", json!({"task": "liste les ampoules"}))
-        .await;
+    let (spawned, error) = agent.call("spawn_worker", json!({"task": task})).await;
     assert!(!error, "{spawned}");
     let workers = w.supervisor.children(&w.agent.id).unwrap();
     assert_eq!(workers.len(), 2, "le Worker du monde de test et le nouveau");
     let new = workers.last().unwrap().record.clone();
     assert_eq!(new.workdir, w.agent.workdir);
+    let assigned = w.supervisor.registry().task(&task).unwrap();
+    assert_eq!(
+        (assigned.state, assigned.worker),
+        (TaskState::InProgress, Some(new.id.clone()))
+    );
     until(&mut w.events, |event| is_message(event, &new.id, "reply 1")).await;
+
+    // La tâche est prise : on ne la confie pas deux fois.
+    let (_, error) = agent.call("spawn_worker", json!({"task": task})).await;
+    assert!(error);
 }
 
 #[tokio::test]
-async fn a_worker_report_wakes_its_agent() {
+async fn no_worker_without_a_planned_task() {
+    let w = world();
+    let address = serve(&w).await;
+    let agent = Client::new(&w, &address, &w.agent.id);
+    let (refusal, error) = agent
+        .call("spawn_worker", json!({"task": "liste les ampoules"}))
+        .await;
+    assert!(error, "{refusal}");
+    assert_eq!(w.supervisor.children(&w.agent.id).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_worker_report_updates_its_task_and_wakes_its_agent() {
     let mut w = world();
     let address = serve(&w).await;
+    let task = w
+        .supervisor
+        .registry()
+        .add_task(&w.agent.id, "ampoules", None, None)
+        .unwrap();
+    w.supervisor
+        .registry()
+        .assign_task(&task.id, &w.worker.id)
+        .unwrap();
     let worker = Client::new(&w, &address, &w.worker.id);
+
     let (_, error) = worker
-        .call("report_to_agent", json!({"summary": "3 ampoules"}))
+        .call(
+            "report_to_agent",
+            json!({"summary": "3 ampoules", "outcome": "done"}),
+        )
         .await;
     assert!(!error);
+    let done = w.supervisor.registry().task(&task.id).unwrap();
+    assert_eq!(
+        (done.state, done.result.as_deref()),
+        (TaskState::Done, Some("3 ampoules"))
+    );
     let agent = w.agent.id.clone();
     until(&mut w.events, |event| is_message(event, &agent, "reply 1")).await;
+}
+
+#[tokio::test]
+async fn a_mission_lands_on_the_board_and_wakes_the_agent() {
+    let mut w = world();
+    let address = serve(&w).await;
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+    let (_, error) = assistant
+        .call(
+            "assign_mission",
+            json!({"agent": "Domotique", "mission": "refaire l'éclairage"}),
+        )
+        .await;
+    assert!(!error);
+    let board = w.supervisor.registry().board(&w.agent.id).unwrap();
+    assert_eq!(board.missions[0].text, "refaire l'éclairage");
+    let agent = w.agent.id.clone();
+    until(&mut w.events, |event| is_message(event, &agent, "reply 1")).await;
+
+    let (inspected, _) = assistant
+        .call("inspect_agent", json!({"agent": "Domotique"}))
+        .await;
+    let inspected: Value = serde_json::from_str(&inspected).unwrap();
+    assert_eq!(
+        inspected["board"]["missions"][0]["text"],
+        "refaire l'éclairage"
+    );
+}
+
+#[tokio::test]
+async fn cancelling_a_mission_stops_its_workers() {
+    let w = world();
+    let address = serve(&w).await;
+    let (mission, task) = {
+        let registry = w.supervisor.registry();
+        let mission = registry.add_mission(&w.agent.id, "éclairage").unwrap();
+        let task = registry
+            .add_task(&w.agent.id, "salon", None, Some(&mission.id))
+            .unwrap();
+        registry.assign_task(&task.id, &w.worker.id).unwrap();
+        (mission, task)
+    };
+    w.supervisor.send(&w.worker.id, "SLOW").await.unwrap();
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+
+    let (cancelled, error) = assistant
+        .call("cancel_mission", json!({"mission": mission.id}))
+        .await;
+    assert!(!error, "{cancelled}");
+    assert!(!w.supervisor.inspect(&w.worker.id).unwrap().running);
+    assert_eq!(
+        w.supervisor.registry().task(&task.id).unwrap().state,
+        TaskState::Cancelled
+    );
+}
+
+#[tokio::test]
+async fn the_agent_keeps_its_board_in_order() {
+    let w = world();
+    let address = serve(&w).await;
+    let agent = Client::new(&w, &address, &w.agent.id);
+    add_task(&agent, &w, "a").await;
+    let b = add_task(&agent, &w, "b").await;
+    let (_, error) = agent
+        .call("reorder_task", json!({"task": b, "position": "top"}))
+        .await;
+    assert!(!error);
+    let (_, error) = agent
+        .call("update_task", json!({"task": b, "state": "blocked"}))
+        .await;
+    assert!(!error);
+    let (board, _) = agent.call("board", json!({})).await;
+    let board: Value = serde_json::from_str(&board).unwrap();
+    assert_eq!(board["tasks"][0]["title"], "b");
+    assert_eq!(board["tasks"][0]["state"], "blocked");
 }
 
 #[tokio::test]
@@ -256,7 +377,7 @@ async fn tokens_die_with_their_session() {
     let address = serve(&w).await;
     let id = w.agent.id.clone();
     let client = Client::new(&w, &address, &id);
-    assert_eq!(client.tools().await.len(), 10);
+    assert_eq!(client.tools().await.len(), 14);
 
     w.supervisor.send(&id, "bonjour").await.unwrap();
     until(&mut w.events, |event| is_message(event, &id, "reply 1")).await;
