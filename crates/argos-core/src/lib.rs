@@ -165,6 +165,9 @@ pub struct AgentRecord {
     pub parent: Option<AgentId>,
     pub engine: EngineKind,
     pub model: Option<String>,
+    /// Profil de la politique de modèles dont viennent moteur et modèle (D22) ; il
+    /// donne la chaîne de repli. Absent pour l'Assistant, choisi par l'utilisateur.
+    pub profile: Option<String>,
     pub workdir: PathBuf,
     /// Présente pour les Agents seulement.
     pub charter: Option<Charter>,

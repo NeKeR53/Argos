@@ -141,6 +141,15 @@ impl State {
         match message["type"].as_str() {
             Some("assistant") => assistant_events(&message),
             Some("result") => vec![self.turn_completed(&message)],
+            // Émis à chaque tour ; seul un refus signale un quota épuisé.
+            Some("rate_limit_event") if message["rate_limit_info"]["status"] == "rejected" => {
+                let window = message["rate_limit_info"]["rateLimitType"]
+                    .as_str()
+                    .unwrap_or("inconnu");
+                vec![EngineEvent::RateLimited {
+                    message: format!("quota Claude « {window} » épuisé"),
+                }]
+            }
             _ => vec![],
         }
     }
@@ -228,6 +237,20 @@ mod tests {
                 .is_empty()
         );
         assert!(state.handle_line("pas du json").is_empty());
+    }
+
+    #[test]
+    fn only_a_rejected_rate_limit_is_an_exhausted_quota() {
+        let mut state = State::default();
+        let allowed = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour"}}"#;
+        assert!(state.handle_line(allowed).is_empty());
+        let rejected = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}"#;
+        assert_eq!(
+            state.handle_line(rejected),
+            vec![EngineEvent::RateLimited {
+                message: "quota Claude « five_hour » épuisé".into()
+            }]
+        );
     }
 
     #[test]

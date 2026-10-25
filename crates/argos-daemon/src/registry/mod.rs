@@ -45,6 +45,8 @@ pub struct NewAgent {
     pub level: Level,
     pub engine: EngineKind,
     pub model: Option<String>,
+    /// Profil de la politique de modèles dont viennent moteur et modèle.
+    pub profile: Option<String>,
     pub workdir: PathBuf,
     pub charter: Option<Charter>,
 }
@@ -63,7 +65,10 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 2] = [AGENTS_SCHEMA, board::SCHEMA];
+const MIGRATIONS: [&str; 3] = [AGENTS_SCHEMA, board::SCHEMA, PROFILE_COLUMN];
+
+/// v3 : profil de la politique de modèles (T8).
+const PROFILE_COLUMN: &str = "ALTER TABLE agents ADD COLUMN profile TEXT;";
 const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 const AGENTS_SCHEMA: &str = "
@@ -87,8 +92,7 @@ CREATE UNIQUE INDEX one_assistant ON agents(level) WHERE level = 'assistant';
 CREATE UNIQUE INDEX agent_names ON agents(lower(name)) WHERE level = 'agent' AND state != 'retired';
 ";
 
-const COLUMNS: &str =
-    "id, level, parent, engine, model, workdir, name, scope, state, session_id, created_at";
+const COLUMNS: &str = "id, level, parent, engine, model, workdir, name, scope, state, session_id, created_at, profile";
 
 impl Registry {
     pub fn open(path: &Path) -> Result<Self> {
@@ -137,6 +141,7 @@ impl Registry {
             parent: None,
             engine,
             model,
+            profile: None,
             workdir,
             charter: None,
             state: AgentState::Parked,
@@ -192,6 +197,7 @@ impl Registry {
             parent: Some(parent.id),
             engine: new.engine,
             model: new.model,
+            profile: new.profile,
             workdir: new.workdir,
             charter,
             state: AgentState::Parked,
@@ -256,6 +262,23 @@ impl Registry {
     /// Enregistre la session du moteur, pour reprendre l'agent après un parking.
     pub fn set_session(&self, id: &AgentId, session_id: &str) -> Result<()> {
         self.update_living(id, "session_id = ?2", session_id)
+    }
+
+    /// Change le moteur et le modèle d'un agent (repli de la politique de modèles).
+    pub fn set_engine_model(
+        &self,
+        id: &AgentId,
+        engine: EngineKind,
+        model: Option<&str>,
+    ) -> Result<()> {
+        if self.require(id)?.state == AgentState::Retired {
+            return Err(RegistryError::Hierarchy(format!("{id} est retiré")));
+        }
+        self.db.execute(
+            "UPDATE agents SET engine = ?2, model = ?3 WHERE id = ?1",
+            params![id.as_str(), engine.as_str(), model],
+        )?;
+        Ok(())
     }
 
     /// Oublie la session du moteur : le prochain réveil en ouvre une neuve (compaction).
@@ -346,7 +369,7 @@ impl Registry {
         let charter = record.charter.as_ref();
         self.db.execute(
             &format!(
-                "INSERT INTO agents ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"
+                "INSERT INTO agents ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
             ),
             params![
                 record.id.as_str(),
@@ -360,6 +383,7 @@ impl Registry {
                 record.state.as_str(),
                 record.session_id,
                 record.created_at as i64,
+                record.profile,
             ],
         )?;
         Ok(())
@@ -396,6 +420,7 @@ fn record(row: &Row) -> rusqlite::Result<AgentRecord> {
         state: parsed(row, 8)?,
         session_id: row.get(9)?,
         created_at: row.get::<_, i64>(10)? as u64,
+        profile: row.get(11)?,
     })
 }
 
@@ -456,6 +481,7 @@ mod tests {
     fn agent(registry: &Registry, assistant: &AgentRecord, name: &str) -> AgentRecord {
         registry
             .create(NewAgent {
+                profile: None,
                 parent: assistant.id.clone(),
                 level: Level::Agent,
                 engine: EngineKind::Claude,
@@ -472,6 +498,7 @@ mod tests {
 
     fn new_worker(parent: &AgentRecord) -> NewAgent {
         NewAgent {
+            profile: None,
             parent: parent.id.clone(),
             level: Level::Worker,
             engine: EngineKind::Codex,

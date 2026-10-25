@@ -11,6 +11,7 @@ use crate::engine::{
     prepare_codex_home,
 };
 use crate::memory::Memory;
+use crate::policy::ModelPolicy;
 use crate::registry::{NewAgent, Registry, RegistryError};
 use argos_core::protocol::{AgentStatus, DaemonEvent};
 use argos_core::{AgentId, AgentRecord, AgentState, EngineKind, Level, Usage};
@@ -38,6 +39,8 @@ pub struct SupervisorSettings {
     /// Adresse du serveur MCP d'Argos (`http://127.0.0.1:7879`). Sans elle, les agents
     /// tournent sans les outils d'Argos.
     pub mcp_url: Option<String>,
+    /// Politique de modèles : profils, replis, plafonds (D22).
+    pub policy: ModelPolicy,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +55,8 @@ pub enum SupervisorError {
     Retired(AgentId),
     #[error("{0} est en cours d'arrêt")]
     Stopping(AgentId),
+    #[error("plafond atteint : {0}")]
+    Cap(String),
 }
 
 pub type Result<T> = std::result::Result<T, SupervisorError>;
@@ -76,6 +81,8 @@ struct Inner {
     tokens: Mutex<HashMap<String, AgentId>>,
     /// Agents à qui l'on a demandé de vider leur contexte dans leur mémoire.
     compacting: Mutex<HashSet<AgentId>>,
+    /// Dernier message remis à chaque agent, à relancer après un repli de modèle.
+    last_input: Mutex<HashMap<AgentId, String>>,
     memory: Memory,
     events: broadcast::Sender<DaemonEvent>,
     generations: AtomicU64,
@@ -100,6 +107,7 @@ impl Supervisor {
                 halted: Mutex::default(),
                 tokens: Mutex::default(),
                 compacting: Mutex::default(),
+                last_input: Mutex::default(),
                 memory: Memory::new(settings.home.join("memory")),
                 events,
                 generations: AtomicU64::new(0),
@@ -111,6 +119,10 @@ impl Supervisor {
     /// Les mémoires de l'Assistant et des Agents.
     pub fn memory(&self) -> &Memory {
         &self.inner.memory
+    }
+
+    pub fn policy(&self) -> &ModelPolicy {
+        &self.inner.settings.policy
     }
 
     /// Flux de tous les événements des agents.
@@ -193,6 +205,7 @@ impl Supervisor {
             .expect("session démarrée juste au-dessus")
             .control
             .send(text.clone())?;
+        locked(&self.inner.last_input).insert(id.clone(), text.clone());
         self.publish(DaemonEvent::Input {
             agent: id.clone(),
             text,
@@ -285,6 +298,7 @@ impl Supervisor {
                 return Err(SupervisorError::Stopping(id.clone()));
             }
         }
+        self.check_parallel_cap(&record)?;
         let spawned = match self.spec_for(&record) {
             Ok(spec) => Session::spawn(spec).await.map_err(SupervisorError::from),
             Err(error) => Err(error),
@@ -342,6 +356,7 @@ impl Supervisor {
                 EngineEvent::ToolActivity { name } => {
                     self.publish(DaemonEvent::Tool { agent, name })
                 }
+                EngineEvent::RateLimited { message } => self.start_fall_back(agent, message),
                 EngineEvent::TurnCompleted { outcome, usage } => {
                     busy.store(false, Ordering::SeqCst);
                     self.publish(DaemonEvent::TurnCompleted {
@@ -529,6 +544,112 @@ impl Supervisor {
             );
             self.publish_status(&id);
         }
+    }
+
+    /// Plafond de sessions simultanées du modèle de cet agent (D22).
+    fn check_parallel_cap(&self, record: &AgentRecord) -> Result<()> {
+        let Some(model) = &record.model else {
+            return Ok(());
+        };
+        let Some(cap) = self.policy().max_parallel(model) else {
+            return Ok(());
+        };
+        let running: Vec<AgentId> = locked(&self.inner.running).keys().cloned().collect();
+        let registry = self.registry();
+        let same_model = running
+            .iter()
+            .filter(|other| **other != record.id)
+            .filter_map(|other| registry.get(other).ok().flatten())
+            .filter(|other| other.model.as_ref() == Some(model))
+            .count();
+        if same_model >= cap {
+            return Err(SupervisorError::Cap(format!(
+                "{cap} session(s) {model} déjà en cours"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Lance le repli dans sa propre tâche. Fonction synchrone : le type de la tâche de
+    /// relais ne dépend ainsi pas du repli, qui réveille l'agent et relance un relais.
+    fn start_fall_back(&self, id: AgentId, reason: String) {
+        tokio::spawn(self.clone().fall_back(id, reason));
+    }
+
+    /// Repli de la politique de modèles (D22) : quota épuisé, l'agent passe au maillon
+    /// suivant de la chaîne de son profil et reprend ce qu'il faisait. Changer de moteur
+    /// ouvre une session neuve : un Agent repart de sa mémoire, un Worker de sa tâche.
+    async fn fall_back(self, id: AgentId, reason: String) {
+        let Ok(record) = self.record(&id) else {
+            return;
+        };
+        let next = record.profile.as_deref().and_then(|profile| {
+            self.policy().fallback(
+                profile,
+                record.level,
+                record.engine,
+                record.model.as_deref(),
+            )
+        });
+        let Some(next) = next else {
+            self.notice(
+                &id,
+                format!("{reason} ; aucun repli prévu : l'agent attend"),
+            );
+            return;
+        };
+        let _ = self.park(&id).await;
+        let switched = {
+            let registry = self.registry();
+            registry
+                .set_engine_model(&id, next.engine, Some(&next.model))
+                .and_then(|()| {
+                    if next.engine == record.engine {
+                        Ok(())
+                    } else {
+                        registry.clear_session(&id)
+                    }
+                })
+        };
+        if switched.is_err() {
+            return;
+        }
+        let change = format!(
+            "{reason} : bascule de {} {} vers {} {}",
+            record.engine,
+            record.model.as_deref().unwrap_or("?"),
+            next.engine,
+            next.model
+        );
+        let _ = self.inner.memory.log(&id, &change);
+        self.notice(&id, change);
+        self.publish_status(&id);
+
+        let task = self.registry().task_of_worker(&id).ok().flatten();
+        let resume = match task {
+            Some(task) if record.level == Level::Worker && next.engine != record.engine => {
+                Some(format!(
+                    "[Argos] Reprise sur un autre moteur après un quota épuisé.\n[Tâche {}]\n{}\n\n{}",
+                    task.id,
+                    task.title,
+                    task.detail.unwrap_or_default()
+                ))
+            }
+            _ => locked(&self.inner.last_input).get(&id).cloned(),
+        };
+        if let Some(text) = resume
+            && let Err(error) = self.send(&id, text).await
+        {
+            self.notice(&id, format!("reprise impossible après le repli : {error}"));
+        }
+    }
+
+    /// Information courte pour l'utilisateur, à propos d'un agent.
+    fn notice(&self, id: &AgentId, text: String) {
+        self.publish(DaemonEvent::Notice {
+            agent: Some(id.clone()),
+            text,
+        });
     }
 
     fn revoke_tokens(&self, id: &AgentId) {

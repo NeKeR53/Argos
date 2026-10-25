@@ -5,6 +5,7 @@ pub mod config;
 pub mod engine;
 pub mod mcp;
 pub mod memory;
+pub mod policy;
 pub mod registry;
 pub mod supervisor;
 pub mod tools;

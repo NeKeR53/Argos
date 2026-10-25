@@ -2,6 +2,7 @@
 
 use argos_core::protocol::DaemonEvent;
 use argos_core::{AgentId, AgentRecord, Charter, EngineKind, Level, TurnOutcome};
+use argos_daemon::policy::ModelPolicy;
 use argos_daemon::registry::{NewAgent, Registry};
 use argos_daemon::supervisor::{Supervisor, SupervisorSettings};
 use std::collections::HashMap;
@@ -34,6 +35,7 @@ pub fn world() -> World {
         .unwrap();
     let agent = registry
         .create(NewAgent {
+            profile: None,
             parent: assistant.id.clone(),
             level: Level::Agent,
             engine: EngineKind::Claude,
@@ -47,6 +49,7 @@ pub fn world() -> World {
         .unwrap();
     let worker = registry
         .create(NewAgent {
+            profile: None,
             parent: agent.id.clone(),
             level: Level::Worker,
             engine: EngineKind::Codex,
@@ -63,6 +66,7 @@ pub fn world() -> World {
             (EngineKind::Codex, fixture("fake-codex")),
         ]),
         mcp_url: None,
+        policy: ModelPolicy::default(),
     };
     let supervisor = Supervisor::new(registry, settings);
     let events = supervisor.subscribe();

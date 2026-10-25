@@ -79,7 +79,7 @@ async fn dispatch(
         "ping" => Ok(json!({})),
         "tools/list" => {
             let record = supervisor.record(caller).map_err(internal)?;
-            let tools: Vec<Value> = tools::tools_for(record.level)
+            let tools: Vec<Value> = tools::tools_for(record.level, supervisor.policy())
                 .into_iter()
                 .map(|tool| {
                     json!({"name": tool.name, "description": tool.description, "inputSchema": tool.schema})

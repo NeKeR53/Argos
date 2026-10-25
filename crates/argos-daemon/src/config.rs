@@ -1,5 +1,6 @@
 //! Configuration du daemon (`$ARGOS_HOME/config.toml`) et jeton d'accès à l'API.
 
+use crate::policy::{DEFAULT_MODELS, ModelPolicy};
 use argos_core::EngineKind;
 use serde::Deserialize;
 use std::fs::{self, OpenOptions};
@@ -9,7 +10,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use uuid::Uuid;
 
-/// Écrite telle quelle au premier démarrage : c'est aussi la documentation du fichier.
+/// Écrite telle quelle au premier démarrage, suivie de la politique de modèles par
+/// défaut : c'est aussi la documentation du fichier.
 const DEFAULT_CONFIG: &str = r#"# Configuration du daemon Argos.
 
 [assistant]
@@ -33,6 +35,9 @@ pub struct Config {
     pub api: ApiConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Politique de modèles (D22) ; celle par défaut si la section manque.
+    #[serde(default)]
+    pub models: ModelPolicy,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,15 +70,19 @@ pub enum ConfigError {
     Io(#[from] io::Error),
     #[error("config.toml illisible : {0}")]
     Parse(#[from] toml::de::Error),
+    #[error("politique de modèles invalide : {0}")]
+    Policy(String),
 }
 
 impl Config {
     /// Lit la configuration ; au premier démarrage, écrit d'abord celle par défaut.
     pub fn load_or_create(path: &Path) -> Result<Self, ConfigError> {
         if !path.exists() {
-            fs::write(path, DEFAULT_CONFIG)?;
+            fs::write(path, format!("{DEFAULT_CONFIG}{DEFAULT_MODELS}"))?;
         }
-        Ok(toml::from_str(&fs::read_to_string(path)?)?)
+        let config: Config = toml::from_str(&fs::read_to_string(path)?)?;
+        config.models.check().map_err(ConfigError::Policy)?;
+        Ok(config)
     }
 }
 
@@ -103,6 +112,7 @@ mod tests {
         let path = dir.path().join("config.toml");
 
         let config = Config::load_or_create(&path).unwrap();
+        assert_eq!(config.models, ModelPolicy::default());
         assert_eq!(config.assistant.engine, EngineKind::Claude);
         assert_eq!(config.assistant.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(config.api.listen, "127.0.0.1:7878".parse().unwrap());

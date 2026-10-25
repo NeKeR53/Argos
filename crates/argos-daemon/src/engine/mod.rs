@@ -73,6 +73,8 @@ pub enum EngineEvent {
         outcome: TurnOutcome,
         usage: Option<Usage>,
     },
+    /// Le moteur refuse de travailler : quota ou budget épuisé (D22 : repli).
+    RateLimited { message: String },
     /// Le process s'est terminé ; aucun événement ne suit. `code` vaut `None` s'il a
     /// été tué. Sinon il vient du moteur : `claude` rend le statut de son dernier tour,
     /// donc 1 après un tour interrompu, même sur un parking demandé.

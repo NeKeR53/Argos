@@ -4,12 +4,11 @@
 //! Le board est tenu ici de façon déterministe : un Worker part sur une tâche du board
 //! (D17) et son compte rendu met la tâche à jour.
 
+use crate::policy::ModelPolicy;
 use crate::registry::{NewAgent, Position, TaskUpdate};
 use crate::supervisor::Supervisor;
 use argos_core::protocol::AgentStatus;
-use argos_core::{
-    AgentId, AgentRecord, AgentState, Charter, EngineKind, Level, MissionState, TaskState,
-};
+use argos_core::{AgentId, AgentRecord, AgentState, Charter, Level, MissionState, TaskState};
 use serde_json::{Value, json};
 use std::fmt::Display;
 
@@ -19,11 +18,23 @@ pub struct Tool {
     pub schema: Value,
 }
 
-/// Les outils d'un niveau, tels qu'annoncés par `tools/list`.
-pub fn tools_for(level: Level) -> Vec<Tool> {
+/// Les outils d'un niveau, tels qu'annoncés par `tools/list`. L'argument `profile` y
+/// énumère les profils de la politique de modèles, avec leur usage (D22).
+pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
     let mut tools = level_tools(level);
     if level.has_memory() {
         tools.extend(memory_tools());
+    }
+    let profiles: Vec<&String> = policy.profiles.keys().collect();
+    for tool in &mut tools {
+        if let Some(profile) = tool.schema["properties"].get_mut("profile") {
+            profile["enum"] = json!(profiles);
+            profile["description"] = json!(format!(
+                "Profil de modèle selon le travail : {}. Par défaut « {} ».",
+                policy.catalogue(),
+                policy.default_profile
+            ));
+        }
     }
     tools
 }
@@ -77,11 +88,7 @@ fn level_tools(level: Level) -> Vec<Tool> {
                         "scope",
                         "Périmètre : le projet, domaine ou tâche récurrente dont il a la charge.",
                     ),
-                    ("engine", "« claude » ou « codex ». Par défaut, le tien."),
-                    (
-                        "model",
-                        "Modèle du moteur. Par défaut, le tien si le moteur est le même.",
-                    ),
+                    ("profile", "Profil de modèle."),
                     (
                         "workdir",
                         "Répertoire de travail. Par défaut, un dossier dédié.",
@@ -194,14 +201,7 @@ fn level_tools(level: Level) -> Vec<Tool> {
             tool(
                 "spawn_worker",
                 "Lance un Worker éphémère sur UNE tâche de ton board (à faire, bloquée ou interrompue). Il reçoit son titre et son détail, travaille dans ton répertoire et te rendra compte par un rapport.",
-                &[
-                    ("task", TASK_REF),
-                    ("engine", "« claude » ou « codex ». Par défaut, le tien."),
-                    (
-                        "model",
-                        "Modèle du moteur. Par défaut, le tien si le moteur est le même.",
-                    ),
-                ],
+                &[("task", TASK_REF), ("profile", "Profil de modèle.")],
                 &["task"],
             ),
             tool("list_workers", "Liste tes Workers et leur état.", &[], &[]),
@@ -293,7 +293,6 @@ fn tool(
         .iter()
         .map(|(key, about)| {
             let choices: &[&str] = match *key {
-                "engine" => &["claude", "codex"],
                 "outcome" => &["progress", "done", "blocked"],
                 "mode" => &["replace", "append"],
                 "state" => &["pending", "in_progress", "blocked", "done", "cancelled"],
@@ -525,7 +524,9 @@ fn create_agent(
     args: &Value,
 ) -> Result<String, String> {
     let name = text(args, "name")?;
-    let (engine, model) = engine_and_model(caller, args)?;
+    let (profile, choice) = supervisor
+        .policy()
+        .resolve(optional(args, "profile"), Level::Agent)?;
     let workdir = match optional(args, "workdir") {
         Some(dir) => dir.into(),
         None => supervisor.agents_dir().join(format!(
@@ -538,8 +539,9 @@ fn create_agent(
         .create(NewAgent {
             parent: caller.id.clone(),
             level: Level::Agent,
-            engine,
-            model,
+            engine: choice.engine,
+            model: Some(choice.model),
+            profile: Some(profile),
             workdir,
             charter: Some(Charter {
                 name: name.into(),
@@ -644,13 +646,16 @@ async fn spawn_worker(
     ) {
         return Err(format!("la tâche {task_id} est {}", task.state));
     }
-    let (engine, model) = engine_and_model(caller, args)?;
+    let (profile, choice) = supervisor
+        .policy()
+        .resolve(optional(args, "profile"), Level::Worker)?;
     let worker = supervisor
         .create(NewAgent {
             parent: caller.id.clone(),
             level: Level::Worker,
-            engine,
-            model,
+            engine: choice.engine,
+            model: Some(choice.model),
+            profile: Some(profile),
             workdir: caller.workdir.clone(),
             charter: None,
         })
@@ -802,23 +807,6 @@ fn own_task(supervisor: &Supervisor, caller: &AgentRecord, id: &str) -> Result<S
     Ok(task.id)
 }
 
-/// Moteur et modèle demandés ; à défaut ceux de l'appelant (D21 : le parent choisit).
-fn engine_and_model(
-    caller: &AgentRecord,
-    args: &Value,
-) -> Result<(EngineKind, Option<String>), String> {
-    let engine = match optional(args, "engine") {
-        Some(engine) => engine.parse().map_err(said)?,
-        None => caller.engine,
-    };
-    let model = match optional(args, "model") {
-        Some(model) => Some(model.to_string()),
-        None if engine == caller.engine => caller.model.clone(),
-        None => None,
-    };
-    Ok((engine, model))
-}
-
 fn position(args: &Value) -> Result<Position, String> {
     let text = text(args, "position")?;
     Position::parse(text).ok_or_else(|| format!("position illisible : « {text} »"))
@@ -888,7 +876,12 @@ mod tests {
 
     #[test]
     fn each_level_has_its_own_tools() {
-        let names = |level| -> Vec<&str> { tools_for(level).iter().map(|t| t.name).collect() };
+        let names = |level| -> Vec<&str> {
+            tools_for(level, &ModelPolicy::default())
+                .iter()
+                .map(|t| t.name)
+                .collect()
+        };
         assert!(names(Level::Assistant).contains(&"create_agent"));
         assert!(names(Level::Assistant).contains(&"assign_mission"));
         assert!(!names(Level::Assistant).contains(&"spawn_worker"));
@@ -904,7 +897,7 @@ mod tests {
     #[test]
     fn schemas_declare_their_required_arguments_and_choices() {
         let find = |level, name| {
-            tools_for(level)
+            tools_for(level, &ModelPolicy::default())
                 .into_iter()
                 .find(|t| t.name == name)
                 .unwrap()
@@ -912,8 +905,8 @@ mod tests {
         let create = find(Level::Assistant, "create_agent");
         assert_eq!(create.schema["required"], json!(["name", "scope"]));
         assert_eq!(
-            create.schema["properties"]["engine"]["enum"],
-            json!(["claude", "codex"])
+            create.schema["properties"]["profile"]["enum"],
+            json!(["code", "léger", "standard"])
         );
         let report = find(Level::Worker, "report_to_agent");
         assert_eq!(

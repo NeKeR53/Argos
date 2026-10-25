@@ -435,6 +435,7 @@ mod tests {
     fn new_agent(registry: &Registry, assistant: &AgentRecord, name: &str) -> AgentRecord {
         registry
             .create(NewAgent {
+                profile: None,
                 parent: assistant.id.clone(),
                 level: Level::Agent,
                 engine: EngineKind::Claude,
@@ -451,6 +452,7 @@ mod tests {
     fn worker(registry: &Registry, agent: &AgentRecord) -> AgentRecord {
         registry
             .create(NewAgent {
+                profile: None,
                 parent: agent.id.clone(),
                 level: Level::Worker,
                 engine: EngineKind::Codex,

@@ -283,10 +283,21 @@ impl State {
                             .into(),
                     },
                 };
-                vec![EngineEvent::TurnCompleted {
+                let mut events = vec![];
+                let code = turn["error"]["codexErrorInfo"].as_str();
+                if let Some(
+                    code @ ("usageLimitExceeded" | "rateLimitExceeded" | "sessionBudgetExceeded"),
+                ) = code
+                {
+                    events.push(EngineEvent::RateLimited {
+                        message: format!("quota Codex épuisé ({code})"),
+                    });
+                }
+                events.push(EngineEvent::TurnCompleted {
                     outcome,
                     usage: self.last_usage.take(),
-                }]
+                });
+                events
             }
             _ => vec![],
         }
@@ -384,6 +395,21 @@ mod tests {
             &state.handle_line(interrupted).0[0],
             EngineEvent::TurnCompleted {
                 outcome: TurnOutcome::Interrupted,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_exhausted_quota_is_reported_before_the_failed_turn() {
+        let mut state = State::default();
+        let limited = r#"{"method":"turn/completed","params":{"turn":{"id":"x","status":"failed","error":{"message":"limite atteinte","codexErrorInfo":"usageLimitExceeded"}}}}"#;
+        let events = state.handle_line(limited).0;
+        assert!(matches!(&events[0], EngineEvent::RateLimited { .. }));
+        assert!(matches!(
+            &events[1],
+            EngineEvent::TurnCompleted {
+                outcome: TurnOutcome::Failed { .. },
                 ..
             }
         ));

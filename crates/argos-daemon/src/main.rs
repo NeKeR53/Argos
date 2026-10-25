@@ -47,6 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             user_codex_home: user_home.join(".codex"),
             programs: program_overrides(),
             mcp_url: Some(mcp_url.clone()),
+            policy: config.models.clone(),
         },
     );
     let listener = TcpListener::bind(config.api.listen).await?;

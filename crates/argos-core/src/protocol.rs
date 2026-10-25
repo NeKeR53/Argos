@@ -131,6 +131,11 @@ pub enum DaemonEvent {
     AgentUpdated {
         agent: AgentStatus,
     },
+    /// Information courte du daemon pour l'utilisateur (repli de modèle, plafond…).
+    Notice {
+        agent: Option<AgentId>,
+        text: String,
+    },
 }
 
 #[cfg(test)]
