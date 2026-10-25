@@ -1,0 +1,9 @@
+[package]
+name = "argos-daemon"
+description = "Daemon headless Argos : sessions d'agents, contrôle, mémoire, API"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+argos-core.workspace = true

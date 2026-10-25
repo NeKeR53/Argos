@@ -1,0 +1,12 @@
+[package]
+name = "argos-core"
+description = "Types partagés entre le daemon et la GUI Argos"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
