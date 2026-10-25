@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Faux `claude -p --input-format stream-json` : sorties de forme réelle, sans tokens.
+# Le contenu du message choisit le comportement : SLOW attend une interruption,
+# TOOL utilise un outil, CRASH sort en erreur, HANG bloque avec un process enfant.
+# Les arguments reçus sont écrits dans .fake-args (répertoire de travail).
+set -u
+printf '%s\n' "$@" > .fake-args
+session=""
+while [ $# -gt 0 ]; do
+  case "$1" in --session-id | --resume) session="$2"; shift ;; esac
+  shift
+done
+
+turn=0
+assistant_text() {
+  printf '{"type":"assistant","message":{"content":[{"type":"text","text":"reply %s"}]},"session_id":"%s"}\n' "$turn" "$session"
+}
+result() { # $1 = subtype
+  local is_error=true
+  [ "$1" = success ] && is_error=false
+  printf '{"type":"result","subtype":"%s","is_error":%s,"result":"reply %s","session_id":"%s","total_cost_usd":0.001,"usage":{"input_tokens":3,"cache_creation_input_tokens":10,"cache_read_input_tokens":0,"output_tokens":2}}\n' "$1" "$is_error" "$turn" "$session"
+}
+
+initialized=0
+while IFS= read -r line; do
+  if [ $initialized = 0 ]; then
+    printf '{"type":"system","subtype":"init","session_id":"%s"}\n' "$session"
+    initialized=1
+  fi
+  case "$line" in
+    *'"control_request"'*) ;; # aucune tâche en cours : rien à interrompre
+    *SLOW*)
+      turn=$((turn + 1))
+      IFS= read -r next || exit 0
+      case "$next" in *'"interrupt"'*)
+        printf '{"type":"control_response","response":{"subtype":"success","request_id":"x","response":{}}}\n'
+        result error_during_execution ;;
+      esac ;;
+    *TOOL*)
+      turn=$((turn + 1))
+      printf '{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]},"session_id":"%s"}\n' "$session"
+      assistant_text
+      result success ;;
+    *CRASH*)
+      echo "panne simulée" >&2
+      exit 3 ;;
+    *HANG*)
+      sleep 60 &
+      echo $! > .child-pid
+      wait ;;
+    *)
+      turn=$((turn + 1))
+      assistant_text
+      result success ;;
+  esac
+done

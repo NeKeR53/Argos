@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Faux `codex app-server` : JSON-RPC sur stdio, messages de forme réelle, sans tokens.
+# Le contenu du message choisit le comportement : SLOW attend une interruption,
+# ASK envoie une requête serveur, FAIL échoue, TOOL utilise un outil.
+# Les arguments et CODEX_HOME reçus sont écrits dans .fake-args (répertoire de travail).
+set -u
+{ printf '%s\n' "$@"; printf 'CODEX_HOME=%s\n' "${CODEX_HOME:-}"; } > .fake-args
+thread="thread-new"
+turn=0
+
+id_of() { [[ $1 =~ \"id\":([0-9]+) ]] && echo "${BASH_REMATCH[1]}"; }
+agent_message() {
+  printf '{"method":"item/completed","params":{"threadId":"%s","turnId":"turn-%s","item":{"type":"agentMessage","id":"m","text":"reply %s"}}}\n' "$thread" "$turn" "$turn"
+}
+complete_turn() { # $1 = status
+  printf '{"method":"thread/tokenUsage/updated","params":{"threadId":"%s","turnId":"turn-%s","tokenUsage":{"last":{"inputTokens":5,"outputTokens":1}}}}\n' "$thread" "$turn"
+  printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-%s","status":"%s","error":null}}}\n' "$thread" "$turn" "$1"
+}
+
+while IFS= read -r line; do
+  id=$(id_of "$line")
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"id":%s,"result":{"userAgent":"fake"}}\n' "$id" ;;
+    *'"method":"initialized"'*) ;;
+    *'"method":"thread/start"'*)
+      printf '{"method":"mcpServer/startupStatus/updated","params":{}}\n'
+      printf '{"id":%s,"result":{"thread":{"id":"%s"}}}\n' "$id" "$thread" ;;
+    *'"method":"thread/resume"'*)
+      [[ $line =~ \"threadId\":\"([^\"]+)\" ]] && thread="${BASH_REMATCH[1]}"
+      printf '{"id":%s,"result":{"thread":{"id":"%s"}}}\n' "$id" "$thread" ;;
+    *'"method":"turn/start"'*)
+      turn=$((turn + 1))
+      printf '{"id":%s,"result":{"turn":{"id":"turn-%s","status":"inProgress"}}}\n' "$id" "$turn"
+      printf '{"method":"turn/started","params":{"threadId":"%s","turn":{"id":"turn-%s"}}}\n' "$thread" "$turn"
+      case "$line" in
+        *SLOW*)
+          IFS= read -r next || exit 0
+          printf '{"id":%s,"result":{}}\n' "$(id_of "$next")"
+          complete_turn interrupted ;;
+        *ASK*)
+          printf '{"id":"srv-1","method":"execCommandApproval","params":{}}\n'
+          IFS= read -r reply || exit 0
+          case "$reply" in *srv-1*) ;; *) exit 9 ;; esac
+          agent_message
+          complete_turn completed ;;
+        *FAIL*)
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-%s","status":"failed","error":{"message":"quota dépassé"}}}}\n' "$thread" "$turn" ;;
+        *)
+          case "$line" in *TOOL*)
+            printf '{"method":"item/started","params":{"item":{"type":"commandExecution","id":"c","command":"ls"}}}\n' ;;
+          esac
+          agent_message
+          complete_turn completed ;;
+      esac ;;
+  esac
+done

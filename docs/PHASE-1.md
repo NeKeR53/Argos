@@ -19,7 +19,11 @@ Ces points ne figurent pas dans la vision ; ils peuvent être contestés avant l
 - **État canonique du daemon en SQLite** (registre, arbre, boards, missions, sessions). Transactionnel, survit aux crashs. Le daemon en écrit une projection Markdown dans la mémoire de chaque agent (l'« état structuré » de D23).
 - **Un seul endpoint MCP sur le daemon (HTTP), un jeton par agent.** Le jeton identifie l'appelant : le daemon sait qui appelle, à quel niveau, et n'expose que les outils de ce niveau. La config MCP est injectée au lancement de chaque CLI.
 - **Adaptateur de moteur** : un trait `Engine` (démarrer, envoyer un tour, interrompre, reprendre, flux d'événements normalisés) avec une implémentation `claude` et une `codex`. Les tests utilisent un faux CLI qui rejoue des sorties enregistrées, pour ne pas consommer de tokens.
-- **Agents isolés de la config globale de l'utilisateur.** Un `claude` lancé tel quel hérite des MCP, hooks, plugins et CLAUDE.md globaux (vu au test : ses outils incluaient ceux de l'utilisateur). Le daemon lance donc chaque session avec `--strict-mcp-config` et sa propre config, et Codex avec `--ignore-user-config`. Le détail (répertoire de config dédié, hooks) se règle en T1.
+- **Agents isolés de la config globale de l'utilisateur.** Un `claude` lancé tel quel hérite des MCP, hooks, plugins et CLAUDE.md globaux. Réglé en T1 :
+  - Claude : `--setting-sources project --strict-mcp-config`. Le CLAUDE.md global n'est plus chargé, ni les MCP et plugins de l'utilisateur ; ceux passés par `--mcp-config` restent actifs. `--safe-mode` est écarté car il coupe aussi ces MCP-là, et `--bare` parce qu'il exige une clé API (pas d'OAuth).
+  - Codex : un `CODEX_HOME` dédié par agent (`prepare_codex_home`), qui contient seulement un lien vers `auth.json` et une config vide. Aucun MCP ni AGENTS.md global n'est chargé.
+  - Reste à traiter en T7 : la mémoire automatique de Claude (`memory_paths.auto`) est toujours active et écrirait dans `~/.claude/projects/…/memory/`, en concurrence avec la mémoire d'Argos.
+- **Permissions provisoires** en attendant les garde-fous (D34) : Claude en `--permission-mode acceptEdits`, Codex en `approvalPolicy: never` + `sandbox: workspace-write`. Les requêtes d'approbation que Codex enverrait malgré tout reçoivent une erreur, pour que le tour ne reste pas bloqué.
 
 ## Faits vérifiés sur les CLI (2026-10-25)
 
@@ -33,8 +37,8 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 
 | # | Tranche | Contenu | Dépend de |
 |---|---------|---------|-----------|
-| T0 | Squelette | Workspace Cargo, crates vides, app Tauri qui démarre, `fmt` / `clippy` / `test` verts | — |
-| T1 | Adaptateurs de moteur | Lancer une session `claude` et `codex`, envoyer des tours, lire le flux normalisé, interrompre, reprendre par session-id. Faux CLI pour les tests | T0 |
+| T0 ✅ | Squelette | Workspace Cargo, crates vides, app Tauri qui démarre, `fmt` / `clippy` / `test` verts | — |
+| T1 ✅ | Adaptateurs de moteur | Lancer une session `claude` et `codex`, envoyer des tours, lire le flux normalisé, interrompre, reprendre par session-id. Faux CLI pour les tests | T0 |
 | T2 | Arbre et registre | Modèle agent (id, niveau, parent, moteur, modèle, état, charte), persistance SQLite, réhydratation au démarrage | T1 |
 | T3 | Plan de contrôle + API WS | stop/kill du sous-arbre, park/resume, inspect ; API WebSocket (commandes + flux d'événements) | T2 |
 | T4 | Serveur MCP par niveau | Endpoint MCP, jetons par agent, outils L0 (gestion des Agents), L1 (Workers + board), L2 (compte rendu, escalade) | T3 |
@@ -46,3 +50,14 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 | T10 | Recette | Le scénario de réussite de bout en bout, avec de vrais moteurs | tout |
 
 T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
+
+## T1 — Ce qui est en place
+
+`argos_daemon::engine::Session` : `spawn(SessionSpec)`, `send`, `interrupt`, `park`, `kill`, `next_event`. Événements normalisés : `AgentMessage`, `ToolActivity`, `TurnCompleted { outcome, usage }`, `Exited { code, stderr_tail }`.
+
+- **Claude** : un process `claude -p` en stream-json par session. Argos génère l'id (`--session-id`), connu avant le premier tour ; il le repasse en `--resume`. L'interruption envoie un `control_request` `interrupt` sur stdin : le tour se termine en `error_during_execution`, traduit en `Interrupted`, et le process reste vivant.
+- **Codex** : un process `codex app-server` par session, un thread. Une interruption demandée avant que le serveur ait donné l'id du tour est mise en attente, puis envoyée dès que l'id arrive : l'ordre n'est jamais perdu.
+- **Groupe de process par session** : `kill` (SIGKILL sur le groupe) tue aussi les commandes lancées par l'agent.
+- **Parking** : stdin fermé, le process sort de lui-même (tué au bout de 5 s sinon). Le code de sortie de `claude` reflète son dernier tour : 1 après un tour interrompu, sans que ce soit une panne.
+- **Tests** : 30 tests sans tokens (14 unitaires sur des lignes de forme réelle, 16 d'intégration contre `tests/fixtures/fake-claude` et `fake-codex`). Deux tests sur les vrais moteurs, ignorés par défaut, couvrent mémoire, interruption, parking et reprise : `cargo test -p argos-daemon --test real_engines -- --ignored` (haiku, gpt-6-luna). Passés le 2026-10-25.
+- **Pas encore fait** (à prévoir dans les tranches suivantes) : deltas de texte en streaming (pour le TTS, phase 3), détection des rate limits (T8), injection du serveur MCP d'Argos (T4).

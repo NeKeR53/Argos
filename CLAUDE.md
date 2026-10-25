@@ -21,6 +21,7 @@ cargo build --workspace
 cargo test --workspace
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo test -p argos-daemon --test real_engines -- --ignored   # vrais moteurs, consomme des tokens
 cd apps/gui && npm run build      # front seul
 cd apps/gui && npx tauri dev      # lance la GUI
 ```

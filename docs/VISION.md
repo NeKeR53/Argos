@@ -24,7 +24,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 - **D10 — Reprise après crash** : le daemon réhydrate les Agents depuis le registre et leurs session-ids ; les tâches des Workers en cours passent `interrupted` et l'Agent les relance.
 - Vérifié le 2026-10-25 (claude 2.1.310, codex-cli 0.164.0) :
   - `claude -p --input-format stream-json --output-format stream-json --verbose` tient plusieurs tours dans un seul process ; `--resume <session_id>` reprend la mémoire. D9 tient tel quel.
-  - `codex exec --json` est un one-shot ; `codex exec resume <thread_id>` reprend la mémoire d'un process à l'autre. Le mode persistant passe par `codex app-server` (stdio, protocole à confirmer en T1). À défaut, Codex fonctionne en reprise par tour, derrière la même interface `Engine`.
+  - Codex tourne en `codex app-server` (JSON-RPC sur stdio) : plusieurs tours par thread, interruption par `turn/interrupt`, reprise par `thread/resume` dans un nouveau process. D9 tient aussi pour Codex (confirmé en T1).
 
 ## 4. Remontée d'information
 
