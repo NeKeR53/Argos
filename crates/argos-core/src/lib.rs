@@ -1,5 +1,7 @@
 //! Types partagés entre le daemon et la GUI. Vocabulaire : docs/GLOSSARY.md.
 
+pub mod protocol;
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -171,6 +173,23 @@ pub struct AgentRecord {
     pub session_id: Option<String>,
     /// Secondes depuis l'époque Unix.
     pub created_at: u64,
+}
+
+/// Issue d'un tour d'agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum TurnOutcome {
+    Completed,
+    Interrupted,
+    Failed { message: String },
+}
+
+/// Consommation d'un tour. `input_tokens` inclut les tokens servis par le cache.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: Option<f64>,
 }
 
 #[cfg(test)]

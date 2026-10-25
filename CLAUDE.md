@@ -22,6 +22,8 @@ cargo test --workspace
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p argos-daemon --test real_engines -- --ignored   # vrais moteurs, consomme des tokens
+ARGOS_HOME=/tmp/argos-essai ARGOS_CLAUDE_BIN=$PWD/crates/argos-daemon/tests/fixtures/fake-claude \
+  ARGOS_CODEX_BIN=$PWD/crates/argos-daemon/tests/fixtures/fake-codex cargo run -p argos-daemon   # daemon sur faux CLI
 cd apps/gui && npm run build      # front seul
 cd apps/gui && npx tauri dev      # lance la GUI
 ```

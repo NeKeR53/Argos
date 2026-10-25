@@ -5,6 +5,7 @@ mod claude;
 mod codex;
 mod process;
 
+pub use argos_core::{TurnOutcome, Usage};
 pub use codex::prepare_codex_home;
 
 use argos_core::EngineKind;
@@ -71,21 +72,6 @@ pub enum EngineEvent {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum TurnOutcome {
-    Completed,
-    Interrupted,
-    Failed { message: String },
-}
-
-/// Consommation d'un tour. `input_tokens` inclut les tokens servis par le cache.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Usage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cost_usd: Option<f64>,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
     #[error("impossible de lancer {program} : {source}")]
@@ -112,12 +98,24 @@ enum Command {
 type Events = mpsc::UnboundedSender<EngineEvent>;
 
 /// Une session vivante. Le process appartient à une tâche de fond ; ce handle lui
-/// transmet les commandes et reçoit ses événements, jusqu'à `Exited`.
+/// transmet les commandes et reçoit ses événements, jusqu'à `Exited`. [`Session::split`]
+/// sépare les deux, pour lire les événements dans une tâche à part.
 pub struct Session {
+    control: SessionControl,
+    events: EventStream,
+}
+
+/// La moitié commande d'une session ; clonable.
+#[derive(Clone)]
+pub struct SessionControl {
     session_id: String,
     pgid: i32,
     exited: Arc<AtomicBool>,
     commands: mpsc::UnboundedSender<Command>,
+}
+
+/// La moitié événements d'une session.
+pub struct EventStream {
     events: mpsc::UnboundedReceiver<EngineEvent>,
 }
 
@@ -129,7 +127,64 @@ impl Session {
         }
     }
 
+    pub fn split(self) -> (SessionControl, EventStream) {
+        (self.control, self.events)
+    }
+
     /// Identifiant à passer dans `SessionSpec::resume` pour reprendre la session.
+    pub fn session_id(&self) -> &str {
+        self.control.session_id()
+    }
+
+    pub fn send(&self, text: impl Into<String>) -> Result<(), EngineError> {
+        self.control.send(text)
+    }
+
+    pub fn interrupt(&self) -> Result<(), EngineError> {
+        self.control.interrupt()
+    }
+
+    pub fn park(&self) -> Result<(), EngineError> {
+        self.control.park()
+    }
+
+    pub fn kill(&self) {
+        self.control.kill()
+    }
+
+    pub async fn next_event(&mut self) -> Option<EngineEvent> {
+        self.events.next_event().await
+    }
+
+    /// Démarre la tâche qui possède le process. `driver` rend l'événement de fin.
+    fn launch<F, Fut>(session_id: String, pgid: i32, driver: F) -> Session
+    where
+        F: FnOnce(mpsc::UnboundedReceiver<Command>, Events) -> Fut,
+        Fut: Future<Output = EngineEvent> + Send + 'static,
+    {
+        let (commands, command_rx) = mpsc::unbounded_channel();
+        let (event_tx, events) = mpsc::unbounded_channel();
+        let exited = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&exited);
+        let driving = driver(command_rx, event_tx.clone());
+        tokio::spawn(async move {
+            let last = driving.await;
+            flag.store(true, Ordering::SeqCst);
+            let _ = event_tx.send(last);
+        });
+        Session {
+            control: SessionControl {
+                session_id,
+                pgid,
+                exited,
+                commands,
+            },
+            events: EventStream { events },
+        }
+    }
+}
+
+impl SessionControl {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -156,38 +211,15 @@ impl Session {
         }
     }
 
-    /// Prochain événement ; `None` une fois `Exited` reçu.
-    pub async fn next_event(&mut self) -> Option<EngineEvent> {
-        self.events.recv().await
-    }
-
     fn command(&self, command: Command) -> Result<(), EngineError> {
         self.commands.send(command).map_err(|_| EngineError::Closed)
     }
+}
 
-    /// Démarre la tâche qui possède le process. `driver` rend l'événement de fin.
-    fn launch<F, Fut>(session_id: String, pgid: i32, driver: F) -> Session
-    where
-        F: FnOnce(mpsc::UnboundedReceiver<Command>, Events) -> Fut,
-        Fut: Future<Output = EngineEvent> + Send + 'static,
-    {
-        let (commands, command_rx) = mpsc::unbounded_channel();
-        let (event_tx, events) = mpsc::unbounded_channel();
-        let exited = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&exited);
-        let driving = driver(command_rx, event_tx.clone());
-        tokio::spawn(async move {
-            let last = driving.await;
-            flag.store(true, Ordering::SeqCst);
-            let _ = event_tx.send(last);
-        });
-        Session {
-            session_id,
-            pgid,
-            exited,
-            commands,
-            events,
-        }
+impl EventStream {
+    /// Prochain événement ; `None` une fois `Exited` reçu.
+    pub async fn next_event(&mut self) -> Option<EngineEvent> {
+        self.events.recv().await
     }
 }
 

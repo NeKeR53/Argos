@@ -1,12 +1,26 @@
-use argos_core::{AgentRecord, Level};
+use argos_core::{AgentRecord, EngineKind, Level};
+use argos_daemon::api;
+use argos_daemon::config::{Config, load_or_create_token};
 use argos_daemon::registry::{Registry, RegistryError};
+use argos_daemon::supervisor::{Supervisor, SupervisorSettings};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use tokio::net::TcpListener;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let home = argos_home()?;
     std::fs::create_dir_all(&home)?;
+    let config = Config::load_or_create(&home.join("config.toml"))?;
+    let token_path = home.join("token");
+    let token = load_or_create_token(&token_path)?;
     let registry = Registry::open(&home.join("argos.db"))?;
     let report = registry.rehydrate()?;
+    let assistant = registry.ensure_assistant(
+        config.assistant.engine,
+        config.assistant.model.clone(),
+        home.join("assistant"),
+    )?;
 
     println!(
         "argos-daemon {} (protocole v{}) — données dans {}",
@@ -19,18 +33,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         report.parked.len(),
         report.lost_workers.len()
     );
-    if let Some(assistant) = registry.assistant()? {
-        print_tree(&registry, &assistant)?;
-    }
-    Ok(())
-}
+    print_tree(&registry, &assistant)?;
 
-/// Affiche un agent puis ses descendants, chacun sous son parent.
-fn print_tree(registry: &Registry, agent: &AgentRecord) -> Result<(), RegistryError> {
-    println!("{}", describe(agent));
-    for child in registry.children(&agent.id)? {
-        print_tree(registry, &child)?;
+    let user_home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let supervisor = Supervisor::new(
+        registry,
+        SupervisorSettings {
+            home: home.clone(),
+            user_codex_home: user_home.join(".codex"),
+            programs: program_overrides(),
+        },
+    );
+    let listener = TcpListener::bind(config.api.listen).await?;
+    println!(
+        "API WebSocket sur ws://{}/?token=… (jeton dans {})",
+        listener.local_addr()?,
+        token_path.display()
+    );
+
+    tokio::select! {
+        served = api::serve(listener, supervisor.clone(), token) => served?,
+        _ = tokio::signal::ctrl_c() => println!("arrêt demandé : parking des sessions en cours"),
     }
+    supervisor.shutdown().await;
     Ok(())
 }
 
@@ -42,6 +69,27 @@ fn argos_home() -> Result<PathBuf, &'static str> {
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join(".argos"))
         .ok_or("ni ARGOS_HOME ni HOME ne sont définis")
+}
+
+/// Binaires de remplacement des moteurs (`ARGOS_CLAUDE_BIN`, `ARGOS_CODEX_BIN`), par
+/// exemple les faux CLI de tests/fixtures pour essayer la GUI sans consommer de tokens.
+fn program_overrides() -> HashMap<EngineKind, PathBuf> {
+    [
+        (EngineKind::Claude, "ARGOS_CLAUDE_BIN"),
+        (EngineKind::Codex, "ARGOS_CODEX_BIN"),
+    ]
+    .into_iter()
+    .filter_map(|(engine, variable)| Some((engine, std::env::var_os(variable)?.into())))
+    .collect()
+}
+
+/// Affiche un agent puis ses descendants, chacun sous son parent.
+fn print_tree(registry: &Registry, agent: &AgentRecord) -> Result<(), RegistryError> {
+    println!("{}", describe(agent));
+    for child in registry.children(&agent.id)? {
+        print_tree(registry, &child)?;
+    }
+    Ok(())
 }
 
 fn describe(agent: &AgentRecord) -> String {

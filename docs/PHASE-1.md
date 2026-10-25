@@ -40,7 +40,7 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 | T0 ✅ | Squelette | Workspace Cargo, crates vides, app Tauri qui démarre, `fmt` / `clippy` / `test` verts | — |
 | T1 ✅ | Adaptateurs de moteur | Lancer une session `claude` et `codex`, envoyer des tours, lire le flux normalisé, interrompre, reprendre par session-id. Faux CLI pour les tests | T0 |
 | T2 ✅ | Arbre et registre | Modèle agent (id, niveau, parent, moteur, modèle, état, charte), persistance SQLite, réhydratation au démarrage | T1 |
-| T3 | Plan de contrôle + API WS | stop/kill du sous-arbre, park/resume, inspect ; API WebSocket (commandes + flux d'événements) | T2 |
+| T3 ✅ | Plan de contrôle + API WS | stop/kill du sous-arbre, park/resume, inspect ; API WebSocket (commandes + flux d'événements) | T2 |
 | T4 | Serveur MCP par niveau | Endpoint MCP, jetons par agent, outils L0 (gestion des Agents), L1 (Workers + board), L2 (compte rendu, escalade) | T3 |
 | T5 | Contrats des agents | Prompts système par niveau : l'Assistant route des missions et résume ; l'Agent planifie avant d'exécuter ; le Worker fait une tâche et rend compte | T4 |
 | T6 | Boards et missions | Mission → tâches, Worker lié à une tâche, repriorisation déterministe, remontée résumée | T4 |
@@ -76,3 +76,22 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
 - **Schéma versionné** (`PRAGMA user_version`) : une base d'une version plus récente est refusée au lieu d'être abîmée.
 - `argos-daemon` ouvre le registre, réhydrate et affiche l'arbre. Il ne crée pas encore l'Assistant : moteur et modèle viendront de la configuration utilisateur (à poser avec T3).
 - **Tests** : 11 tests du registre (dont redémarrage sur fichier et refus de schéma), 2 de plus dans `argos-core`.
+
+## T3 — Ce qui est en place
+
+- **Configuration** `$ARGOS_HOME/config.toml`, écrite commentée au premier démarrage : moteur et modèle de l'Assistant (défaut : `claude` + `claude-opus-5-5`), adresse de l'API (défaut `127.0.0.1:7878`). Le daemon crée l'Assistant au premier démarrage. Changer ensuite son moteur dans la config n'a pas encore d'effet.
+- **Jeton d'accès** `$ARGOS_HOME/token` (créé en 0600), exigé dans l'URL : `ws://127.0.0.1:7878/?token=…`. L'API n'écoute qu'en local.
+- **Superviseur** (`argos_daemon::supervisor`), seul à faire le lien entre registre et sessions. Toutes ses opérations sont déterministes (D14) :
+  - `send` réveille un agent parké (sa session reprend par son session-id) puis lui transmet le message ;
+  - `interrupt`, `park` (attend la sortie du process) ;
+  - `stop` : arrêt dur du parent puis de tout son sous-arbre, rend la main une fois les process morts ;
+  - `retire` : stop puis retrait ; `panic_stop` : stop de l'Assistant, donc de tout l'arbre ;
+  - `shutdown` : parke tout à l'arrêt du daemon (Ctrl-C).
+  - Un verrou par agent sérialise réveil, parking et stop d'un même agent sans bloquer les autres. L'état d'exécution (`running`, `busy`) se lit sans attendre ce verrou.
+  - Une panne (process sorti de lui-même) remet l'agent en `parked` ; il se réveille au message suivant.
+- **Protocole** (`argos_core::protocol`) : requêtes `tree`, `inspect`, `send`, `interrupt`, `park`, `stop`, `retire`, `panic_stop` ; réponses `tree` / `agent` / `done { affected }` / `error` ; événements `message`, `tool`, `turn_completed`, `exited`, `agent_updated`. Chaque connexion reçoit d'abord `hello { protocol }`.
+- **Règle D2 appliquée par l'API** : l'utilisateur ne s'adresse pas à un Worker (send, interrupt, park, stop, retire refusés), il peut seulement lire son état. Le panic stop atteint les Workers par cascade.
+- **Limites connues** :
+  - un stop attend que le réveil en cours du même agent soit fini (jusqu'à 60 s pour une initialisation Codex) ;
+  - un client trop lent perd des événements et doit se resynchroniser avec `tree`.
+- **Tests** : 9 tests du superviseur et 6 de l'API, sur faux CLI. Essai réel le 2026-10-25 : daemon + client WebSocket Node, réveil de l'Assistant (haiku), réponse relayée en direct, parking, arrêt propre par Ctrl-C.

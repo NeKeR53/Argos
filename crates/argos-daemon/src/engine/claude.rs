@@ -83,6 +83,8 @@ async fn drive(
             },
         }
     }
+    // Plus aucune commande n'est lue : les refuser plutôt que les perdre en silence.
+    commands.close();
     process
         .finish(|line| forward(&events, state.handle_line(line)))
         .await

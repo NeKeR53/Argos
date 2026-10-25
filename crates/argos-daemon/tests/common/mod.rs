@@ -1,5 +1,7 @@
-//! Aides partagées par les tests d'intégration des moteurs.
+//! Aides partagées par les tests d'intégration.
 #![allow(dead_code)]
+
+pub mod world;
 
 use argos_daemon::engine::{EngineEvent, Session, TurnOutcome};
 use std::time::Duration;
