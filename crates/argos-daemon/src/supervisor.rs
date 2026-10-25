@@ -188,10 +188,15 @@ impl Supervisor {
         if let Some(busy) = locked(&self.inner.running).get(id) {
             busy.store(true, Ordering::SeqCst);
         }
+        let text = text.into();
         live.as_ref()
             .expect("session démarrée juste au-dessus")
             .control
-            .send(text)?;
+            .send(text.clone())?;
+        self.publish(DaemonEvent::Input {
+            agent: id.clone(),
+            text,
+        });
         self.publish_status(id);
         Ok(())
     }

@@ -102,6 +102,13 @@ pub struct AgentStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonEvent {
+    /// Ce qu'un agent vient de recevoir : message de l'utilisateur, mission de
+    /// l'Assistant, rapport d'un enfant, consigne d'Argos.
+    Input {
+        agent: AgentId,
+        text: String,
+    },
+    /// Ce que l'agent a dit.
     Message {
         agent: AgentId,
         text: String,

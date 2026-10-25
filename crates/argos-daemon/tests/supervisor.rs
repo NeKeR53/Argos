@@ -13,6 +13,11 @@ async fn sending_to_a_parked_agent_wakes_it() {
     let id = w.assistant.id.clone();
     w.supervisor.send(&id, "bonjour").await.unwrap();
 
+    // Ce que l'agent reçoit est publié, pour que la console le montre.
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent, text } if *agent == id && text == "bonjour")
+    })
+    .await;
     until(&mut w.events, |event| is_message(event, &id, "reply 1")).await;
     assert_eq!(
         turn_completed(&mut w.events, &id).await,
