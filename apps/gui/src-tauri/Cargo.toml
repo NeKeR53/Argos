@@ -18,3 +18,4 @@ argos-core.workspace = true
 tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true
+toml = "1"
