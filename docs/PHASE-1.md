@@ -39,7 +39,7 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 |---|---------|---------|-----------|
 | T0 ✅ | Squelette | Workspace Cargo, crates vides, app Tauri qui démarre, `fmt` / `clippy` / `test` verts | — |
 | T1 ✅ | Adaptateurs de moteur | Lancer une session `claude` et `codex`, envoyer des tours, lire le flux normalisé, interrompre, reprendre par session-id. Faux CLI pour les tests | T0 |
-| T2 | Arbre et registre | Modèle agent (id, niveau, parent, moteur, modèle, état, charte), persistance SQLite, réhydratation au démarrage | T1 |
+| T2 ✅ | Arbre et registre | Modèle agent (id, niveau, parent, moteur, modèle, état, charte), persistance SQLite, réhydratation au démarrage | T1 |
 | T3 | Plan de contrôle + API WS | stop/kill du sous-arbre, park/resume, inspect ; API WebSocket (commandes + flux d'événements) | T2 |
 | T4 | Serveur MCP par niveau | Endpoint MCP, jetons par agent, outils L0 (gestion des Agents), L1 (Workers + board), L2 (compte rendu, escalade) | T3 |
 | T5 | Contrats des agents | Prompts système par niveau : l'Assistant route des missions et résume ; l'Agent planifie avant d'exécuter ; le Worker fait une tâche et rend compte | T4 |
@@ -61,3 +61,18 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
 - **Parking** : stdin fermé, le process sort de lui-même (tué au bout de 5 s sinon). Le code de sortie de `claude` reflète son dernier tour : 1 après un tour interrompu, sans que ce soit une panne.
 - **Tests** : 30 tests sans tokens (14 unitaires sur des lignes de forme réelle, 16 d'intégration contre `tests/fixtures/fake-claude` et `fake-codex`). Deux tests sur les vrais moteurs, ignorés par défaut, couvrent mémoire, interruption, parking et reprise : `cargo test -p argos-daemon --test real_engines -- --ignored` (haiku, gpt-6-luna). Passés le 2026-10-25.
 - **Pas encore fait** (à prévoir dans les tranches suivantes) : deltas de texte en streaming (pour le TTS, phase 3), détection des rate limits (T8), injection du serveur MCP d'Argos (T4).
+
+## T2 — Ce qui est en place
+
+- **Modèle** (`argos-core`) : `AgentRecord` (id, niveau, parent, moteur, modèle, répertoire de travail, charte, état, session-id, date de création), `AgentState` (`active` / `parked` / `retired`), `Charter` (nom, périmètre). Les énumérations ont une forme texte identique à leur forme JSON, utilisée en base.
+- **Registre** (`argos_daemon::registry::Registry`, SQLite embarqué via `rusqlite` + `bundled`, base dans `$ARGOS_HOME/argos.db`, par défaut `~/.argos`). Règles appliquées :
+  - un seul Assistant, jamais retiré ;
+  - un Agent sous l'Assistant, un Worker sous un Agent, rien sous un Worker ;
+  - charte obligatoire pour un Agent, interdite ailleurs ; nom unique parmi les Agents vivants, sans tenir compte de la casse (retirer un Agent libère son nom) ;
+  - le retrait atteint tous les descendants et il est définitif ; les lignes restent pour l'historique.
+  - Un nouvel agent commence `parked` sans session : il n'a encore jamais tourné.
+- **`descendants`** rend le sous-arbre qu'un stop doit atteindre (T3).
+- **Réhydratation** au démarrage du daemon : Assistant et Agents `active` passent `parked` (repris plus tard par leur session-id), Workers `active` passent `retired` et sont rendus comme perdus, pour que T6 marque leurs tâches `interrupted`.
+- **Schéma versionné** (`PRAGMA user_version`) : une base d'une version plus récente est refusée au lieu d'être abîmée.
+- `argos-daemon` ouvre le registre, réhydrate et affiche l'arbre. Il ne crée pas encore l'Assistant : moteur et modèle viendront de la configuration utilisateur (à poser avec T3).
+- **Tests** : 11 tests du registre (dont redémarrage sur fichier et refus de schéma), 2 de plus dans `argos-core`.

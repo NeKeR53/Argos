@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 argos-core.workspace = true
 libc = "0.2"
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde_json.workspace = true
 thiserror = "2"
 tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync", "time"] }

@@ -11,7 +11,7 @@ Assistant IA personnel qui délègue à une hiérarchie Assistant → Agents →
 ## Structure
 
 - `crates/argos-core` — types partagés daemon/GUI.
-- `crates/argos-daemon` — binaire headless (sessions, contrôle, MCP, mémoire, API WS).
+- `crates/argos-daemon` — binaire headless (sessions, contrôle, MCP, mémoire, API WS). Données dans `$ARGOS_HOME` (défaut `~/.argos`) ; utiliser un `ARGOS_HOME` jetable pour les essais.
 - `apps/gui` — app Tauri 2 : `src-tauri/` (Rust, membre du workspace) et front React/TS (Vite).
 
 ## Commandes
