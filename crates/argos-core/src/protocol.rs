@@ -2,8 +2,9 @@
 //! JSON sur une trame texte. Le client envoie des [`Request`] ; le daemon répond par
 //! [`ServerMessage::Reply`] (même `id`) et pousse en continu des [`ServerMessage::Event`].
 
-use crate::{AgentId, AgentRecord, Board, TurnOutcome, Usage};
+use crate::{AgentId, AgentRecord, Board, SurfaceDoc, SurfaceMeta, TurnOutcome, Usage};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Request {
@@ -49,6 +50,29 @@ pub enum Command {
     },
     /// Arrêt dur de tout l'arbre (D16).
     PanicStop,
+    /// Les surfaces d'un agent (D26).
+    Surfaces {
+        agent: AgentId,
+    },
+    /// Une surface avec son code, pour l'afficher.
+    Surface {
+        surface: String,
+    },
+    /// Texte envoyé depuis une surface (`argos.send`) : remis à son agent.
+    SurfaceSend {
+        surface: String,
+        text: String,
+    },
+    /// Événement structuré émis par une surface (`argos.emit`) : remis à son agent.
+    SurfaceEmit {
+        surface: String,
+        name: String,
+        payload: Value,
+    },
+    /// L'utilisateur ferme définitivement une surface.
+    SurfaceDelete {
+        surface: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -78,6 +102,12 @@ pub enum Reply {
     },
     Board {
         board: Board,
+    },
+    Surfaces {
+        surfaces: Vec<SurfaceMeta>,
+    },
+    Surface {
+        surface: SurfaceDoc,
     },
     /// Commande exécutée ; `affected` liste les agents touchés (stop, retrait…).
     Done {
@@ -131,6 +161,16 @@ pub enum DaemonEvent {
     /// L'agent a changé dans le registre ou en exécution.
     AgentUpdated {
         agent: AgentStatus,
+    },
+    /// Une surface a été créée, mise à jour (nouvelle `version`) ou supprimée.
+    SurfaceUpdated {
+        surface: SurfaceMeta,
+        deleted: bool,
+    },
+    /// Données poussées par l'agent vers son cockpit (`argos.on('data')`).
+    SurfaceData {
+        surface: String,
+        data: Value,
     },
     /// Information courte du daemon pour l'utilisateur (repli de modèle, plafond…).
     Notice {

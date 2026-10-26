@@ -2,7 +2,7 @@
 //! protégée par un jeton : elle pilote des agents qui exécutent des commandes.
 
 use crate::supervisor::Supervisor;
-use argos_core::protocol::{Command, Reply, Request, ServerMessage};
+use argos_core::protocol::{Command, Origin, Reply, Request, ServerMessage};
 use argos_core::{AgentId, Level, PROTOCOL_VERSION};
 use futures_util::{SinkExt, StreamExt};
 use std::fmt::Display;
@@ -151,6 +151,49 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
             done(supervisor.retire(&agent).await.map_err(said)?)
         }
         Command::PanicStop => done(supervisor.panic_stop().await.map_err(said)?),
+        Command::Surfaces { agent } => Reply::Surfaces {
+            surfaces: supervisor.registry().surfaces(&agent).map_err(said)?,
+        },
+        Command::Surface { surface } => Reply::Surface {
+            surface: supervisor.registry().surface(&surface).map_err(said)?,
+        },
+        Command::SurfaceSend { surface, text } => {
+            let meta = supervisor.registry().surface_meta(&surface).map_err(said)?;
+            let message = format!(
+                "[Depuis la surface « {} » ({})]\n{text}",
+                meta.title, meta.id
+            );
+            supervisor
+                .deliver(&meta.agent, Origin::User, message)
+                .await
+                .map_err(said)?;
+            done(vec![meta.agent])
+        }
+        Command::SurfaceEmit {
+            surface,
+            name,
+            payload,
+        } => {
+            let meta = supervisor.registry().surface_meta(&surface).map_err(said)?;
+            let message = format!(
+                "[Événement « {name} » de la surface « {} » ({})]\n{payload}",
+                meta.title, meta.id
+            );
+            supervisor
+                .deliver(&meta.agent, Origin::User, message)
+                .await
+                .map_err(said)?;
+            done(vec![meta.agent])
+        }
+        Command::SurfaceDelete { surface } => {
+            let meta = supervisor
+                .registry()
+                .delete_surface(&surface)
+                .map_err(said)?;
+            let agent = meta.agent.clone();
+            supervisor.publish_surface(meta, true);
+            done(vec![agent])
+        }
     })
 }
 

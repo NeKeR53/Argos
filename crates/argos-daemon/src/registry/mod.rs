@@ -3,8 +3,10 @@
 //! D20) et ne décide rien d'autre.
 
 mod board;
+mod surfaces;
 
 pub use board::{Position, TaskUpdate};
+pub use surfaces::MAX_HTML;
 
 use argos_core::{AgentId, AgentRecord, AgentState, Charter, EngineKind, Level};
 use rusqlite::types::Type;
@@ -34,6 +36,10 @@ pub enum RegistryError {
     TaskNotFound(String),
     #[error("board : {0}")]
     Board(String),
+    #[error("surface inconnue : {0}")]
+    SurfaceNotFound(String),
+    #[error("surface : {0}")]
+    Surface(String),
 }
 
 pub type Result<T> = std::result::Result<T, RegistryError>;
@@ -65,7 +71,12 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 3] = [AGENTS_SCHEMA, board::SCHEMA, PROFILE_COLUMN];
+const MIGRATIONS: [&str; 4] = [
+    AGENTS_SCHEMA,
+    board::SCHEMA,
+    PROFILE_COLUMN,
+    surfaces::SCHEMA,
+];
 
 /// v3 : profil de la politique de modèles (T8).
 const PROFILE_COLUMN: &str = "ALTER TABLE agents ADD COLUMN profile TEXT;";

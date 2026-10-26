@@ -250,6 +250,42 @@ pub struct Board {
     pub tasks: Vec<Task>,
 }
 
+/// Nature d'une surface (D26).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurfaceKind {
+    /// Vivante et bidirectionnelle : l'agent la met à jour et lui pousse des données.
+    Cockpit,
+    /// Snapshot autonome, comme des graphiques de synthèse.
+    Artifact,
+}
+
+text_form!(SurfaceKind {
+    Cockpit => "cockpit",
+    Artifact => "artifact",
+});
+
+/// Une page HTML produite par un agent et hébergée par l'app (D26–D28).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceMeta {
+    pub id: String,
+    pub agent: AgentId,
+    pub kind: SurfaceKind,
+    pub title: String,
+    /// Incrémentée à chaque nouveau code : la GUI recharge la page.
+    pub version: u64,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+/// Une surface avec son code.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SurfaceDoc {
+    #[serde(flatten)]
+    pub meta: SurfaceMeta,
+    pub html: String,
+}
+
 /// Issue d'un tour d'agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]

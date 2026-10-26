@@ -692,6 +692,19 @@ impl Supervisor {
         }
     }
 
+    /// Signale qu'une surface a été créée, mise à jour ou supprimée.
+    pub fn publish_surface(&self, surface: argos_core::SurfaceMeta, deleted: bool) {
+        self.publish(DaemonEvent::SurfaceUpdated { surface, deleted });
+    }
+
+    /// Pousse des données vers un cockpit ouvert (D26).
+    pub fn push_surface(&self, surface: &str, data: serde_json::Value) {
+        self.publish(DaemonEvent::SurfaceData {
+            surface: surface.into(),
+            data,
+        });
+    }
+
     /// Information courte pour l'utilisateur, à propos d'un agent.
     fn notice(&self, id: &AgentId, text: String) {
         self.publish(DaemonEvent::Notice {

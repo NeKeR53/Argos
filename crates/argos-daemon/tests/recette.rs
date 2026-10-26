@@ -150,12 +150,12 @@ impl Stage {
                         println!("  {} utilise {tool}", name(&self.names, agent));
                     }
                     DaemonEvent::Notice { text, .. } => println!("! {text}"),
-                    DaemonEvent::TurnCompleted { agent, outcome, .. } => {
-                        if *agent == assistant && report_received {
-                            return outcome.clone();
-                        }
+                    DaemonEvent::TurnCompleted { agent, outcome, .. }
+                        if *agent == assistant && report_received =>
+                    {
+                        return outcome.clone();
                     }
-                    DaemonEvent::Exited { .. } => {}
+                    _ => {}
                 }
             }
         })
