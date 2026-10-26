@@ -256,6 +256,11 @@ impl State {
             "item/started" => tool_name(&params["item"])
                 .map(|name| vec![EngineEvent::ToolActivity { name }])
                 .unwrap_or_default(),
+            "item/agentMessage/delta" => params["delta"]
+                .as_str()
+                .filter(|text| !text.is_empty())
+                .map(|text| vec![EngineEvent::AgentDelta { text: text.into() }])
+                .unwrap_or_default(),
             "item/completed" if params["item"]["type"] == "agentMessage" => {
                 let text = params["item"]["text"].as_str().unwrap_or_default();
                 vec![EngineEvent::AgentMessage { text: text.into() }]
@@ -399,6 +404,16 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn message_deltas_become_agent_deltas() {
+        let mut state = State::default();
+        let delta = r#"{"method":"item/agentMessage/delta","params":{"threadId":"t1","turnId":"x","itemId":"m","delta":"bon"}}"#;
+        assert_eq!(
+            state.handle_line(delta).0,
+            vec![EngineEvent::AgentDelta { text: "bon".into() }]
+        );
     }
 
     #[test]

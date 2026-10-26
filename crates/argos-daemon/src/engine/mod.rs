@@ -69,6 +69,9 @@ impl SessionSpec {
 /// Événement normalisé, identique quel que soit le moteur.
 #[derive(Debug, Clone, PartialEq)]
 pub enum EngineEvent {
+    /// Fragment du message en cours de génération (pour parler avant la fin, D37). Le
+    /// message complet suit toujours avec `AgentMessage`.
+    AgentDelta { text: String },
     /// Message complet de l'agent.
     AgentMessage { text: String },
     /// L'agent utilise un outil (commande, édition, appel MCP…).

@@ -388,6 +388,9 @@ impl Supervisor {
         while let Some(event) = events.next_event().await {
             let agent = id.clone();
             match event {
+                EngineEvent::AgentDelta { text } => {
+                    self.publish(DaemonEvent::MessageDelta { agent, text })
+                }
                 EngineEvent::AgentMessage { text } => {
                     self.publish(DaemonEvent::Message { agent, text })
                 }

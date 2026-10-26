@@ -200,3 +200,27 @@ async fn unknown_agents_are_reported() {
     assert!(w.supervisor.send(&ghost, "x").await.is_err());
     assert!(w.supervisor.stop(&ghost).await.is_err());
 }
+
+#[tokio::test]
+async fn text_fragments_are_relayed_before_the_full_message() {
+    let mut w = world();
+    let id = w.assistant.id.clone();
+    w.supervisor.send(&id, "STREAM").await.unwrap();
+
+    let mut fragments = String::new();
+    loop {
+        match until(&mut w.events, |event| {
+            matches!(event, DaemonEvent::MessageDelta { agent, .. } | DaemonEvent::Message { agent, .. } if *agent == id)
+        })
+        .await
+        {
+            DaemonEvent::MessageDelta { text, .. } => fragments.push_str(&text),
+            DaemonEvent::Message { text, .. } => {
+                assert_eq!(text, "Bonjour, je suis là.");
+                break;
+            }
+            _ => unreachable!(),
+        }
+    }
+    assert_eq!(fragments, "Bonjour, je suis là.");
+}

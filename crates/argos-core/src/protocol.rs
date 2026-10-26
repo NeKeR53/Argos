@@ -139,6 +139,12 @@ pub enum DaemonEvent {
         from: Origin,
         text: String,
     },
+    /// Fragment du message que l'agent est en train d'écrire, pour le faire parler au fil
+    /// de l'eau (D37). Le message complet suit avec `message`.
+    MessageDelta {
+        agent: AgentId,
+        text: String,
+    },
     /// Ce que l'agent a dit.
     Message {
         agent: AgentId,

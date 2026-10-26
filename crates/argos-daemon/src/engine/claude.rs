@@ -36,6 +36,8 @@ fn arguments(spec: &SessionSpec, session_id: &str) -> Vec<String> {
         "--output-format",
         "stream-json",
         "--verbose",
+        // Fragments de texte au fil de la génération (AgentDelta).
+        "--include-partial-messages",
         // Isolation : ni les réglages, plugins, CLAUDE.md ni MCP globaux de l'utilisateur.
         // `--safe-mode` isolerait mieux mais désactive aussi les MCP passés par Argos.
         "--setting-sources",
@@ -156,6 +158,17 @@ impl State {
         match message["type"].as_str() {
             Some("assistant") => assistant_events(&message),
             Some("result") => vec![self.turn_completed(&message)],
+            Some("stream_event") => {
+                let event = &message["event"];
+                match (event["type"].as_str(), event["delta"]["type"].as_str()) {
+                    (Some("content_block_delta"), Some("text_delta")) => event["delta"]["text"]
+                        .as_str()
+                        .filter(|text| !text.is_empty())
+                        .map(|text| vec![EngineEvent::AgentDelta { text: text.into() }])
+                        .unwrap_or_default(),
+                    _ => vec![],
+                }
+            }
             // Émis à chaque tour ; seul un refus signale un quota épuisé.
             Some("rate_limit_event") if message["rate_limit_info"]["status"] == "rejected" => {
                 let window = message["rate_limit_info"]["rateLimitType"]
@@ -252,6 +265,20 @@ mod tests {
                 .is_empty()
         );
         assert!(state.handle_line("pas du json").is_empty());
+    }
+
+    #[test]
+    fn text_deltas_become_agent_deltas_and_the_rest_is_ignored() {
+        let mut state = State::default();
+        let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Un,"}}}"#;
+        assert_eq!(
+            state.handle_line(delta),
+            vec![EngineEvent::AgentDelta { text: "Un,".into() }]
+        );
+        let thinking = r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}}"#;
+        assert!(state.handle_line(thinking).is_empty());
+        let start = r#"{"type":"stream_event","event":{"type":"message_start"}}"#;
+        assert!(state.handle_line(start).is_empty());
     }
 
     #[test]
