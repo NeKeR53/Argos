@@ -67,7 +67,7 @@ describe("messages du daemon", () => {
 
   it("lisent input, notice et le board", () => {
     const frames = [
-      { type: "event", event: { type: "input", agent: "a1", text: "[Mission m-1a2b3c4d de l'Assistant]\néclairage" } },
+      { type: "event", event: { type: "input", agent: "a1", from: { kind: "agent", agent: "a0" }, text: "[Mission m-1a2b3c4d de l'Assistant]\néclairage" } },
       { type: "event", event: { type: "notice", agent: "a1", text: "quota épuisé : bascule sur gpt-6-luna" } },
       { type: "event", event: { type: "notice", agent: null, text: "plafond de dépense atteint" } },
       {
@@ -129,6 +129,15 @@ describe("messages du daemon", () => {
       '{"type":"event","event":{"type":"notice","agent":null}}',
       '{"type":"reply","id":1,"reply":{"kind":"board","board":{"agent":"a1","missions":[],"tasks":[{"id":"t","state":"bof"}]}}}',
     ]) {
+      expect(() => parseServerMessage(frame), frame).toThrow(ProtocolError);
+    }
+  });
+});
+
+describe("expéditeur", () => {
+  it("refuse un input sans expéditeur connu", () => {
+    for (const from of [undefined, { kind: "inconnu" }, { kind: "agent" }]) {
+      const frame = JSON.stringify({ type: "event", event: { type: "input", agent: "a1", from, text: "x" } });
       expect(() => parseServerMessage(frame), frame).toThrow(ProtocolError);
     }
   });

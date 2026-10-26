@@ -10,6 +10,7 @@ import {
   type Board,
   type Command,
   type DaemonEvent,
+  type Origin,
   type Reply,
   type ServerMessage,
   type TurnOutcome,
@@ -41,8 +42,11 @@ export interface ConsoleSend {
 
 /** Une ligne du fil d'un agent. `seq` sert de clé stable à l'affichage. */
 export type ThreadEntry =
-  /** Ce que l'agent reçoit ; `console` est présent pour un message parti d'ici. */
-  | { seq: number; kind: "input"; text: string; console: ConsoleSend | null }
+  /**
+   * Ce que l'agent reçoit ; `console` est présent pour un message parti d'ici, `from` une
+   * fois l'expéditeur connu par l'événement du daemon.
+   */
+  | { seq: number; kind: "input"; text: string; from: Origin | null; console: ConsoleSend | null }
   | { seq: number; kind: "agent"; text: string }
   | { seq: number; kind: "tool"; name: string }
   | { seq: number; kind: "turn"; outcome: TurnOutcome; usage: Usage | null }
@@ -142,6 +146,7 @@ export function reduce(state: AppState, action: Action): AppState {
       return append(next, command.agent, {
         kind: "input",
         text: command.text,
+        from: null,
         console: { request: action.id, delivery: "pending", awaitingEcho: true },
       });
     }
@@ -200,7 +205,7 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
 function onEvent(state: AppState, event: DaemonEvent): AppState {
   switch (event.type) {
     case "input":
-      return onInput(state, event.agent, event.text);
+      return onInput(state, event.agent, event.from, event.text);
     case "message":
       return append(state, event.agent, { kind: "agent", text: event.text });
     case "tool":
@@ -231,7 +236,7 @@ function onEvent(state: AppState, event: DaemonEvent): AppState {
  * Ce que l'agent reçoit. Un message parti de cette console est déjà affiché : son
  * `input` le confirme au lieu de l'ajouter une seconde fois.
  */
-function onInput(state: AppState, agent: AgentId, text: string): AppState {
+function onInput(state: AppState, agent: AgentId, from: Origin, text: string): AppState {
   const thread = state.threads[agent] ?? [];
   const echoed = thread.findIndex(
     (entry) =>
@@ -244,12 +249,12 @@ function onInput(state: AppState, agent: AgentId, text: string): AppState {
   if (echoed >= 0) {
     const updated = thread.map((entry, index) =>
       index === echoed && entry.kind === "input" && entry.console
-        ? { ...entry, console: { ...entry.console, delivery: "delivered" as const, awaitingEcho: false } }
+        ? { ...entry, from, console: { ...entry.console, delivery: "delivered" as const, awaitingEcho: false } }
         : entry,
     );
     next = { ...state, threads: { ...state.threads, [agent]: updated } };
   } else {
-    next = append(state, agent, { kind: "input", text, console: null });
+    next = append(state, agent, { kind: "input", text, from, console: null });
   }
   return state.agents[agent]?.level === "assistant" ? withEscalation(next, text) : next;
 }

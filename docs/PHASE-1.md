@@ -197,3 +197,21 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
 - **Tests** : 36 tests vitest (réducteur, protocole, préfixes), 6 tests Rust (lecture de la config, sonde du jeton).
 - **Vérifié** dans un navigateur avec agent-browser, contre le daemon sur faux CLI (captures dans le scratchpad du sous-agent). L'app Tauri elle-même a été lancée le 2026-10-26 : sa webview tient une connexion WebSocket établie avec le daemon (constaté avec `lsof`). Son rendu à l'écran n'a pas été vu, faute de permission de capture.
 - **Limite connue** : `input` ne dit pas qui envoie. Un message sans préfixe peut venir de l'utilisateur, du parent ou d'une relance d'Argos.
+
+## Après la phase 1 — Dialogue latéral entre Agents (D40)
+
+- **Décision** consignée dans `VISION.md` (D40, D13 précisé) : des questions et des informations entre Agents, jamais des ordres, adressées par nom et acheminées par le daemon quel que soit le nœud.
+- **Expéditeur de chaque message** : l'événement `input` porte `from` (`user`, `agent { agent }`, `argos`). `Supervisor::send` remet au nom de l'utilisateur, `Supervisor::deliver` au nom d'un agent ou d'Argos ; les outils remettent toujours au nom de l'agent appelant, les relances internes (compaction, reprise après repli) au nom d'Argos.
+- **Outils d'Agent** :
+  - `list_peers` : les autres Agents, avec nom, périmètre et état ;
+  - `ask_agent` : envoie une question, reçue sous la forme `[Question de l'Agent « X » (id)]` avec une invitation à répondre par `tell_agent` ;
+  - `tell_agent` : envoie une information ou une réponse, sous la forme `[Information de …]`.
+  - Le pair se désigne par son nom ou son id. Il doit être un Agent vivant, et pas soi-même. L'Assistant et les Workers n'ont pas ces outils.
+- **Garde-fou** : 20 messages au plus par paire d'Agents, dans les deux sens, sur 10 minutes ; au-delà, l'outil refuse.
+- **Journaux** : chaque échange est noté au journal des deux Agents.
+- **Contrats** : l'Agent demande au pair compétent plutôt que de chercher lui-même, répond brièvement et sans engager de travail hors de son périmètre ; l'Assistant laisse les Agents se parler sans servir d'intermédiaire.
+- **Console** : l'expéditeur réel s'affiche (« reçu · Agent Mail », « reçu · Argos ») au lieu d'être deviné ; les informations des pairs sont étiquetées.
+- **Tests** :
+  - 5 tests de bout en bout (pairs, question avec expéditeur et journaux, réponse, refus, garde-fou), 3 tests front, 1 test de protocole ;
+  - recette réelle `agents_ask_each_other_what_belongs_to_their_domain`, passée deux fois le 2026-10-26 : l'Agent Mail connaît un code dans sa mémoire ; l'Agent Notes le lui demande par `ask_agent`, Mail répond par `tell_agent`, puis Notes fait écrire `portail.txt` par un Worker.
+- **Pas fait** : l'acheminement entre nœuds (phase 4, mesh SSH), et la vérification visuelle de l'étiquette d'expéditeur dans la console.

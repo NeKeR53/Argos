@@ -8,6 +8,7 @@ import {
   assistantOf,
   displayName,
   selectedAgent,
+  shortId,
   treeOf,
   type Connection,
   type Escalation,
@@ -117,6 +118,7 @@ export default function App() {
               connected={connected}
               send={send}
               isLiving={isLiving}
+              nameOf={(id) => (state.agents[id] ? displayName(state.agents[id]) : shortId(id))}
               onRetire={setRetiring}
               onSelect={select}
             />

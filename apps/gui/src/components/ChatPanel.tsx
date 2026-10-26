@@ -2,7 +2,7 @@
 // fil des messages, saisie. Un Worker s'affiche en lecture seule (D2).
 
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { AgentId, AgentStatus, Board, Command, Level } from "../protocol";
+import type { AgentId, AgentStatus, Board, Command, Origin } from "../protocol";
 import { displayName, isAddressable, isRetirable, shortId, type ConsoleSend, type ThreadEntry } from "../state";
 import { engineLabel, formatCost, formatUsage, levelLabel, outcomeLabel } from "../format";
 import { classifyInput } from "../inputs";
@@ -22,12 +22,14 @@ interface Props {
   connected: boolean;
   send: (command: Command) => boolean;
   isLiving: (agent: AgentId) => boolean;
+  /** Nom affichable d'un agent, pour dire qui a envoyé un message. */
+  nameOf: (agent: AgentId) => string;
   onRetire: (agent: AgentStatus) => void;
   onSelect: (agent: AgentId) => void;
 }
 
 export function ChatPanel(props: Props) {
-  const { agent, parent, thread, spent, connected, send, onRetire, onSelect } = props;
+  const { agent, parent, thread, spent, connected, send, onRetire, onSelect, nameOf } = props;
   const addressable = isAddressable(agent);
   // Board ouvert ou replié : le choix suit l'utilisateur d'un Agent à l'autre.
   const [boardOpen, setBoardOpen] = useState(true);
@@ -117,14 +119,14 @@ export function ChatPanel(props: Props) {
       )}
 
       {/* Clés par agent : défilement et brouillon ne passent pas d'un agent à l'autre. */}
-      <Thread key={`thread-${agent.id}`} entries={thread} level={agent.level} />
+      <Thread key={`thread-${agent.id}`} entries={thread} nameOf={nameOf} />
 
       {addressable && <Composer key={`composer-${agent.id}`} agent={agent} connected={connected} send={send} />}
     </section>
   );
 }
 
-function Thread({ entries, level }: { entries: ThreadEntry[]; level: Level }) {
+function Thread({ entries, nameOf }: { entries: ThreadEntry[]; nameOf: (agent: AgentId) => string }) {
   const list = useRef<HTMLDivElement>(null);
   // Suit le bas du fil tant que l'utilisateur n'est pas remonté le relire.
   const pinned = useRef(true);
@@ -154,7 +156,7 @@ function Thread({ entries, level }: { entries: ThreadEntry[]; level: Level }) {
       }}
     >
       {entries.map((entry) => (
-        <Entry key={entry.seq} entry={entry} level={level} />
+        <Entry key={entry.seq} entry={entry} nameOf={nameOf} />
       ))}
     </div>
   );
@@ -167,20 +169,24 @@ const deliveryLabel = {
   lost: "connexion perdue : remise incertaine",
 } as const;
 
-/**
- * Auteur probable d'un message reçu sans préfixe et sans venir de cette console : le
- * protocole ne le dit pas, le niveau du destinataire le laisse deviner.
- */
-const freeSender: Record<Level, string> = {
-  assistant: "utilisateur (autre console)",
-  agent: "utilisateur ou Assistant",
-  worker: "de son Agent",
-};
+/** Qui a envoyé un message reçu sans préfixe et sans venir de cette console. */
+function senderLabel(from: Origin | null, nameOf: (agent: AgentId) => string): string {
+  switch (from?.kind) {
+    case "user":
+      return "utilisateur (autre console)";
+    case "agent":
+      return nameOf(from.agent);
+    case "argos":
+      return "Argos";
+    default:
+      return "expéditeur inconnu";
+  }
+}
 
-function Entry({ entry, level }: { entry: ThreadEntry; level: Level }) {
+function Entry({ entry, nameOf }: { entry: ThreadEntry; nameOf: (agent: AgentId) => string }) {
   switch (entry.kind) {
     case "input":
-      return <InputEntry text={entry.text} sent={entry.console} level={level} />;
+      return <InputEntry text={entry.text} from={entry.from} sent={entry.console} nameOf={nameOf} />;
     case "agent":
       return (
         <div className="entry entry-agent">
@@ -215,10 +221,20 @@ function Entry({ entry, level }: { entry: ThreadEntry; level: Level }) {
  * Ce que l'agent reçoit. Un message préfixé par un outil (mission, rapport, escalade…)
  * se distingue d'un message de l'utilisateur par son étiquette et son cadre.
  */
-function InputEntry({ text, sent, level }: { text: string; sent: ConsoleSend | null; level: Level }) {
+function InputEntry({
+  text,
+  from,
+  sent,
+  nameOf,
+}: {
+  text: string;
+  from: Origin | null;
+  sent: ConsoleSend | null;
+  nameOf: (agent: AgentId) => string;
+}) {
   const { category, tag, body } = classifyInput(text);
   const note = sent ? deliveryLabel[sent.delivery] : null;
-  const label = category ? tag : sent ? null : `reçu · ${freeSender[level]}`;
+  const label = category ? tag : sent ? null : `reçu · ${senderLabel(from, nameOf)}`;
   return (
     <div
       className="entry entry-input"

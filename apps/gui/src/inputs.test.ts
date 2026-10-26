@@ -53,3 +53,14 @@ describe("mise en forme", () => {
     expect(engineLabel({ ...agent, profile: null, model: null })).toBe("codex · modèle par défaut");
   });
 });
+
+describe("dialogue entre Agents", () => {
+  it("reconnaît une information d'un pair", () => {
+    const classified = classifyInput("[Information de l'Agent « Mail » (m1)]\nLe syndic passe jeudi.");
+    expect(classified).toEqual({
+      category: "information",
+      tag: "Information de l'Agent « Mail » (m1)",
+      body: "Le syndic passe jeudi.",
+    });
+  });
+});

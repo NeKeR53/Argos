@@ -559,7 +559,8 @@ textarea {
 
 .entry-input[data-category="mission"] .bubble,
 .entry-input[data-category="task"] .bubble,
-.entry-input[data-category="question"] .bubble {
+.entry-input[data-category="question"] .bubble,
+.entry-input[data-category="information"] .bubble {
   border-left-color: var(--accent);
 }
 

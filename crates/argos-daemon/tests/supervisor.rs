@@ -2,7 +2,7 @@
 
 mod common;
 
-use argos_core::protocol::DaemonEvent;
+use argos_core::protocol::{DaemonEvent, Origin};
 use argos_core::{AgentId, AgentState, TurnOutcome};
 use argos_daemon::supervisor::SupervisorError;
 use common::world::{is_message, poll, turn_completed, until, world};
@@ -15,7 +15,7 @@ async fn sending_to_a_parked_agent_wakes_it() {
 
     // Ce que l'agent reçoit est publié, pour que la console le montre.
     until(&mut w.events, |event| {
-        matches!(event, DaemonEvent::Input { agent, text } if *agent == id && text == "bonjour")
+        matches!(event, DaemonEvent::Input { agent, from: Origin::User, text } if *agent == id && text == "bonjour")
     })
     .await;
     until(&mut w.events, |event| is_message(event, &id, "reply 1")).await;

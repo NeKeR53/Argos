@@ -6,8 +6,8 @@
 
 use crate::policy::ModelPolicy;
 use crate::registry::{NewAgent, Position, TaskUpdate};
-use crate::supervisor::Supervisor;
-use argos_core::protocol::AgentStatus;
+use crate::supervisor::{Supervisor, SupervisorError};
+use argos_core::protocol::{AgentStatus, Origin};
 use argos_core::{AgentId, AgentRecord, AgentState, Charter, Level, MissionState, TaskState};
 use serde_json::{Value, json};
 use std::fmt::Display;
@@ -257,6 +257,30 @@ fn level_tools(level: Level) -> Vec<Tool> {
                 &[("question", "La question, avec le contexte nécessaire.")],
                 &["question"],
             ),
+            tool(
+                "list_peers",
+                "Liste les autres Agents (nom, périmètre, état) : ceux à qui tu peux poser une question.",
+                &[],
+                &[],
+            ),
+            tool(
+                "ask_agent",
+                "Pose une question à un autre Agent, sur son domaine (ex. demander à l'Agent « Mail » un courriel). Jamais un ordre. Sa réponse t'arrivera plus tard comme un message.",
+                &[
+                    ("agent", PEER_REF),
+                    ("question", "La question, avec le contexte nécessaire."),
+                ],
+                &["agent", "question"],
+            ),
+            tool(
+                "tell_agent",
+                "Transmet une information à un autre Agent, ou répond à sa question. Jamais un ordre.",
+                &[
+                    ("agent", PEER_REF),
+                    ("message", "L'information ou la réponse."),
+                ],
+                &["agent", "message"],
+            ),
         ],
         Level::Worker => vec![
             tool(
@@ -280,6 +304,7 @@ fn level_tools(level: Level) -> Vec<Tool> {
 
 const AGENT_REF: &str = "Identifiant ou nom de l'Agent.";
 const WORKER_REF: &str = "Identifiant du Worker.";
+const PEER_REF: &str = "Nom (ou identifiant) de l'autre Agent.";
 const TASK_REF: &str = "Identifiant de la tâche (t-…).";
 const POSITION: &str = "« top », « bottom » ou un rang (1 = en tête).";
 
@@ -383,8 +408,7 @@ pub async fn call(
         (Level::Agent, "spawn_worker") => spawn_worker(supervisor, caller, args).await,
         (Level::Assistant, "send_to_agent") | (Level::Agent, "send_to_worker") => {
             let target = child(supervisor, caller, text(args, target_key)?)?;
-            supervisor
-                .send(&target.id, text(args, "message")?)
+            send_as(supervisor, caller, &target.id, text(args, "message")?)
                 .await
                 .map_err(said)?;
             Ok(format!("Transmis à {}.", label(&target)))
@@ -460,6 +484,38 @@ pub async fn call(
             deliver(supervisor, caller, &kind, summary).await
         }
         (Level::Worker, "report_to_agent") => report_task(supervisor, caller, args).await,
+        (Level::Agent, "list_peers") => {
+            let peers = match &caller.parent {
+                Some(assistant) => supervisor.children(assistant).map_err(said)?,
+                None => vec![],
+            };
+            listed(
+                peers
+                    .into_iter()
+                    .filter(|peer| peer.record.id != caller.id)
+                    .collect(),
+            )
+        }
+        (Level::Agent, "ask_agent") => {
+            lateral(
+                supervisor,
+                caller,
+                "Question",
+                text(args, "question")?,
+                args,
+            )
+            .await
+        }
+        (Level::Agent, "tell_agent") => {
+            lateral(
+                supervisor,
+                caller,
+                "Information",
+                text(args, "message")?,
+                args,
+            )
+            .await
+        }
         (Level::Agent, "escalate_to_user") => {
             deliver(
                 supervisor,
@@ -586,13 +642,14 @@ async fn assign_mission(
         &target.id,
         &format!("mission {} reçue : {}", mission.id, mission.text),
     );
-    supervisor
-        .send(
-            &target.id,
-            format!("[Mission {} de l'Assistant]\n{}", mission.id, mission.text),
-        )
-        .await
-        .map_err(said)?;
+    send_as(
+        supervisor,
+        caller,
+        &target.id,
+        format!("[Mission {} de l'Assistant]\n{}", mission.id, mission.text),
+    )
+    .await
+    .map_err(said)?;
     Ok(format!(
         "Mission {} confiée à {}.",
         mission.id,
@@ -620,13 +677,14 @@ async fn cancel_mission(
         &mission.agent,
         &format!("mission {id} annulée par l'Assistant"),
     );
-    supervisor
-        .send(
-            &mission.agent,
-            format!("[Mission {id} annulée par l'Assistant]"),
-        )
-        .await
-        .map_err(said)?;
+    send_as(
+        supervisor,
+        caller,
+        &mission.agent,
+        format!("[Mission {id} annulée par l'Assistant]"),
+    )
+    .await
+    .map_err(said)?;
     Ok(format!(
         "Mission {id} annulée ({} Worker(s) arrêté(s)).",
         workers.len()
@@ -680,7 +738,9 @@ async fn spawn_worker(
             mission.id, mission.text
         ));
     }
-    supervisor.send(&worker.id, brief).await.map_err(said)?;
+    send_as(supervisor, caller, &worker.id, brief)
+        .await
+        .map_err(said)?;
     Ok(format!(
         "Worker {} lancé sur la tâche {task_id}. Il te rendra compte par un rapport.",
         worker.id
@@ -753,6 +813,86 @@ fn inspect(supervisor: &Supervisor, target: &AgentRecord) -> Result<String, Stri
     Ok(state.to_string())
 }
 
+/// Remet un message au nom de l'agent appelant : l'expéditeur suit le message.
+async fn send_as(
+    supervisor: &Supervisor,
+    caller: &AgentRecord,
+    to: &AgentId,
+    text: impl Into<String>,
+) -> Result<(), SupervisorError> {
+    let from = Origin::Agent {
+        agent: caller.id.clone(),
+    };
+    supervisor.deliver(to, from, text).await
+}
+
+/// Dialogue latéral entre Agents (D40) : une question ou une information, jamais un
+/// ordre. Le pair est désigné par son nom ; le daemon l'achemine où qu'il tourne.
+async fn lateral(
+    supervisor: &Supervisor,
+    caller: &AgentRecord,
+    kind: &str,
+    body: &str,
+    args: &Value,
+) -> Result<String, String> {
+    let peer = peer(supervisor, caller, text(args, "agent")?)?;
+    if !supervisor.allow_lateral(&caller.id, &peer.id) {
+        return Err(format!(
+            "trop d'échanges avec {} ces dernières minutes : attends, ou passe par l'Assistant",
+            label(&peer)
+        ));
+    }
+    let hint = match kind {
+        "Question" => "\n(Réponds-lui avec tell_agent si tu as la réponse.)",
+        _ => "",
+    };
+    send_as(
+        supervisor,
+        caller,
+        &peer.id,
+        format!("[{kind} de {}]\n{body}{hint}", label(caller)),
+    )
+    .await
+    .map_err(said)?;
+    let what = kind.to_lowercase();
+    journal(
+        supervisor,
+        &caller.id,
+        &format!("{what} à {} : {body}", label(&peer)),
+    );
+    journal(
+        supervisor,
+        &peer.id,
+        &format!("{what} de {} : {body}", label(caller)),
+    );
+    Ok(format!("Transmis à {}.", label(&peer)))
+}
+
+/// Un autre Agent vivant, désigné par son nom ou son id.
+fn peer(
+    supervisor: &Supervisor,
+    caller: &AgentRecord,
+    reference: &str,
+) -> Result<AgentRecord, String> {
+    let found = match supervisor.record(&AgentId::new(reference)) {
+        Ok(record) => Some(record),
+        Err(_) => supervisor.registry().agent_named(reference).map_err(said)?,
+    };
+    let peer = found.ok_or_else(|| format!("aucun Agent « {reference} »"))?;
+    if peer.level != Level::Agent {
+        return Err(format!(
+            "« {reference} » n'est pas un Agent : le dialogue latéral se fait entre Agents"
+        ));
+    }
+    if peer.id == caller.id {
+        return Err("c'est toi".into());
+    }
+    if peer.state == AgentState::Retired {
+        return Err(format!("{} est retiré", label(&peer)));
+    }
+    Ok(peer)
+}
+
 /// Remonte un compte rendu ou une question au parent, comme un nouveau message.
 async fn deliver(
     supervisor: &Supervisor,
@@ -761,10 +901,14 @@ async fn deliver(
     body: &str,
 ) -> Result<String, String> {
     let parent = caller.parent.as_ref().ok_or("tu n'as pas de parent")?;
-    supervisor
-        .send(parent, format!("[{kind} de {}]\n{body}", label(caller)))
-        .await
-        .map_err(said)?;
+    send_as(
+        supervisor,
+        caller,
+        parent,
+        format!("[{kind} de {}]\n{body}", label(caller)),
+    )
+    .await
+    .map_err(said)?;
     Ok("Transmis.".into())
 }
 

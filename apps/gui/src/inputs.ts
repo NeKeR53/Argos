@@ -3,13 +3,20 @@
 //   [Mission m-… de l'Assistant]            [Mission m-… annulée par l'Assistant]
 //   [Tâche t-… confiée par …]               [Rapport de …]
 //   [Rapport sur la tâche t-… (done) de …]  [Escalade pour l'utilisateur de …]
-//   [Question de …]                         [Argos] …
-// Un message sans préfixe reconnu est un message libre (utilisateur, ou parent via
-// send_to_agent / send_to_worker : le protocole ne dit pas l'expéditeur).
+//   [Question de …]                         [Information de …]
+//   [Argos] …
+// Un message sans préfixe reconnu est un message libre ; son expéditeur vient de l'événement.
 
 import type { AgentId } from "./protocol";
 
-export type InputCategory = "mission" | "task" | "report" | "escalation" | "question" | "argos";
+export type InputCategory =
+  | "mission"
+  | "task"
+  | "report"
+  | "escalation"
+  | "question"
+  | "information"
+  | "argos";
 
 export interface ClassifiedInput {
   /** `null` pour un message libre. */
@@ -27,6 +34,7 @@ const CATEGORIES: [string, InputCategory][] = [
   ["Rapport", "report"],
   ["Escalade ", "escalation"],
   ["Question ", "question"],
+  ["Information ", "information"],
   ["Argos", "argos"],
 ];
 

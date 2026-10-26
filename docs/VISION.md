@@ -33,7 +33,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 
 ## 5. Contrôle
 
-- **D13 — Chaque niveau ne contrôle que le niveau juste en dessous.** L'Assistant n'adresse jamais un Worker.
+- **D13 — Chaque niveau ne contrôle que le niveau juste en dessous.** L'Assistant n'adresse jamais un Worker. Le *contrôle* reste hiérarchique ; la *conversation* entre Agents est permise (D40).
 - **D14 — Deux plans :**
   - **Plan de contrôle, déterministe, appliqué par le daemon** (aucun LLM) : stop, kill, park, resume, move, retire, inspect, réordonner le board. Un stop tue le sous-arbre de process.
   - **Plan cognitif, livré à l'agent** : assigner une mission, replanifier.
@@ -87,6 +87,16 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 - **D37 — Push-to-talk.** STT et TTS **en streaming, locaux sur le Mac** (ex. Whisper.cpp + TTS neural local), backends API payants activables en option. Barge-in : VAD + annulation d'écho, le TTS se coupe dès que l'utilisateur parle. Seul le texte part vers le hub.
 - **D38 — Shell** : orbe toujours au premier plan (repos / écoute / réflexion / parole), console invocable au raccourci (arbre des Agents, état global, escalades, panic stop), surfaces en fenêtres flottantes indépendantes.
 - **D39 — Coût par agent** visible dans la console.
+
+## 13 bis. Dialogue entre Agents
+
+- **D40 — Dialogue latéral entre Agents** (décidé le 2026-10-26). Un Agent peut poser une question ou transmettre une information à un autre Agent, par exemple demander à l'Agent « Mail » le dernier courriel d'un contact. Les règles :
+  - **Questions et informations seulement, jamais des ordres.** On ne touche ni au board, ni aux Workers, ni à la mémoire d'un autre Agent ; celui qui reçoit décide seul de ce qu'il en fait.
+  - **Entre Agents seulement.** Ni l'Assistant (qui garde ses outils de pilotage) ni les Workers n'y prennent part.
+  - **Adressé par le nom de l'Agent, acheminé par le daemon, quel que soit le serveur** : l'Agent qui parle ne sait pas où tourne l'autre. Phase 1 : même daemon ; phase 4 : le mesh achemine entre nœuds.
+  - **Asynchrone**, comme les comptes rendus : la réponse arrive plus tard comme un message ; personne n'attend.
+  - **Visible** : chaque message porte son expéditeur, le dialogue est noté au journal des deux Agents et apparaît dans la console.
+  - **Garde-fou déterministe** contre les échanges sans fin : un nombre limité de messages par paire d'Agents sur une fenêtre de temps.
 
 ## 14. Phases
 

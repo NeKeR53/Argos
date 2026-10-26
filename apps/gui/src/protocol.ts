@@ -128,13 +128,17 @@ export type Reply =
   | { kind: "done"; affected: AgentId[] }
   | { kind: "error"; message: string };
 
+/** Expéditeur d'un message remis à un agent (`Origin`, tag `kind`). */
+export type Origin = { kind: "user" } | { kind: "agent"; agent: AgentId } | { kind: "argos" };
+
 /** Événement poussé par le daemon (`DaemonEvent`, tag `type`). */
 export type DaemonEvent =
   /**
    * Ce que l'agent vient de recevoir : message de l'utilisateur, mission de l'Assistant,
-   * rapport d'un enfant, consigne d'Argos. Publié pour chaque message remis.
+   * rapport d'un enfant, question d'un pair, consigne d'Argos. Publié pour chaque message
+   * remis, avec son expéditeur.
    */
-  | { type: "input"; agent: AgentId; text: string }
+  | { type: "input"; agent: AgentId; from: Origin; text: string }
   /** Ce que l'agent a dit. */
   | { type: "message"; agent: AgentId; text: string }
   | { type: "tool"; agent: AgentId; name: string }
@@ -240,7 +244,15 @@ function checkEvent(event: Record<string, unknown>) {
   }
   string(event.agent, "event.agent");
   switch (event.type) {
-    case "input":
+    case "input": {
+      string(event.text, "event.text");
+      const from = object(event.from, "event.from");
+      if (!["user", "agent", "argos"].includes(from.kind as string)) {
+        throw new ProtocolError(`expéditeur inconnu : ${String(from.kind)}`);
+      }
+      if (from.kind === "agent") string(from.agent, "event.from.agent");
+      break;
+    }
     case "message":
       string(event.text, "event.text");
       break;

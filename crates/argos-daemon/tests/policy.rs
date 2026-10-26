@@ -3,7 +3,7 @@
 
 mod common;
 
-use argos_core::protocol::DaemonEvent;
+use argos_core::protocol::{DaemonEvent, Origin};
 use argos_core::{AgentRecord, EngineKind, Level};
 use argos_daemon::policy::ModelPolicy;
 use argos_daemon::registry::NewAgent;
@@ -65,7 +65,7 @@ async fn an_exhausted_quota_moves_a_worker_down_its_chain_and_resumes_its_task()
     // Nouveau moteur : session neuve, relancée sur la tâche. Son titre contient QUOTA :
     // le faux Codex échoue à son tour, ce qui mène au bout de la chaîne.
     until(&mut w.events, |event| {
-        matches!(event, DaemonEvent::Input { agent, text } if *agent == worker.id && text.contains(&task.id))
+        matches!(event, DaemonEvent::Input { agent, from: Origin::Argos, text } if *agent == worker.id && text.contains(&task.id))
     })
     .await;
     // Bout de chaîne : plus de repli, l'utilisateur est prévenu.

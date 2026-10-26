@@ -14,20 +14,23 @@ use crate::engine::{
 use crate::memory::Memory;
 use crate::policy::ModelPolicy;
 use crate::registry::{NewAgent, Registry, RegistryError};
-use argos_core::protocol::{AgentStatus, DaemonEvent};
+use argos_core::protocol::{AgentStatus, DaemonEvent, Origin};
 use argos_core::{AgentId, AgentRecord, AgentState, EngineKind, Level, Usage};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, watch};
 
 /// Délai laissé à un process pour sortir après un parking ou un kill.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Remplissage du contexte qui déclenche la compaction contrôlée (D24).
 const COMPACT_AT: f64 = 0.7;
+/// Garde-fou du dialogue latéral (D40) : messages au plus par paire d'Agents, par fenêtre.
+const LATERAL_LIMIT: usize = 20;
+const LATERAL_WINDOW: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone)]
 pub struct SupervisorSettings {
@@ -84,6 +87,8 @@ struct Inner {
     compacting: Mutex<HashSet<AgentId>>,
     /// Dernier message remis à chaque agent, à relancer après un repli de modèle.
     last_input: Mutex<HashMap<AgentId, String>>,
+    /// Instants des derniers messages latéraux, par paire d'Agents (D40).
+    lateral: Mutex<HashMap<(AgentId, AgentId), VecDeque<Instant>>>,
     memory: Memory,
     events: broadcast::Sender<DaemonEvent>,
     generations: AtomicU64,
@@ -109,6 +114,7 @@ impl Supervisor {
                 tokens: Mutex::default(),
                 compacting: Mutex::default(),
                 last_input: Mutex::default(),
+                lateral: Mutex::default(),
                 memory: Memory::new(settings.home.join("memory")),
                 events,
                 generations: AtomicU64::new(0),
@@ -120,6 +126,30 @@ impl Supervisor {
     /// Les mémoires de l'Assistant et des Agents.
     pub fn memory(&self) -> &Memory {
         &self.inner.memory
+    }
+
+    /// Compte un message latéral entre deux Agents (D40) ; `false` si la paire a dépassé
+    /// son quota sur la fenêtre, pour couper un échange qui tournerait sans fin.
+    pub fn allow_lateral(&self, a: &AgentId, b: &AgentId) -> bool {
+        let pair = if a <= b {
+            (a.clone(), b.clone())
+        } else {
+            (b.clone(), a.clone())
+        };
+        let mut lateral = locked(&self.inner.lateral);
+        let recent = lateral.entry(pair).or_default();
+        let now = Instant::now();
+        while recent
+            .front()
+            .is_some_and(|sent| now.duration_since(*sent) > LATERAL_WINDOW)
+        {
+            recent.pop_front();
+        }
+        if recent.len() >= LATERAL_LIMIT {
+            return false;
+        }
+        recent.push_back(now);
+        true
     }
 
     pub fn policy(&self) -> &ModelPolicy {
@@ -193,6 +223,12 @@ impl Supervisor {
 
     /// Message à un agent. Un agent parké est d'abord réveillé : sa session reprend.
     pub async fn send(&self, id: &AgentId, text: impl Into<String>) -> Result<()> {
+        self.deliver(id, Origin::User, text).await
+    }
+
+    /// Remet un message à un agent en disant qui l'envoie (un autre agent, Argos) ; un
+    /// agent parké est d'abord réveillé.
+    pub async fn deliver(&self, id: &AgentId, from: Origin, text: impl Into<String>) -> Result<()> {
         let slot = self.slot(id);
         let mut live = slot.lock().await;
         if live.is_none() {
@@ -209,6 +245,7 @@ impl Supervisor {
         locked(&self.inner.last_input).insert(id.clone(), text.clone());
         self.publish(DaemonEvent::Input {
             agent: id.clone(),
+            from,
             text,
         });
         self.publish_status(id);
@@ -536,7 +573,11 @@ impl Supervisor {
         let supervisor = self.clone();
         let id = id.clone();
         tokio::spawn(async move {
-            if supervisor.send(&id, prompt).await.is_err() {
+            if supervisor
+                .deliver(&id, Origin::Argos, prompt)
+                .await
+                .is_err()
+            {
                 locked(&supervisor.inner.compacting).remove(&id);
             }
         });
@@ -645,7 +686,7 @@ impl Supervisor {
             _ => locked(&self.inner.last_input).get(&id).cloned(),
         };
         if let Some(text) = resume
-            && let Err(error) = self.send(&id, text).await
+            && let Err(error) = self.deliver(&id, Origin::Argos, text).await
         {
             self.notice(&id, format!("reprise impossible après le repli : {error}"));
         }

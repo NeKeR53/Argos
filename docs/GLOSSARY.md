@@ -17,6 +17,9 @@ Vocabulaire canonique du projet. Le code, les docs et les prompts des agents uti
 - **Charte** — fiche d'identité d'un Agent : nom, périmètre, ressources possédées. Sert à décider réutiliser vs créer.
 - **Registre** — liste des Agents connus de l'Assistant, avec leurs chartes et leur nœud.
 - **Escalade** — un agent remonte au niveau supérieur un besoin qu'il ne peut pas traiter seul (jusqu'à l'utilisateur pour un Agent).
+- **Dialogue latéral** — échange direct entre deux Agents (D40) : questions et informations, jamais des ordres. Adressé par nom, acheminé par le daemon quel que soit le nœud.
+- **Pair** — un autre Agent, interlocuteur possible d'un dialogue latéral.
+- **Expéditeur** — origine d'un message reçu par un agent : l'utilisateur, un autre agent, ou Argos lui-même.
 
 ## Contrôle
 

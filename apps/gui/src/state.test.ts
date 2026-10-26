@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentStatus, ServerMessage } from "./protocol";
+import type { AgentStatus, Origin, ServerMessage } from "./protocol";
 import { parseServerMessage } from "./protocol";
 import {
   initialState,
@@ -89,7 +89,9 @@ describe("arbre", () => {
   });
 });
 
-const input = (agent: string, text: string): Action => server({ type: "event", event: { type: "input", agent, text } });
+const user = { kind: "user" } as const;
+const input = (agent: string, text: string, from: Origin = user): Action =>
+  server({ type: "event", event: { type: "input", agent, from, text } });
 const send = (id: number, agent: string, text: string): Action => ({
   type: "requested",
   id,
@@ -121,6 +123,7 @@ describe("fil des messages", () => {
       {
         kind: "input",
         text: "bonjour",
+        from: user,
         console: { request: 2, delivery: "delivered", awaitingEcho: false },
       },
       { kind: "tool", name: "Bash" },
@@ -137,7 +140,7 @@ describe("fil des messages", () => {
     const after = run(tree, send(2, "a0", "salut"), done(2, "a0"), input("a0", "salut"));
     for (const state of [before, after]) {
       expect(thread(state, "a0")).toEqual([
-        { kind: "input", text: "salut", console: { request: 2, delivery: "delivered", awaitingEcho: false } },
+        { kind: "input", text: "salut", from: user, console: { request: 2, delivery: "delivered", awaitingEcho: false } },
       ]);
     }
   });
@@ -154,8 +157,8 @@ describe("fil des messages", () => {
     const mission = "[Mission m-1a2b3c4d de l'Assistant]\nÉclaire le salon";
     const state = run(tree, input("dom", mission), input("dom", "bonjour"));
     expect(thread(state, "dom")).toEqual([
-      { kind: "input", text: mission, console: null },
-      { kind: "input", text: "bonjour", console: null },
+      { kind: "input", text: mission, from: user, console: null },
+      { kind: "input", text: "bonjour", from: user, console: null },
     ]);
   });
 
@@ -168,8 +171,8 @@ describe("fil des messages", () => {
     );
     // L'input tardif (d'une autre console, par exemple) ne relève pas le message refusé.
     expect(thread(state, "a0")).toEqual([
-      { kind: "input", text: "salut", console: { request: 5, delivery: "failed", awaitingEcho: false } },
-      { kind: "input", text: "salut", console: null },
+      { kind: "input", text: "salut", from: null, console: { request: 5, delivery: "failed", awaitingEcho: false } },
+      { kind: "input", text: "salut", from: user, console: null },
     ]);
   });
 
@@ -308,5 +311,15 @@ describe("erreurs du daemon", () => {
   it("préviennent d'une version de protocole différente", () => {
     expect(run(server({ type: "hello", protocol: 1 })).notices).toEqual([]);
     expect(run(server({ type: "hello", protocol: 2 })).notices[0].tone).toBe("warning");
+  });
+});
+
+describe("expéditeur", () => {
+  it("garde qui a envoyé chaque message reçu", () => {
+    const from = { kind: "agent", agent: "a0" } as const;
+    const state = run(tree, input("dom", "[Question de l'Agent « Mail » (m1)]\nUn courriel ?", from));
+    expect(thread(state, "dom")).toEqual([
+      { kind: "input", text: "[Question de l'Agent « Mail » (m1)]\nUn courriel ?", from, console: null },
+    ]);
   });
 });

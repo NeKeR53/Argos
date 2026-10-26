@@ -103,9 +103,10 @@ pub struct AgentStatus {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DaemonEvent {
     /// Ce qu'un agent vient de recevoir : message de l'utilisateur, mission de
-    /// l'Assistant, rapport d'un enfant, consigne d'Argos.
+    /// l'Assistant, rapport d'un enfant, question d'un pair, consigne d'Argos.
     Input {
         agent: AgentId,
+        from: Origin,
         text: String,
     },
     /// Ce que l'agent a dit.
@@ -138,10 +139,41 @@ pub enum DaemonEvent {
     },
 }
 
+/// Expéditeur d'un message remis à un agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Origin {
+    /// L'utilisateur, depuis la console ou la voix.
+    User,
+    /// Un autre agent : parent, enfant ou pair (D40).
+    Agent { agent: AgentId },
+    /// Argos lui-même : compaction, reprise après un repli.
+    Argos,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn inputs_say_who_sent_them() {
+        let event = DaemonEvent::Input {
+            agent: AgentId::new("mail"),
+            from: Origin::Agent {
+                agent: AgentId::new("notes"),
+            },
+            text: "[Question de …]".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&event).unwrap(),
+            json!({"type": "input", "agent": "mail", "from": {"kind": "agent", "agent": "notes"}, "text": "[Question de …]"})
+        );
+        assert_eq!(
+            serde_json::to_value(Origin::User).unwrap(),
+            json!({"kind": "user"})
+        );
+    }
 
     #[test]
     fn requests_are_flat_objects() {
