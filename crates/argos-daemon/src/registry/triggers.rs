@@ -28,8 +28,11 @@ CREATE INDEX triggers_by_target ON triggers(target);
 /// Intervalle minimal d'un déclencheur périodique : au-delà, on brûle des tokens pour rien.
 pub const MIN_EVERY_SECONDS: u64 = 60;
 
-const COLUMNS: &str =
-    "id, owner, target, name, kind, spec, prompt, secret, enabled, created_at, last_fired";
+const COLUMNS: &str = "id, owner, target, name, kind, spec, prompt, secret, enabled, created_at, last_fired, armed_at";
+
+/// v6 : instant de (ré)activation, référence des périodiques après une suspension.
+pub(super) const ARMED_COLUMN: &str =
+    "ALTER TABLE triggers ADD COLUMN armed_at INTEGER; UPDATE triggers SET armed_at = created_at;";
 
 /// Un déclencheur à créer.
 #[derive(Debug, Clone)]
@@ -69,7 +72,7 @@ impl Registry {
             (new.kind == TriggerKind::Webhook).then(|| format!("{}", Uuid::new_v4().simple()));
         self.db.execute(
             &format!(
-                "INSERT INTO triggers ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, NULL)"
+                "INSERT INTO triggers ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9, NULL, ?9)"
             ),
             params![
                 id,
@@ -110,12 +113,21 @@ impl Registry {
         self.query_triggers("WHERE enabled = 1 ORDER BY created_at, rowid", [])
     }
 
+    /// Active ou suspend. Réactiver réarme : un périodique repart de maintenant, au lieu
+    /// de rattraper la période passée suspendu.
     pub fn set_trigger_enabled(&self, id: &str, enabled: bool) -> Result<Trigger> {
-        self.trigger(id)?;
-        self.db.execute(
-            "UPDATE triggers SET enabled = ?2 WHERE id = ?1",
-            params![id, enabled],
-        )?;
+        let trigger = self.trigger(id)?;
+        if enabled && !trigger.enabled {
+            self.db.execute(
+                "UPDATE triggers SET enabled = 1, armed_at = ?2 WHERE id = ?1",
+                params![id, now() as i64],
+            )?;
+        } else {
+            self.db.execute(
+                "UPDATE triggers SET enabled = ?2 WHERE id = ?1",
+                params![id, enabled],
+            )?;
+        }
         self.trigger(id)
     }
 
@@ -196,6 +208,7 @@ fn trigger_row(row: &Row) -> rusqlite::Result<Trigger> {
         enabled: row.get(8)?,
         created_at: row.get::<_, i64>(9)? as u64,
         last_fired: row.get::<_, Option<i64>>(10)?.map(|at| at as u64),
+        armed_at: row.get::<_, i64>(11)? as u64,
     })
 }
 
@@ -292,6 +305,12 @@ mod tests {
         registry.set_trigger_enabled(&trigger.id, true).unwrap();
         registry.mark_trigger_fired(&trigger.id, 42).unwrap();
         assert_eq!(registry.trigger(&trigger.id).unwrap().last_fired, Some(42));
+
+        // Réactiver réarme à maintenant.
+        registry.set_trigger_enabled(&trigger.id, false).unwrap();
+        let rearmed = registry.set_trigger_enabled(&trigger.id, true).unwrap();
+        assert!(rearmed.armed_at >= trigger.armed_at);
+        assert_eq!(rearmed.reference(), rearmed.armed_at.max(42));
 
         // Retirer la cible supprime ses déclencheurs.
         registry.retire(&agent).unwrap();

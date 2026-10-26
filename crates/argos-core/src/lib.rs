@@ -329,7 +329,17 @@ pub struct Trigger {
     pub secret: Option<String>,
     pub enabled: bool,
     pub created_at: u64,
+    /// Dernière (ré)activation : un périodique compte ses échéances à partir d'ici ou
+    /// de son dernier déclenchement, le plus récent des deux.
+    pub armed_at: u64,
     pub last_fired: Option<u64>,
+}
+
+impl Trigger {
+    /// Début de la période en cours pour un déclencheur périodique.
+    pub fn reference(&self) -> u64 {
+        self.last_fired.unwrap_or(0).max(self.armed_at)
+    }
 }
 
 /// Issue d'un tour d'agent.

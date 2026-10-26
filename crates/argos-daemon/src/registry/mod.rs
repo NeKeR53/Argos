@@ -77,12 +77,13 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 5] = [
+const MIGRATIONS: [&str; 6] = [
     AGENTS_SCHEMA,
     board::SCHEMA,
     PROFILE_COLUMN,
     surfaces::SCHEMA,
     triggers::SCHEMA,
+    triggers::ARMED_COLUMN,
 ];
 
 /// v3 : profil de la politique de modèles (T8).

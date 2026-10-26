@@ -162,9 +162,10 @@ impl Events {
 }
 
 /// Un déclencheur périodique est-il échu à `now` ? La référence est son dernier
-/// déclenchement (ou sa création) : après une absence, il ne part qu'une fois.
+/// déclenchement ou sa dernière (ré)activation : après une absence il ne part qu'une
+/// fois, et un déclencheur réactivé attend sa prochaine échéance.
 pub fn is_due(trigger: &Trigger, now: u64) -> bool {
-    let since = trigger.last_fired.unwrap_or(trigger.created_at);
+    let since = trigger.reference();
     match trigger.kind {
         TriggerKind::Every => trigger
             .spec
@@ -207,6 +208,7 @@ mod tests {
             secret: None,
             enabled: true,
             created_at,
+            armed_at: created_at,
             last_fired,
         }
     }
@@ -220,6 +222,16 @@ mod tests {
         assert!(!is_due(&fired, 1_700));
         // Après une longue absence : échu, mais une seule fois (la référence avance).
         assert!(is_due(&fired, 100_000));
+    }
+
+    #[test]
+    fn a_reactivated_cron_waits_for_its_next_occurrence() {
+        // Créé il y a longtemps, jamais déclenché, réactivé à `now` : rien ne part
+        // avant la prochaine minute pleine.
+        let mut cron = trigger(TriggerKind::Cron, "* * * * *", 1_000, None);
+        cron.armed_at = 2_000_000;
+        assert!(!is_due(&cron, 2_000_000));
+        assert!(is_due(&cron, 2_000_061));
     }
 
     #[test]
