@@ -534,19 +534,57 @@ textarea {
   background: var(--surface);
 }
 
-.entry-user {
+/* Ce que l'agent reçoit, à droite. Message de l'utilisateur : bulle pleine. Message
+   préfixé par un outil (mission, rapport…) : cadre avec étiquette, filet de couleur. */
+.entry-input {
   align-self: flex-end;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
 }
 
-.entry-user .bubble {
+.entry-input .bubble {
   background: var(--accent-soft);
 }
 
-.entry-user[data-delivery="failed"] .bubble,
-.entry-user[data-delivery="lost"] .bubble {
+.entry-input[data-tagged] .bubble {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface);
+}
+
+.entry-input[data-category="free"] .bubble {
+  background: var(--surface-2);
+}
+
+.entry-input[data-category="mission"] .bubble,
+.entry-input[data-category="task"] .bubble,
+.entry-input[data-category="question"] .bubble {
+  border-left-color: var(--accent);
+}
+
+.entry-input[data-category="report"] .bubble {
+  border-left-color: var(--ok);
+}
+
+.entry-input[data-category="escalation"] .bubble {
+  border-left-color: var(--warn);
+  background: var(--warn-soft);
+}
+
+.entry-input[data-category="argos"] .bubble {
+  color: var(--text-muted);
+}
+
+.input-tag {
+  margin-bottom: 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.entry-input[data-delivery="failed"] .bubble,
+.entry-input[data-delivery="lost"] .bubble {
   outline: 1px dashed var(--danger);
 }
 
@@ -556,8 +594,8 @@ textarea {
   color: var(--text-muted);
 }
 
-.entry-user[data-delivery="failed"] .entry-note,
-.entry-user[data-delivery="lost"] .entry-note {
+.entry-input[data-delivery="failed"] .entry-note,
+.entry-input[data-delivery="lost"] .entry-note {
   color: var(--danger);
 }
 
@@ -639,6 +677,11 @@ textarea {
   color: var(--warn);
 }
 
+.notice[data-tone="info"] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
 .notice span {
   flex: 1;
   overflow-wrap: anywhere;
@@ -698,4 +741,163 @@ textarea {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* --- Escalades ------------------------------------------------------------------ */
+
+.escalations {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-bottom: 1px solid var(--border);
+}
+
+.escalation {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+}
+
+.escalation-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.escalation-text strong {
+  color: var(--warn);
+}
+
+.escalation-body {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-muted);
+}
+
+.alert-badge {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: var(--surface);
+  font-family: var(--font);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
+}
+
+/* --- Board ---------------------------------------------------------------------- */
+
+.board {
+  flex-shrink: 0;
+  max-height: 40%;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.board summary {
+  padding: 7px 16px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.board-title {
+  margin-right: 10px;
+  font-weight: 600;
+}
+
+.board-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 16px 10px;
+}
+
+.board-mission header {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+
+.board-mission-text {
+  font-weight: 550;
+  white-space: pre-wrap;
+}
+
+.board-tasks {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.board-task {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0 3px 8px;
+  border-left: 1px solid var(--border);
+}
+
+.board-task-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.board-task-result {
+  font-size: 12px;
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.board-task-worker {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.board-empty {
+  padding-left: 8px;
+  font-size: 12px;
+}
+
+.task-state {
+  flex-shrink: 0;
+  min-width: 76px;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.task-state[data-state="in_progress"] {
+  color: var(--accent);
+}
+
+.task-state[data-state="done"] {
+  color: var(--ok);
+}
+
+.task-state[data-state="blocked"],
+.task-state[data-state="interrupted"] {
+  color: var(--warn);
+}
+
+.task-state[data-state="cancelled"] {
+  text-decoration: line-through;
 }

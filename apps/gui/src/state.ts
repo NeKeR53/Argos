@@ -2,10 +2,12 @@
 // quelques actions locales (connexion, requête envoyée, sélection). Le daemon ne garde
 // pas d'historique : les fils de messages commencent à la connexion (phase 1).
 
+import { classifyInput, escalationSource } from "./inputs";
 import {
   PROTOCOL_VERSION,
   type AgentId,
   type AgentStatus,
+  type Board,
   type Command,
   type DaemonEvent,
   type Reply,
@@ -26,12 +28,21 @@ export type Connection =
   /** Aucune URL de daemon : ni API Tauri, ni paramètre `?daemon=`. */
   | { status: "unconfigured"; reason: string };
 
-/** Sort d'un message envoyé par l'utilisateur. */
+/** Sort d'un message envoyé depuis cette console. */
 export type Delivery = "pending" | "delivered" | "failed" | "lost";
+
+/** Suivi d'un message parti de cette console, en attendant son `input`. */
+export interface ConsoleSend {
+  request: number;
+  delivery: Delivery;
+  /** Son `input` n'est pas encore arrivé : le prochain `input` de même texte le confirme. */
+  awaitingEcho: boolean;
+}
 
 /** Une ligne du fil d'un agent. `seq` sert de clé stable à l'affichage. */
 export type ThreadEntry =
-  | { seq: number; kind: "user"; text: string; request: number; delivery: Delivery }
+  /** Ce que l'agent reçoit ; `console` est présent pour un message parti d'ici. */
+  | { seq: number; kind: "input"; text: string; console: ConsoleSend | null }
   | { seq: number; kind: "agent"; text: string }
   | { seq: number; kind: "tool"; name: string }
   | { seq: number; kind: "turn"; outcome: TurnOutcome; usage: Usage | null }
@@ -39,7 +50,20 @@ export type ThreadEntry =
 
 export interface Notice {
   id: number;
-  tone: "error" | "warning";
+  /** `info` : information du daemon (événement `notice`). */
+  tone: "error" | "warning" | "info";
+  text: string;
+  /** Agent concerné, pour y mener l'utilisateur. */
+  agent?: AgentId | null;
+}
+
+/** Un Agent qui a besoin de l'utilisateur (D12), remonté par l'Assistant. */
+export interface Escalation {
+  id: number;
+  /** Nom de l'Agent tel qu'écrit dans le préfixe. */
+  name: string;
+  /** Son id, quand le préfixe le donne. */
+  agent: AgentId | null;
   text: string;
 }
 
@@ -53,12 +77,23 @@ export interface AppState {
   threads: Record<AgentId, ThreadEntry[]>;
   /** Coût cumulé par agent depuis la connexion de la GUI (USD). */
   spent: Record<AgentId, number>;
+  /** Dernier board reçu, par Agent. */
+  boards: Record<AgentId, Board>;
+  /**
+   * Compteur incrémenté à chaque événement qui concerne un Agent ou l'un de ses Workers :
+   * son board affiché est à relire quand il change.
+   */
+  boardRevisions: Record<AgentId, number>;
+  /** Escalades encore affichées dans le bandeau. */
+  escalations: Escalation[];
+  /** Escalades arrivées depuis la dernière consultation de l'Assistant. */
+  unseenEscalations: number;
   /** Requêtes sans réponse, par id. */
   pending: Record<number, Command>;
   notices: Notice[];
   /** Agent affiché ; `null` = l'Assistant. */
   selected: AgentId | null;
-  /** Compteur des clés de lignes et d'avis. */
+  /** Compteur des clés de lignes, d'avis et d'escalades. */
   seq: number;
 }
 
@@ -68,11 +103,13 @@ export type Action =
   /** Une requête vient de partir avec cet id. */
   | { type: "requested"; id: number; command: Command }
   | { type: "select"; agent: AgentId }
-  | { type: "dismiss"; notice: number };
+  | { type: "dismiss"; notice: number }
+  | { type: "dismiss_escalation"; escalation: number };
 
 /** Au-delà, les lignes les plus anciennes d'un fil sont oubliées. */
 export const THREAD_LIMIT = 500;
 const NOTICE_LIMIT = 5;
+const ESCALATION_LIMIT = 5;
 
 export const initialState: AppState = {
   connection: { status: "connecting" },
@@ -81,6 +118,10 @@ export const initialState: AppState = {
   order: [],
   threads: {},
   spent: {},
+  boards: {},
+  boardRevisions: {},
+  escalations: [],
+  unseenEscalations: 0,
   pending: {},
   notices: [],
   selected: null,
@@ -97,17 +138,22 @@ export function reduce(state: AppState, action: Action): AppState {
       const next = { ...state, pending: { ...state.pending, [action.id]: action.command } };
       const command = action.command;
       if (command.command !== "send") return next;
+      // Affiché tout de suite ; l'`input` du daemon le confirmera sans le dupliquer.
       return append(next, command.agent, {
-        kind: "user",
+        kind: "input",
         text: command.text,
-        request: action.id,
-        delivery: "pending",
+        console: { request: action.id, delivery: "pending", awaitingEcho: true },
       });
     }
-    case "select":
-      return { ...state, selected: action.agent };
+    case "select": {
+      const next = { ...state, selected: action.agent };
+      // Consulter l'Assistant, c'est voir les escalades qu'il a reçues.
+      return state.agents[action.agent]?.level === "assistant" ? { ...next, unseenEscalations: 0 } : next;
+    }
     case "dismiss":
       return { ...state, notices: state.notices.filter((notice) => notice.id !== action.notice) };
+    case "dismiss_escalation":
+      return { ...state, escalations: state.escalations.filter((e) => e.id !== action.escalation) };
   }
 }
 
@@ -123,7 +169,7 @@ function onServerMessage(state: AppState, message: ServerMessage): AppState {
     case "reply":
       return onReply(state, message.id, message.reply);
     case "event":
-      return onEvent(state, message.event);
+      return onEvent(touchBoard(state, message.event), message.event);
   }
 }
 
@@ -138,6 +184,8 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
       return withTree(next, reply.agents);
     case "agent":
       return upsert(next, reply.agent);
+    case "board":
+      return { ...next, boards: { ...next.boards, [reply.board.agent]: reply.board } };
     case "done":
       return command?.command === "send" ? deliver(next, command.agent, id, "delivered") : next;
     case "error": {
@@ -151,6 +199,8 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
 
 function onEvent(state: AppState, event: DaemonEvent): AppState {
   switch (event.type) {
+    case "input":
+      return onInput(state, event.agent, event.text);
     case "message":
       return append(state, event.agent, { kind: "agent", text: event.text });
     case "tool":
@@ -172,7 +222,65 @@ function onEvent(state: AppState, event: DaemonEvent): AppState {
       return append(state, event.agent, { kind: "exited", code: event.code });
     case "agent_updated":
       return upsert(state, event.agent);
+    case "notice":
+      return notify(state, "info", event.text, event.agent);
   }
+}
+
+/**
+ * Ce que l'agent reçoit. Un message parti de cette console est déjà affiché : son
+ * `input` le confirme au lieu de l'ajouter une seconde fois.
+ */
+function onInput(state: AppState, agent: AgentId, text: string): AppState {
+  const thread = state.threads[agent] ?? [];
+  const echoed = thread.findIndex(
+    (entry) =>
+      entry.kind === "input" &&
+      entry.console?.awaitingEcho === true &&
+      entry.console.delivery !== "failed" &&
+      entry.text === text,
+  );
+  let next: AppState;
+  if (echoed >= 0) {
+    const updated = thread.map((entry, index) =>
+      index === echoed && entry.kind === "input" && entry.console
+        ? { ...entry, console: { ...entry.console, delivery: "delivered" as const, awaitingEcho: false } }
+        : entry,
+    );
+    next = { ...state, threads: { ...state.threads, [agent]: updated } };
+  } else {
+    next = append(state, agent, { kind: "input", text, console: null });
+  }
+  return state.agents[agent]?.level === "assistant" ? withEscalation(next, text) : next;
+}
+
+/** Une escalade reçue par l'Assistant doit se voir où que regarde l'utilisateur. */
+function withEscalation(state: AppState, text: string): AppState {
+  const { tag, body } = classifyInput(text);
+  const source = escalationSource(tag);
+  if (!source) return state;
+  const seq = state.seq + 1;
+  const assistantShown = selectedAgent(state)?.level === "assistant";
+  return {
+    ...state,
+    seq,
+    escalations: [...state.escalations, { id: seq, ...source, text: body }].slice(-ESCALATION_LIMIT),
+    unseenEscalations: assistantShown ? 0 : state.unseenEscalations + 1,
+  };
+}
+
+/** Marque à relire le board de l'Agent concerné par l'événement (lui ou son Worker). */
+function touchBoard(state: AppState, event: DaemonEvent): AppState {
+  if (event.type === "notice") return state;
+  const subject = event.type === "agent_updated" ? event.agent : state.agents[event.agent];
+  if (!subject) return state;
+  const owner =
+    subject.level === "agent" ? subject.id : subject.level === "worker" ? subject.parent : null;
+  if (!owner) return state;
+  return {
+    ...state,
+    boardRevisions: { ...state.boardRevisions, [owner]: (state.boardRevisions[owner] ?? 0) + 1 },
+  };
 }
 
 function onConnection(state: AppState, connection: Connection): AppState {
@@ -207,10 +315,13 @@ function upsert(state: AppState, agent: AgentStatus): AppState {
     delete agents[agent.id];
     const threads = { ...state.threads };
     delete threads[agent.id];
+    const boards = { ...state.boards };
+    delete boards[agent.id];
     return {
       ...state,
       agents,
       threads,
+      boards,
       order: state.order.filter((id) => id !== agent.id),
       selected: state.selected === agent.id ? null : state.selected,
     };
@@ -242,15 +353,22 @@ function deliver(state: AppState, agent: AgentId, request: number, delivery: Del
   return { ...state, threads: { ...state.threads, [agent]: setDelivery(thread, request, delivery) } };
 }
 
+/**
+ * Sort d'un message de la console. « remis » ne défait pas une confirmation déjà reçue ;
+ * « perdu » ou « refusé » arrêtent l'attente de l'`input`.
+ */
 function setDelivery(thread: ThreadEntry[], request: number, delivery: Delivery): ThreadEntry[] {
-  return thread.map((entry) =>
-    entry.kind === "user" && entry.request === request ? { ...entry, delivery } : entry,
-  );
+  return thread.map((entry) => {
+    if (entry.kind !== "input" || entry.console?.request !== request) return entry;
+    const awaitingEcho = delivery === "delivered" ? entry.console.awaitingEcho : false;
+    return { ...entry, console: { ...entry.console, delivery, awaitingEcho } };
+  });
 }
 
-function notify(state: AppState, tone: Notice["tone"], text: string): AppState {
+function notify(state: AppState, tone: Notice["tone"], text: string, agent: AgentId | null = null): AppState {
   const seq = state.seq + 1;
-  return { ...state, seq, notices: [...state.notices, { id: seq, tone, text }].slice(-NOTICE_LIMIT) };
+  const notice: Notice = agent ? { id: seq, tone, text, agent } : { id: seq, tone, text };
+  return { ...state, seq, notices: [...state.notices, notice].slice(-NOTICE_LIMIT) };
 }
 
 // --- Lectures dérivées ------------------------------------------------------------
@@ -316,6 +434,8 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return "Lecture de l'arbre";
     case "inspect":
       return `Inspection de ${target(command.agent)}`;
+    case "board":
+      return `Lecture du board de ${target(command.agent)}`;
     case "send":
       return `Message à ${target(command.agent)}`;
     case "interrupt":

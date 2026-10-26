@@ -1,11 +1,13 @@
-// Panneau de l'agent sélectionné : en-tête et actions de contrôle, fil des messages,
-// saisie. Un Worker s'affiche en lecture seule (D2).
+// Panneau de l'agent sélectionné : en-tête et actions de contrôle, board d'un Agent,
+// fil des messages, saisie. Un Worker s'affiche en lecture seule (D2).
 
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { AgentStatus, Command } from "../protocol";
-import { displayName, isAddressable, isRetirable, shortId, type ThreadEntry } from "../state";
+import type { AgentId, AgentStatus, Board, Command, Level } from "../protocol";
+import { displayName, isAddressable, isRetirable, shortId, type ConsoleSend, type ThreadEntry } from "../state";
 import { engineLabel, formatCost, formatUsage, levelLabel, outcomeLabel } from "../format";
+import { classifyInput } from "../inputs";
 import { AgentFlags } from "./AgentTree";
+import { BoardSection } from "./BoardSection";
 import { StatusDot } from "./StatusDot";
 
 interface Props {
@@ -14,14 +16,21 @@ interface Props {
   parent: AgentStatus | null;
   thread: ThreadEntry[];
   spent: number | undefined;
+  /** Board d'un Agent (absent pour les autres niveaux ou avant la première lecture). */
+  board: Board | undefined;
+  boardRevision: number;
   connected: boolean;
   send: (command: Command) => boolean;
+  isLiving: (agent: AgentId) => boolean;
   onRetire: (agent: AgentStatus) => void;
-  onSelect: (agent: AgentStatus) => void;
+  onSelect: (agent: AgentId) => void;
 }
 
-export function ChatPanel({ agent, parent, thread, spent, connected, send, onRetire, onSelect }: Props) {
+export function ChatPanel(props: Props) {
+  const { agent, parent, thread, spent, connected, send, onRetire, onSelect } = props;
   const addressable = isAddressable(agent);
+  // Board ouvert ou replié : le choix suit l'utilisateur d'un Agent à l'autre.
+  const [boardOpen, setBoardOpen] = useState(true);
   return (
     <section className="chat" aria-label={`Fil de ${displayName(agent)}`}>
       <header className="chat-header">
@@ -85,7 +94,7 @@ export function ChatPanel({ agent, parent, thread, spent, connected, send, onRet
           {parent && (
             <>
               {" "}
-              <button type="button" className="link" onClick={() => onSelect(parent)}>
+              <button type="button" className="link" onClick={() => onSelect(parent.id)}>
                 Ouvrir {displayName(parent)}
               </button>
             </>
@@ -93,15 +102,29 @@ export function ChatPanel({ agent, parent, thread, spent, connected, send, onRet
         </p>
       )}
 
+      {agent.level === "agent" && (
+        <BoardSection
+          agent={agent}
+          board={props.board}
+          revision={props.boardRevision}
+          connected={connected}
+          open={boardOpen}
+          onToggle={setBoardOpen}
+          send={send}
+          isLiving={props.isLiving}
+          onSelect={onSelect}
+        />
+      )}
+
       {/* Clés par agent : défilement et brouillon ne passent pas d'un agent à l'autre. */}
-      <Thread key={`thread-${agent.id}`} entries={thread} />
+      <Thread key={`thread-${agent.id}`} entries={thread} level={agent.level} />
 
       {addressable && <Composer key={`composer-${agent.id}`} agent={agent} connected={connected} send={send} />}
     </section>
   );
 }
 
-function Thread({ entries }: { entries: ThreadEntry[] }) {
+function Thread({ entries, level }: { entries: ThreadEntry[]; level: Level }) {
   const list = useRef<HTMLDivElement>(null);
   // Suit le bas du fil tant que l'utilisateur n'est pas remonté le relire.
   const pinned = useRef(true);
@@ -131,7 +154,7 @@ function Thread({ entries }: { entries: ThreadEntry[] }) {
       }}
     >
       {entries.map((entry) => (
-        <Entry key={entry.seq} entry={entry} />
+        <Entry key={entry.seq} entry={entry} level={level} />
       ))}
     </div>
   );
@@ -144,15 +167,20 @@ const deliveryLabel = {
   lost: "connexion perdue : remise incertaine",
 } as const;
 
-function Entry({ entry }: { entry: ThreadEntry }) {
+/**
+ * Auteur probable d'un message reçu sans préfixe et sans venir de cette console : le
+ * protocole ne le dit pas, le niveau du destinataire le laisse deviner.
+ */
+const freeSender: Record<Level, string> = {
+  assistant: "utilisateur (autre console)",
+  agent: "utilisateur ou Assistant",
+  worker: "de son Agent",
+};
+
+function Entry({ entry, level }: { entry: ThreadEntry; level: Level }) {
   switch (entry.kind) {
-    case "user":
-      return (
-        <div className="entry entry-user" data-delivery={entry.delivery}>
-          <div className="bubble">{entry.text}</div>
-          {deliveryLabel[entry.delivery] && <div className="entry-note">{deliveryLabel[entry.delivery]}</div>}
-        </div>
-      );
+    case "input":
+      return <InputEntry text={entry.text} sent={entry.console} level={level} />;
     case "agent":
       return (
         <div className="entry entry-agent">
@@ -181,6 +209,30 @@ function Entry({ entry }: { entry: ThreadEntry }) {
         </div>
       );
   }
+}
+
+/**
+ * Ce que l'agent reçoit. Un message préfixé par un outil (mission, rapport, escalade…)
+ * se distingue d'un message de l'utilisateur par son étiquette et son cadre.
+ */
+function InputEntry({ text, sent, level }: { text: string; sent: ConsoleSend | null; level: Level }) {
+  const { category, tag, body } = classifyInput(text);
+  const note = sent ? deliveryLabel[sent.delivery] : null;
+  const label = category ? tag : sent ? null : `reçu · ${freeSender[level]}`;
+  return (
+    <div
+      className="entry entry-input"
+      data-category={category ?? (sent ? "user" : "free")}
+      data-tagged={category ? "" : undefined}
+      data-delivery={sent?.delivery}
+    >
+      <div className="bubble">
+        {label && <div className="input-tag">{label}</div>}
+        {body}
+      </div>
+      {note && <div className="entry-note">{note}</div>}
+    </div>
+  );
 }
 
 function Composer({ agent, connected, send }: Pick<Props, "agent" | "connected" | "send">) {

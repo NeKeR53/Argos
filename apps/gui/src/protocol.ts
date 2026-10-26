@@ -25,6 +25,11 @@ export interface AgentRecord {
   parent: AgentId | null;
   engine: EngineKind;
   model: string | null;
+  /**
+   * Profil de la politique de modèles dont viennent moteur et modèle (D22 : `code`,
+   * `standard`, `léger`…). Absent pour l'Assistant, choisi par l'utilisateur.
+   */
+  profile: string | null;
   workdir: string;
   /** Présente pour les Agents seulement. */
   charter: Charter | null;
@@ -48,17 +53,63 @@ export type TurnOutcome =
   | { status: "interrupted" }
   | { status: "failed"; message: string };
 
-/** Consommation d'un tour ; `input_tokens` inclut les tokens servis par le cache. */
+/**
+ * Consommation d'un tour. `input_tokens` inclut les tokens servis par le cache : c'est la
+ * taille du contexte envoyé au modèle pour ce tour.
+ */
 export interface Usage {
   input_tokens: number;
   output_tokens: number;
   cost_usd: number | null;
+  /** Taille de la fenêtre de contexte du modèle, si le moteur la donne. */
+  context_window: number | null;
+}
+
+/** État d'une tâche du board d'un Agent (D17). */
+export type TaskState = "pending" | "in_progress" | "blocked" | "done" | "cancelled" | "interrupted";
+export type MissionState = "open" | "done" | "cancelled";
+
+/** Demande de haut niveau confiée à un Agent par l'Assistant (D19). */
+export interface Mission {
+  id: string;
+  agent: AgentId;
+  text: string;
+  state: MissionState;
+  created_at: number;
+}
+
+/** Unité de travail du board d'un Agent, exécutée par un Worker. */
+export interface Task {
+  id: string;
+  agent: AgentId;
+  mission: string | null;
+  title: string;
+  detail: string | null;
+  state: TaskState;
+  /** Le Worker qui s'en charge ou s'en est chargé. */
+  worker: AgentId | null;
+  /** Dernier compte rendu du Worker. */
+  result: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * Le board d'un Agent, dans l'ordre de priorité : missions ouvertes, puis tâches de ces
+ * missions et tâches hors mission non terminées.
+ */
+export interface Board {
+  agent: AgentId;
+  missions: Mission[];
+  tasks: Task[];
 }
 
 /** Ce que l'utilisateur peut demander (`Command`, tag `command`). */
 export type Command =
   | { command: "tree" }
   | { command: "inspect"; agent: AgentId }
+  /** Le board d'un Agent (lecture seule ; erreur pour un autre niveau). */
+  | { command: "board"; agent: AgentId }
   | { command: "send"; agent: AgentId; text: string }
   | { command: "interrupt"; agent: AgentId }
   | { command: "park"; agent: AgentId }
@@ -73,11 +124,18 @@ export type Request = { id: number } & Command;
 export type Reply =
   | { kind: "tree"; agents: AgentStatus[] }
   | { kind: "agent"; agent: AgentStatus }
+  | { kind: "board"; board: Board }
   | { kind: "done"; affected: AgentId[] }
   | { kind: "error"; message: string };
 
 /** Événement poussé par le daemon (`DaemonEvent`, tag `type`). */
 export type DaemonEvent =
+  /**
+   * Ce que l'agent vient de recevoir : message de l'utilisateur, mission de l'Assistant,
+   * rapport d'un enfant, consigne d'Argos. Publié pour chaque message remis.
+   */
+  | { type: "input"; agent: AgentId; text: string }
+  /** Ce que l'agent a dit. */
   | { type: "message"; agent: AgentId; text: string }
   | { type: "tool"; agent: AgentId; name: string }
   | {
@@ -89,7 +147,9 @@ export type DaemonEvent =
   /** Le process de l'agent s'est terminé (parking, stop ou panne). */
   | { type: "exited"; agent: AgentId; code: number | null }
   /** L'agent a changé dans le registre ou en exécution. */
-  | { type: "agent_updated"; agent: AgentStatus };
+  | { type: "agent_updated"; agent: AgentStatus }
+  /** Information courte du daemon pour l'utilisateur (repli de modèle, plafond…). */
+  | { type: "notice"; agent: AgentId | null; text: string };
 
 /** Message du daemon (`ServerMessage`, tag `type`). */
 export type ServerMessage =
@@ -144,6 +204,19 @@ function checkReply(reply: Record<string, unknown>) {
     case "agent":
       checkAgent(reply.agent);
       break;
+    case "board": {
+      const board = object(reply.board, "reply.board");
+      string(board.agent, "board.agent");
+      array(board.missions, "board.missions").forEach((mission) => string(object(mission, "mission").id, "mission.id"));
+      array(board.tasks, "board.tasks").forEach((value) => {
+        const task = object(value, "task");
+        string(task.id, "task.id");
+        if (!TASK_STATES.includes(task.state as TaskState)) {
+          throw new ProtocolError(`état de tâche inconnu : ${String(task.state)}`);
+        }
+      });
+      break;
+    }
     case "done":
       array(reply.affected, "reply.affected");
       break;
@@ -160,8 +233,14 @@ function checkEvent(event: Record<string, unknown>) {
     checkAgent(event.agent);
     return;
   }
+  if (event.type === "notice") {
+    if (event.agent !== null) string(event.agent, "event.agent");
+    string(event.text, "event.text");
+    return;
+  }
   string(event.agent, "event.agent");
   switch (event.type) {
+    case "input":
     case "message":
       string(event.text, "event.text");
       break;
@@ -181,6 +260,8 @@ function checkEvent(event: Record<string, unknown>) {
       throw new ProtocolError(`événement inconnu : ${String(event.type)}`);
   }
 }
+
+const TASK_STATES: TaskState[] = ["pending", "in_progress", "blocked", "done", "cancelled", "interrupted"];
 
 function checkAgent(value: unknown) {
   const agent = object(value, "agent");
