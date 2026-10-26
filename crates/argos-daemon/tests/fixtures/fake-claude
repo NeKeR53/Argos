@@ -2,7 +2,7 @@
 # Faux `claude -p --input-format stream-json` : sorties de forme réelle, sans tokens.
 # Le contenu du message choisit le comportement : SLOW attend une interruption,
 # TOOL utilise un outil, CRASH sort en erreur, HANG bloque avec un process enfant,
-# FULL rapporte un contexte rempli à 90 %.
+# FULL rapporte un contexte rempli à 90 %, QUOTA un quota épuisé.
 # Les arguments reçus sont écrits dans .fake-args (répertoire de travail).
 set -u
 printf '%s\n' "$@" > .fake-args
@@ -49,6 +49,10 @@ while IFS= read -r line; do
       sleep 60 &
       echo $! > .child-pid
       wait ;;
+    *QUOTA*)
+      turn=$((turn + 1))
+      printf '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"},"session_id":"%s"}\n' "$session"
+      result error_during_execution ;;
     *FULL*)
       turn=$((turn + 1))
       assistant_text

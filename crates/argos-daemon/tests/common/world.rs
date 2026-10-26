@@ -28,6 +28,11 @@ pub fn fixture(name: &str) -> PathBuf {
 
 /// Tous les agents commencent parkés.
 pub fn world() -> World {
+    world_with(ModelPolicy::default())
+}
+
+/// Le même monde, avec une politique de modèles donnée.
+pub fn world_with(policy: ModelPolicy) -> World {
     let home = tempfile::tempdir().unwrap();
     let registry = Registry::open_in_memory().unwrap();
     let assistant = registry
@@ -66,7 +71,7 @@ pub fn world() -> World {
             (EngineKind::Codex, fixture("fake-codex")),
         ]),
         mcp_url: None,
-        policy: ModelPolicy::default(),
+        policy,
     };
     let supervisor = Supervisor::new(registry, settings);
     let events = supervisor.subscribe();

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Faux `codex app-server` : JSON-RPC sur stdio, messages de forme réelle, sans tokens.
 # Le contenu du message choisit le comportement : SLOW attend une interruption,
-# ASK envoie une requête serveur, FAIL échoue, TOOL utilise un outil.
+# ASK envoie une requête serveur, FAIL échoue, QUOTA échoue sur quota épuisé,
+# TOOL utilise un outil.
 # Les arguments et CODEX_HOME reçus sont écrits dans .fake-args (répertoire de travail).
 set -u
 { printf '%s\n' "$@"; printf 'CODEX_HOME=%s\n' "${CODEX_HOME:-}"; } > .fake-args
@@ -44,6 +45,8 @@ while IFS= read -r line; do
           case "$reply" in *srv-1*) ;; *) exit 9 ;; esac
           agent_message
           complete_turn completed ;;
+        *QUOTA*)
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-%s","status":"failed","error":{"message":"limite atteinte","codexErrorInfo":"usageLimitExceeded"}}}}\n' "$thread" "$turn" ;;
         *FAIL*)
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"turn-%s","status":"failed","error":{"message":"quota dépassé"}}}}\n' "$thread" "$turn" ;;
         *)

@@ -391,3 +391,32 @@ async fn tokens_die_with_their_session() {
     .await;
     assert_eq!(status, 404);
 }
+
+#[tokio::test]
+async fn a_worker_gets_the_engine_and_model_of_its_profile() {
+    let w = world();
+    let address = serve(&w).await;
+    let agent = Client::new(&w, &address, &w.agent.id);
+    let task = add_task(&agent, &w, "convertir les PDF").await;
+
+    let (spawned, error) = agent
+        .call("spawn_worker", json!({"task": task, "profile": "léger"}))
+        .await;
+    assert!(!error, "{spawned}");
+    let worker = w
+        .supervisor
+        .children(&w.agent.id)
+        .unwrap()
+        .last()
+        .unwrap()
+        .record
+        .clone();
+    assert_eq!(worker.profile.as_deref(), Some("léger"));
+    assert_eq!(worker.model.as_deref(), Some("gpt-6-luna"));
+
+    let task = add_task(&agent, &w, "autre").await;
+    let (refusal, error) = agent
+        .call("spawn_worker", json!({"task": task, "profile": "inconnu"}))
+        .await;
+    assert!(error, "{refusal}");
+}

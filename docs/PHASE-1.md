@@ -45,7 +45,7 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 | T5 | Contrats des agents | Prompts système par niveau : l'Assistant route des missions et résume ; l'Agent planifie avant d'exécuter ; le Worker fait une tâche et rend compte | T4 |
 | T6 ✅ | Boards et missions | Mission → tâches, Worker lié à une tâche, repriorisation déterministe, remontée résumée | T4 |
 | T7 ✅ | Mémoire | Dossier par agent (index, journal, notes, enfants), git local, digest chargé au démarrage, outil d'écriture mémoire, compaction avant saturation | T4 |
-| T8 | Politique de modèles | Profils en TOML, résolution profil → moteur + modèle, repli sur quota épuisé, plafonds | T1 |
+| T8 ✅ | Politique de modèles | Profils en TOML, résolution profil → moteur + modèle, repli sur quota épuisé, plafonds | T1 |
 | T9 | GUI console | Connexion WS, arbre des agents, chat avec l'Assistant, fenêtre d'Agent en chat texte, panic stop | T3 |
 | T10 | Recette | Le scénario de réussite de bout en bout, avec de vrais moteurs | tout |
 
@@ -147,3 +147,22 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
 - **Mémoire automatique de Claude coupée** : `--settings '{"autoMemoryEnabled": false}'`. Vérifié : `memory_paths` disparaît de l'init.
 - **Pas fait** : le miroir Obsidian synchronisé sur le Mac (phase 4).
 - **Tests** : 7 tests du module, 5 de bout en bout (outils MCP, digest au réveil, Worker sans mémoire, double journal d'une mission, compaction complète jusqu'à la session neuve). Les 4 tests réels repassent avec la mémoire branchée (2026-10-25).
+
+## T8 — Ce qui est en place
+
+- **Politique de modèles** (`argos_daemon::policy`) dans la section `[models]` de `config.toml`, écrite commentée au premier démarrage. Un fichier sans cette section reçoit la politique par défaut. Une politique invalide (profil par défaut absent, chaîne vide) empêche le démarrage.
+- **Profils par défaut**, chacun étant une chaîne : premier choix, puis replis.
+  - `code` : Claude `claude-opus-5-5`, puis Codex `gpt-6.1-sol`.
+  - `standard` (par défaut) : Claude `claude-sonnet-5-5`, puis Codex `gpt-6.1-sol`.
+  - `léger` : Codex `gpt-6-luna`, puis Claude `claude-haiku-5-5`.
+- **Les agents choisissent un profil, jamais un modèle** : `create_agent` et `spawn_worker` prennent `profile`. Le schéma MCP énumère les profils avec leur usage. Les anciens arguments `engine` / `model` ont disparu. Le profil retenu est mémorisé sur l'agent (`AgentRecord.profile`, schéma v3 par migration). L'Assistant, choisi par l'utilisateur, n'a pas de profil.
+- **Repli sur quota épuisé** :
+  - les moteurs le signalent par `EngineEvent::RateLimited` : `rate_limit_event` au statut `rejected` chez Claude, tour en échec avec `codexErrorInfo` à `usageLimitExceeded`, `rateLimitExceeded` ou `sessionBudgetExceeded` chez Codex ;
+  - le superviseur parke l'agent, le fait passer au maillon suivant de sa chaîne, puis relance ce qui était en cours ;
+  - en cas de changement de moteur, la session repart à neuf : un Agent repart de sa mémoire, un Worker de sa tâche (titre et détail renvoyés). Sinon, le dernier message est renvoyé.
+  - Le changement est noté au journal de l'agent et signalé par l'événement `notice`. En bout de chaîne, ou sans profil, une notice prévient que l'agent attend.
+- **Plafonds** (`[models.caps]`) :
+  - `forbidden_for_workers` : un Worker reçoit le premier modèle permis de la chaîne, ou une erreur s'il n'y en a aucun ;
+  - `max_parallel` (par défaut 4 sessions `claude-opus-5-5`) : un réveil de trop est refusé (`SupervisorError::Cap`) ; l'appelant le voit comme une erreur.
+- **Protocole** : `AgentRecord.profile`, événement `notice { agent, text }`.
+- **Tests** : 5 tests de la politique, 4 de bout en bout (repli d'un Worker vers Codex jusqu'au bout de chaîne, agent sans profil, plafond de sessions, modèle interdit), 1 test MCP du choix de profil, 2 unitaires de détection de quota.
