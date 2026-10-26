@@ -6,6 +6,7 @@
 //! jour. Une session morte en retard ne peut donc pas écraser l'état d'une session plus
 //! récente du même agent.
 
+use crate::contracts;
 use crate::engine::{
     EngineError, EngineEvent, EventStream, McpServer, Session, SessionControl, SessionSpec,
     prepare_codex_home,
@@ -432,12 +433,16 @@ impl Supervisor {
             prepare_codex_home(&home, &settings.user_codex_home)?;
             spec.codex_home = Some(home);
         }
+        // Le contrat du niveau d'abord, puis la mémoire pour ceux qui en ont une.
+        let mut instructions = contracts::contract(record, self.policy());
         if record.level.has_memory() {
             let memory = &self.inner.memory;
             memory.ensure(&record.id)?;
             memory.write_state(&record.id, &self.render_state(record)?)?;
-            spec.instructions = Some(memory.digest(&record.id)?);
+            instructions.push('\n');
+            instructions.push_str(&memory.digest(&record.id)?);
         }
+        spec.instructions = Some(instructions);
         Ok(spec)
     }
 

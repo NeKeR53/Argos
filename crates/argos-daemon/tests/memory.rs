@@ -108,6 +108,12 @@ async fn waking_an_agent_hands_it_its_memory_digest() {
     turn_completed(&mut w.events, &agent).await;
 
     let digest = instructions(&w, "agent").expect("digest dans le prompt système");
+    // Le contrat de l'Agent vient d'abord, la mémoire ensuite.
+    let contract_at = digest
+        .find("## Ton rôle : l'Agent « Domotique »")
+        .expect("contrat");
+    let memory_at = digest.find("## Ta mémoire").expect("mémoire");
+    assert!(contract_at < memory_at);
     assert!(digest.contains("Je gère la maison."));
     assert!(digest.contains("Rôle : Agent « Domotique »"));
     assert!(

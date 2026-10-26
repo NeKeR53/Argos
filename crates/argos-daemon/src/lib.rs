@@ -2,6 +2,7 @@
 
 pub mod api;
 pub mod config;
+pub mod contracts;
 pub mod engine;
 pub mod mcp;
 pub mod memory;
