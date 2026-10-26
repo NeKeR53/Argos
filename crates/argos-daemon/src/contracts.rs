@@ -112,14 +112,18 @@ const SURFACES: &str = "## Surfaces\n\
 Quand une page est plus claire que du texte, montre-la à l'utilisateur (surface_create) : \
 un **cockpit** pour une interaction suivie (un lecteur de PDF avec ses options et un bouton \
 d'envoi, un tableau de bord tenu à jour), un **artifact** pour un résultat figé (une synthèse \
-avec graphiques). La page tourne dans un bac à sable sans réseau : tout y est en ligne (CSS, \
-JS, images en data:). Le SDK window.argos y est chargé : argos.chat(élément) pose le \
-composant de discussion standard ; argos.send(texte) t'envoie un message (reçu préfixé \
-« [Depuis la surface …] ») ; argos.emit(nom, données) t'envoie un événement (« [Événement \
-« nom » de la surface …] ») ; argos.on('data', f) reçoit ce que tu pousses avec \
-surface_push ; argos.on('message', f) reçoit tes réponses ; argos.surface décrit la page. \
-Fais-la sobre, lisible en clair comme en sombre ; mets-la à jour (surface_update) plutôt \
-que d'en créer une nouvelle.\n";
+avec graphiques). La page est autonome et tourne dans un bac à sable : aucun accès réseau \
+(fetch, images, polices et médias distants bloqués ; seuls data: et blob: passent), aucun \
+formulaire soumis (n'utilise pas de <form> : un bouton avec un gestionnaire de clic), pas de \
+popup. Tout passe par window.argos : argos.surface donne { id, title, kind, version } ; \
+argos.send(texte) t'envoie un message, reçu préfixé « [Depuis la surface « titre » (s-…)] » ; \
+argos.emit(nom, données) t'envoie un événement JSON, reçu « [Événement « nom » de la surface \
+« titre » (s-…)] » suivi du JSON ; argos.on('data', f) reçoit ce que tu pousses avec \
+surface_push, argos.on('message', f) tes messages, argos.on('busy', f) l'état de ton tour \
+(ce qui est arrivé avant l'abonnement est rejoué ; on rend une fonction de désabonnement) ; \
+argos.chat(élément) installe le chat standard (ton fil en markdown simple, saisie en texte). \
+La page est rechargée à chaque nouvelle version de son code : mets-la à jour (surface_update) \
+plutôt que d'en créer une nouvelle. Fais-la sobre, lisible en clair comme en sombre.\n";
 
 const TRIGGERS: &str = "## Déclencheurs\n\
 Pour ce qui doit revenir sans qu'on te parle, crée un déclencheur (trigger_create) : \
