@@ -8,6 +8,13 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(() => ({
   plugins: [react()],
 
+  // Deux pages : la console (index.html) et l'orbe (orb.html), une fenêtre Tauri chacune.
+  build: {
+    rollupOptions: {
+      input: { main: "index.html", orb: "orb.html" },
+    },
+  },
+
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors

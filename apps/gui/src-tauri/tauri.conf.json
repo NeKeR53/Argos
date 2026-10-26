@@ -10,13 +10,32 @@
     "frontendDist": "../dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
+        "label": "main",
         "title": "Argos",
         "width": 1100,
         "height": 720,
         "minWidth": 420,
         "minHeight": 480
+      },
+      {
+        "label": "orb",
+        "title": "Argos — orbe",
+        "url": "orb.html",
+        "width": 140,
+        "height": 140,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "visibleOnAllWorkspaces": true,
+        "skipTaskbar": true,
+        "focus": false
       }
     ],
     "security": {

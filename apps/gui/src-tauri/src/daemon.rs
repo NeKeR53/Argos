@@ -8,20 +8,83 @@ use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-/// Adresse par défaut de l'API, identique à celle de la configuration du daemon.
+/// Adresses par défaut de l'API et du serveur HTTP (MCP, webhooks), identiques à celles
+/// de la configuration du daemon.
 const DEFAULT_LISTEN: &str = "127.0.0.1:7878";
+const DEFAULT_MCP_LISTEN: &str = "127.0.0.1:7879";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Seule la section `[api]` intéresse la GUI ; le reste du fichier est ignoré.
+/// Les sections qui intéressent la GUI ; le reste du fichier (lu par le daemon) est
+/// ignoré, et le daemon ignore de même la section `[gui]`.
 #[derive(Debug, Default, Deserialize)]
 struct ConfigFile {
     #[serde(default)]
-    api: ApiSection,
+    api: ListenSection,
+    #[serde(default)]
+    mcp: ListenSection,
+    #[serde(default)]
+    gui: GuiConfig,
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct ApiSection {
+struct ListenSection {
     listen: Option<String>,
+}
+
+/// Section `[gui]` de `config.toml` : raccourcis globaux de l'app (D37–D38), au format
+/// `Alt+Space`, `CmdOrCtrl+Shift+A`… Une valeur absente prend celle par défaut.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct GuiConfig {
+    /// Maintenu pour parler à l'Assistant.
+    pub push_to_talk: String,
+    /// Montre ou cache la console.
+    pub console: String,
+    /// Arrêt dur de tout l'arbre : deux appuis en moins de 2 s.
+    pub panic: String,
+}
+
+impl Default for GuiConfig {
+    fn default() -> Self {
+        Self {
+            push_to_talk: "Alt+Space".into(),
+            console: "CmdOrCtrl+Shift+A".into(),
+            panic: "CmdOrCtrl+Shift+X".into(),
+        }
+    }
+}
+
+fn parse_config(config: Option<&str>) -> Result<ConfigFile, String> {
+    match config {
+        Some(text) => {
+            toml::from_str(text).map_err(|error| format!("config.toml illisible : {error}"))
+        }
+        None => Ok(ConfigFile::default()),
+    }
+}
+
+fn read_config(home: &Path) -> Result<ConfigFile, String> {
+    // Pas de config : le daemon n'a jamais démarré ici, ou elle a été supprimée.
+    let text = std::fs::read_to_string(home.join("config.toml")).ok();
+    parse_config(text.as_deref())
+}
+
+/// Réglages de la GUI ; ceux par défaut si `config.toml` manque.
+pub fn gui_config_in(home: &Path) -> Result<GuiConfig, String> {
+    Ok(read_config(home)?.gui)
+}
+
+/// Base des URL de webhooks (`http://<[mcp] listen>`), servis par le daemon.
+pub fn hooks_base_in(home: &Path) -> Result<String, String> {
+    hooks_base_from(read_config(home)?)
+}
+
+fn hooks_base_from(config: ConfigFile) -> Result<String, String> {
+    let listen = config.mcp.listen.as_deref().unwrap_or(DEFAULT_MCP_LISTEN);
+    let address: SocketAddr = listen
+        .parse()
+        .map_err(|_| format!("adresse [mcp] listen invalide : {listen:?}"))?;
+    Ok(format!("http://{address}"))
 }
 
 /// Répertoire de données du daemon : `$ARGOS_HOME`, sinon `~/.argos`.
@@ -43,19 +106,13 @@ pub fn url_in(home: &Path) -> Result<String, String> {
             token_path.display()
         )
     })?;
-    // Pas de config : le daemon n'a jamais démarré ici, ou elle a été supprimée.
     let config = std::fs::read_to_string(home.join("config.toml")).ok();
     url_from(config.as_deref(), &token)
 }
 
 /// Assemble l'URL à partir du contenu de `config.toml` (s'il existe) et du jeton.
 fn url_from(config: Option<&str>, token: &str) -> Result<String, String> {
-    let parsed: ConfigFile = match config {
-        Some(text) => {
-            toml::from_str(text).map_err(|error| format!("config.toml illisible : {error}"))?
-        }
-        None => ConfigFile::default(),
-    };
+    let parsed = parse_config(config)?;
     let listen = parsed.api.listen.as_deref().unwrap_or(DEFAULT_LISTEN);
     let address: SocketAddr = listen
         .parse()
@@ -142,6 +199,28 @@ mod tests {
         assert!(url_from(Some("[api]\nlisten = 3"), "t").is_err());
         assert!(url_from(Some("[api]\nlisten = \"pas une adresse\""), "t").is_err());
         assert!(url_from(None, "  \n").is_err());
+    }
+
+    #[test]
+    fn the_gui_section_and_the_hooks_address_are_read() {
+        let config = parse_config(Some(
+            "[assistant]\nengine = \"claude\"\n[mcp]\nlisten = \"127.0.0.1:9100\"\n\
+             [gui]\npush_to_talk = \"F13\"\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            config.gui,
+            GuiConfig {
+                push_to_talk: "F13".into(),
+                ..GuiConfig::default()
+            }
+        );
+        assert_eq!(hooks_base_from(config).unwrap(), "http://127.0.0.1:9100");
+
+        let defaults = parse_config(None).unwrap();
+        assert_eq!(defaults.gui.console, "CmdOrCtrl+Shift+A");
+        assert_eq!(defaults.gui.panic, "CmdOrCtrl+Shift+X");
+        assert_eq!(hooks_base_from(defaults).unwrap(), "http://127.0.0.1:7879");
     }
 
     #[test]

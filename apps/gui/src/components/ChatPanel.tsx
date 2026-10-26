@@ -3,7 +3,7 @@
 // seule (D2) et n'a pas de surface.
 
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { AgentId, AgentStatus, Board, Command, Origin, SurfaceDoc, SurfaceMeta } from "../protocol";
+import type { AgentId, AgentStatus, Board, Command, Origin, SurfaceDoc, SurfaceMeta, Trigger } from "../protocol";
 import {
   displayName,
   isAddressable,
@@ -19,6 +19,7 @@ import { AgentFlags } from "./AgentTree";
 import { BoardSection } from "./BoardSection";
 import { StatusDot } from "./StatusDot";
 import { SurfaceView } from "./SurfaceView";
+import { TriggerPanel } from "./TriggerPanel";
 
 interface Props {
   agent: AgentStatus;
@@ -34,6 +35,10 @@ interface Props {
   surfaceDocs: Record<string, SurfaceDoc>;
   surfaceFeeds: Record<string, FeedItem[]>;
   surfaceRevision: number;
+  /** Déclencheurs de l'agent (propriétaire ou cible), et base des URL de webhooks. */
+  triggers: Trigger[] | undefined;
+  triggerRevision: number;
+  hooksBase: string | null;
   connected: boolean;
   send: (command: Command) => boolean;
   isLiving: (agent: AgentId) => boolean;
@@ -48,6 +53,7 @@ export function ChatPanel(props: Props) {
   const addressable = isAddressable(agent);
   // Board ouvert ou replié : le choix suit l'utilisateur d'un Agent à l'autre.
   const [boardOpen, setBoardOpen] = useState(true);
+  const [triggersOpen, setTriggersOpen] = useState(false);
   // Onglet affiché, par agent : on retrouve la surface qu'on regardait.
   const [tabs, setTabs] = useState<Record<AgentId, string>>({});
   // Une surface supprimée laisse place au chat.
@@ -167,6 +173,20 @@ export function ChatPanel(props: Props) {
             />
           )}
 
+          {addressable && (
+            <TriggerPanel
+              agent={agent}
+              triggers={props.triggers}
+              revision={props.triggerRevision}
+              hooksBase={props.hooksBase}
+              connected={connected}
+              open={triggersOpen}
+              onToggle={setTriggersOpen}
+              send={send}
+              nameOf={nameOf}
+            />
+          )}
+
           {/* Clés par agent : défilement et brouillon ne passent pas d'un agent à l'autre. */}
           <Thread key={`thread-${agent.id}`} entries={thread} nameOf={nameOf} />
 
@@ -278,6 +298,16 @@ function Entry({ entry, nameOf }: { entry: ThreadEntry; nameOf: (agent: AgentId)
       return (
         <div className="entry entry-agent">
           <div className="bubble">{entry.text}</div>
+        </div>
+      );
+    case "streaming":
+      // Le texte s'écrit ; le message complet le remplacera.
+      return (
+        <div className="entry entry-agent entry-streaming" aria-busy="true">
+          <div className="bubble">
+            {entry.text}
+            <span className="caret" aria-hidden />
+          </div>
         </div>
       );
     case "tool":
