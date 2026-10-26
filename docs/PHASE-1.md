@@ -46,7 +46,7 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 | T6 ✅ | Boards et missions | Mission → tâches, Worker lié à une tâche, repriorisation déterministe, remontée résumée | T4 |
 | T7 ✅ | Mémoire | Dossier par agent (index, journal, notes, enfants), git local, digest chargé au démarrage, outil d'écriture mémoire, compaction avant saturation | T4 |
 | T8 ✅ | Politique de modèles | Profils en TOML, résolution profil → moteur + modèle, repli sur quota épuisé, plafonds | T1 |
-| T9 | GUI console | Connexion WS, arbre des agents, chat avec l'Assistant, fenêtre d'Agent en chat texte, panic stop | T3 |
+| T9 ✅ | GUI console | Connexion WS, arbre des agents, chat avec l'Assistant, fenêtre d'Agent en chat texte, panic stop | T3 |
 | T10 ✅ | Recette | Le scénario de réussite de bout en bout, avec de vrais moteurs | tout |
 
 T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
@@ -183,3 +183,17 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
   - Attendu et vérifié : l'Assistant crée l'Agent puis confie la mission ; l'Agent inscrit une tâche puis lance un Worker ; le Worker écrit le fichier et rend compte ; l'Agent retire le Worker et clôt la mission ; l'Assistant conclut en une phrase pour l'utilisateur.
   - Ensuite : arbre visible, panic stop qui arrête tout.
 - **Passé deux fois le 2026-10-26** (28 à 43 s, environ 0,02 $), avec l'Assistant sur Claude et l'Agent et le Worker sur Codex. Le premier essai, avant le garde-fou de lecture seule, a montré un Agent qui faisait le travail lui-même : c'est ce qui l'a motivé.
+
+## T9 — Ce qui est en place
+
+- **Console Tauri** (`apps/gui`), réalisée par un sous-agent en deux passes. Elle comprend :
+  - la connexion au daemon (URL et jeton lus dans `$ARGOS_HOME` par une commande Tauri, ou `?daemon=` dans un navigateur), avec reconnexion et resynchronisation par `tree` ;
+  - l'arbre des agents, avec profil, état et activité ;
+  - le chat de l'agent sélectionné, fondé sur les événements `input` et `message`, avec les messages des outils étiquetés ;
+  - les actions park, stop et retrait, et des Workers en lecture seule (D2) ;
+  - le panic stop au raccourci ⌘⇧X ;
+  - les escalades visibles (bandeau et pastille sur l'Assistant) ;
+  - le board d'un Agent, les notices du daemon, le remplissage du contexte.
+- **Tests** : 36 tests vitest (réducteur, protocole, préfixes), 6 tests Rust (lecture de la config, sonde du jeton).
+- **Vérifié** dans un navigateur avec agent-browser, contre le daemon sur faux CLI (captures dans le scratchpad du sous-agent). L'app Tauri elle-même a été lancée le 2026-10-26 : sa webview tient une connexion WebSocket établie avec le daemon (constaté avec `lsof`). Son rendu à l'écran n'a pas été vu, faute de permission de capture.
+- **Limite connue** : `input` ne dit pas qui envoie. Un message sans préfixe peut venir de l'utilisateur, du parent ou d'une relance d'Argos.
