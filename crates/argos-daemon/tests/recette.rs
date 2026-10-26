@@ -294,6 +294,89 @@ async fn agents_ask_each_other_what_belongs_to_their_domain() {
     stage.panic_stop().await;
 }
 
+#[tokio::test]
+#[ignore = "consomme des tokens"]
+async fn the_assistant_builds_a_live_cockpit_and_feeds_it() {
+    let mut stage = Stage::new().await;
+    let assistant = stage.assistant.id.clone();
+    stage
+        .supervisor
+        .send(
+            &assistant,
+            "Crée-moi un cockpit « Compteur » : il affiche un nombre (0 au départ) et un bouton \
+             « +1 ». Le bouton t'envoie argos.emit('plus', {}). À chaque événement « plus », \
+             pousse la nouvelle valeur avec surface_push sous la forme {\"valeur\": n}, et la page \
+             l'affiche grâce à argos.on('data', …).",
+        )
+        .await
+        .unwrap();
+
+    // La page est créée, puis le tour de l'Assistant se termine.
+    let surface = wait(&mut stage.events, |event| match event {
+        DaemonEvent::SurfaceUpdated {
+            surface,
+            deleted: false,
+        } => Some(surface.clone()),
+        _ => None,
+    })
+    .await;
+    wait(&mut stage.events, |event| match event {
+        DaemonEvent::TurnCompleted { agent, .. } if *agent == assistant => Some(()),
+        _ => None,
+    })
+    .await;
+    let doc = stage.supervisor.registry().surface(&surface.id).unwrap();
+    println!(
+        "Surface {} « {} », {} octets de HTML",
+        doc.meta.id,
+        doc.meta.title,
+        doc.html.len()
+    );
+    assert_eq!(doc.meta.kind, argos_core::SurfaceKind::Cockpit);
+    assert!(
+        doc.html.contains("argos.emit") && doc.html.contains("argos.on"),
+        "{}",
+        doc.html
+    );
+
+    // Un clic sur « +1 », tel que la console le relaie (commande surface_emit).
+    let click = format!(
+        "[Événement « plus » de la surface « {} » ({})]\n{{}}",
+        doc.meta.title, doc.meta.id
+    );
+    stage.supervisor.send(&assistant, click).await.unwrap();
+    let data = wait(&mut stage.events, |event| match event {
+        DaemonEvent::SurfaceData { surface: id, data } if *id == doc.meta.id => Some(data.clone()),
+        _ => None,
+    })
+    .await;
+    println!("Données poussées : {data}");
+    assert_eq!(data["valeur"], 1);
+    stage.panic_stop().await;
+}
+
+/// Premier événement pour lequel `pick` rend une valeur (dans le délai de la recette).
+async fn wait<T>(
+    events: &mut broadcast::Receiver<DaemonEvent>,
+    pick: impl Fn(&DaemonEvent) -> Option<T>,
+) -> T {
+    tokio::time::timeout(LIMIT, async {
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    if let Some(value) = pick(&event) {
+                        return value;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(error) => panic!("flux d'événements : {error}"),
+            }
+        }
+    })
+    .await
+    .expect("événement attendu dans le délai")
+}
+
 fn name(names: &HashMap<AgentId, String>, agent: &AgentId) -> String {
     names
         .get(agent)
