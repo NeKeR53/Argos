@@ -60,6 +60,21 @@ fn arguments(spec: &SessionSpec, session_id: &str) -> Vec<String> {
     if let Some(instructions) = &spec.instructions {
         args.extend(["--append-system-prompt".into(), instructions.clone()]);
     }
+    if spec.read_only {
+        // Lecture et outils d'Argos seulement : le travail passe par les Workers.
+        args.extend(
+            [
+                "--disallowedTools",
+                "Bash",
+                "PowerShell",
+                "Edit",
+                "MultiEdit",
+                "Write",
+                "NotebookEdit",
+            ]
+            .map(String::from),
+        );
+    }
     if !spec.mcp_servers.is_empty() {
         let servers: serde_json::Map<String, Value> = spec
             .mcp_servers
@@ -300,6 +315,18 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_read_only_session_cannot_run_commands_or_write_files() {
+        let mut spec = SessionSpec::new(EngineKind::Claude, "/tmp");
+        assert!(!arguments(&spec, "id").contains(&"--disallowedTools".to_string()));
+        spec.read_only = true;
+        let args = arguments(&spec, "id");
+        let start = args.iter().position(|a| a == "--disallowedTools").unwrap();
+        for tool in ["Bash", "Edit", "Write"] {
+            assert!(args[start + 1..].contains(&tool.to_string()), "{tool}");
+        }
     }
 
     #[test]

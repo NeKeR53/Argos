@@ -421,6 +421,8 @@ impl Supervisor {
         let mut spec = SessionSpec::new(record.engine, &record.workdir);
         spec.model = record.model.clone();
         spec.resume = record.session_id.clone();
+        // L'Assistant et les Agents orchestrent : seuls les Workers modifient (D17, D18).
+        spec.read_only = record.level != Level::Worker;
         spec.program = settings.programs.get(&record.engine).cloned();
         if let Some(base) = &settings.mcp_url {
             spec.mcp_servers = vec![McpServer {

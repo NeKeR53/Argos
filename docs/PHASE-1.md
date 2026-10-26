@@ -42,12 +42,12 @@ Chaque tranche se termine par quelque chose qui tourne et se teste.
 | T2 ✅ | Arbre et registre | Modèle agent (id, niveau, parent, moteur, modèle, état, charte), persistance SQLite, réhydratation au démarrage | T1 |
 | T3 ✅ | Plan de contrôle + API WS | stop/kill du sous-arbre, park/resume, inspect ; API WebSocket (commandes + flux d'événements) | T2 |
 | T4 ✅ | Serveur MCP par niveau | Endpoint MCP, jetons par agent, outils L0 (gestion des Agents), L1 (Workers + board), L2 (compte rendu, escalade) | T3 |
-| T5 | Contrats des agents | Prompts système par niveau : l'Assistant route des missions et résume ; l'Agent planifie avant d'exécuter ; le Worker fait une tâche et rend compte | T4 |
+| T5 ✅ | Contrats des agents | Prompts système par niveau : l'Assistant route des missions et résume ; l'Agent planifie avant d'exécuter ; le Worker fait une tâche et rend compte | T4 |
 | T6 ✅ | Boards et missions | Mission → tâches, Worker lié à une tâche, repriorisation déterministe, remontée résumée | T4 |
 | T7 ✅ | Mémoire | Dossier par agent (index, journal, notes, enfants), git local, digest chargé au démarrage, outil d'écriture mémoire, compaction avant saturation | T4 |
 | T8 ✅ | Politique de modèles | Profils en TOML, résolution profil → moteur + modèle, repli sur quota épuisé, plafonds | T1 |
 | T9 | GUI console | Connexion WS, arbre des agents, chat avec l'Assistant, fenêtre d'Agent en chat texte, panic stop | T3 |
-| T10 | Recette | Le scénario de réussite de bout en bout, avec de vrais moteurs | tout |
+| T10 ✅ | Recette | Le scénario de réussite de bout en bout, avec de vrais moteurs | tout |
 
 T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
 
@@ -166,3 +166,20 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
   - `max_parallel` (par défaut 4 sessions `claude-opus-5-5`) : un réveil de trop est refusé (`SupervisorError::Cap`) ; l'appelant le voit comme une erreur.
 - **Protocole** : `AgentRecord.profile`, événement `notice { agent, text }`.
 - **Tests** : 5 tests de la politique, 4 de bout en bout (repli d'un Worker vers Codex jusqu'au bout de chaîne, agent sans profil, plafond de sessions, modèle interdit), 1 test MCP du choix de profil, 2 unitaires de détection de quota.
+
+## T5 — Ce qui est en place
+
+- **Contrats par niveau** (`argos_daemon::contracts`), placés en tête du prompt système, avant le digest de mémoire, et réappliqués à chaque réveil.
+  - **Tronc commun** : les trois niveaux, les préfixes des messages (`[Mission …]`, `[Rapport …]`, `[Escalade …]`, `[Argos]`), la brièveté.
+  - **Assistant** : il orchestre et n'exécute pas. Il route (`list_agents`, puis réutilise un Agent ou en crée un avec le bon profil, puis `assign_mission`). Il reste silencieux et autonome par défaut (D12), répond en une ou deux phrases, conclut en une phrase quand un rapport clôt un travail demandé, signale les escalades en une phrase et tient sa mémoire.
+  - **Agent** : il planifie avant d'exécuter (tâches sur le board avec un détail complet), lance un Worker par tâche avec le profil adapté, retire ses Workers finis, rend compte de la mission close en deux ou trois phrases, n'escalade que ce qui revient à l'utilisateur et tient sa mémoire.
+  - **Worker** : une seule tâche ; son travail n'est remis qu'à l'appel de `report_to_agent` (`done` ou `blocked`) ; pas de mémoire, pas d'utilisateur.
+- **Garde-fou mécanique** (constaté nécessaire pendant la recette, où un Agent avait d'abord fait le travail lui-même) : l'Assistant et les Agents tournent en **lecture seule** (`SessionSpec::read_only`). Claude perd `Bash`, `Edit`, `Write`, `NotebookEdit` ; Codex passe en bac à sable `read-only`. Ils gardent la lecture et leurs outils MCP, mémoire comprise. Seuls les Workers modifient.
+
+## T10 — Recette
+
+- `cargo test -p argos-daemon --test recette -- --ignored --nocapture` : vrais moteurs, modèles bon marché (Haiku, gpt-6-luna), affichage du fil complet.
+- **Scénario** : on demande en texte à l'Assistant de créer un Agent « Notes » et de lui faire écrire `bonjour.txt`.
+  - Attendu et vérifié : l'Assistant crée l'Agent puis confie la mission ; l'Agent inscrit une tâche puis lance un Worker ; le Worker écrit le fichier et rend compte ; l'Agent retire le Worker et clôt la mission ; l'Assistant conclut en une phrase pour l'utilisateur.
+  - Ensuite : arbre visible, panic stop qui arrête tout.
+- **Passé deux fois le 2026-10-26** (28 à 43 s, environ 0,02 $), avec l'Assistant sur Claude et l'Agent et le Worker sur Codex. Le premier essai, avant le garde-fou de lecture seule, a montré un Agent qui faisait le travail lui-même : c'est ce qui l'a motivé.

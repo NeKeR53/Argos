@@ -82,9 +82,10 @@ pub(super) async fn spawn(spec: SessionSpec) -> Result<Session, EngineError> {
         "model": spec.model,
         "developerInstructions": spec.instructions,
         // Provisoire, en attendant les garde-fous (D34) : jamais de demande
-        // d'approbation, écriture limitée au répertoire de travail.
+        // d'approbation, écriture limitée au répertoire de travail, et aucune écriture
+        // pour une session qui orchestre.
         "approvalPolicy": "never",
-        "sandbox": "workspace-write",
+        "sandbox": if spec.read_only { "read-only" } else { "workspace-write" },
     });
     let method = match &spec.resume {
         Some(thread_id) => {

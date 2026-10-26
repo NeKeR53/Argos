@@ -32,6 +32,9 @@ pub struct SessionSpec {
     pub codex_home: Option<PathBuf>,
     /// Serveurs MCP donnés à l'agent (celui d'Argos, avec le jeton de la session).
     pub mcp_servers: Vec<McpServer>,
+    /// L'agent ne modifie rien lui-même (ni commande, ni écriture de fichier) : il
+    /// orchestre et délègue. C'est le cas de l'Assistant et des Agents.
+    pub read_only: bool,
 }
 
 /// Un serveur MCP HTTP.
@@ -52,6 +55,7 @@ impl SessionSpec {
             program: None,
             codex_home: None,
             mcp_servers: vec![],
+            read_only: false,
         }
     }
 
