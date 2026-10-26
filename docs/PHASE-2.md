@@ -26,11 +26,29 @@ Objectif (D26–D28) : l'Assistant et les Agents montrent à l'utilisateur des p
 - **Contrats** : quand préférer une page à du texte, cockpit ou artifact, tout en ligne puisqu'il n'y a pas de réseau, API du SDK, sobriété, mise à jour plutôt que création.
 - **Tests** : 2 tests du stockage, 2 de bout en bout pour les outils, 1 test d'API. Recette réelle `the_assistant_builds_a_live_cockpit_and_feeds_it` : sur demande, l'Assistant (Haiku) crée un cockpit « Compteur » branché sur le SDK ; à l'événement de la page, il pousse `{"valeur": 1}`. Passée le 2026-10-26.
 
-## Côté GUI
+## Côté GUI (réalisé par un sous-agent, fusionné)
 
-Réalisé en parallèle par un sous-agent : onglets de surfaces dans le panneau d'un agent, `buildSrcdoc`, le SDK, le pont, la suppression. Voir sa section une fois fusionnée.
+- **Onglets** dans le panneau de l'Assistant et des Agents : « Chat » plus un onglet par surface (titre, badge cockpit / artifact). La liste est lue à la sélection et tenue à jour par `surface_updated`. Une suppression demande confirmation.
+- **Iframe** `sandbox="allow-scripts"` seul. `buildSrcdoc` place en tête une CSP sans aucun réseau (`default-src 'none'`, `connect-src 'none'`, `frame-src 'none'`, `form-action 'none'`, `worker-src`, `object-src` et `base-uri` fermés ; seuls `data:` et `blob:` pour les images et les médias), puis le SDK, puis le HTML de l'agent.
+- **SDK** `window.argos` (`apps/gui/src/surface/sdk.js`) : `surface`, `send`, `emit`, `on('data' | 'message' | 'busy')` (avec rejeu de ce qui précède l'abonnement, et désabonnement), et `chat(élément)`, le chat standard en markdown minimal fait maison.
+  - Piège trouvé pendant la vérification : sans `allow-forms`, un `<form>` ne se soumet pas, même intercepté. Le chat standard n'en utilise pas, et le contrat des agents l'interdit.
+- **Pont** (`surface/bridge.ts`) : la console n'accepte que les messages de la `contentWindow` de l'iframe, au format du SDK, de 64 Kio au plus. L'iframe n'a jamais accès à l'API Tauri ni au WebSocket.
+- **Flux par surface** : envois, messages de l'agent, état du tour et données poussées, rejoués à chaque chargement. L'historique survit à un changement d'onglet ou à une nouvelle version.
+- **Tests** : 55 tests vitest au total, dont 19 pour les surfaces (`buildSrcdoc`, réducteur, filtrage du pont).
+
+## Vérification de bout en bout (2026-10-26)
+
+- **Daemon réel**, Assistant sur Claude Haiku, console servie par Vite, pilotée par agent-browser :
+  1. demande écrite dans la console : « Crée-moi un cockpit « Compteur »… » ;
+  2. l'onglet « Compteur » apparaît après 10 s ;
+  3. un clic sur « +1 » *dans la page de l'agent* lui envoie l'événement ;
+  4. l'Assistant pousse la valeur et la page affiche 1.
+  - Coût : 0,009 $.
+- **Vérifications du sous-agent sur faux CLI** : une requête réseau depuis la page est bloquée, un envoi depuis le chat de la surface arrive à l'agent avec son préfixe, un `emit` aussi, la page se recharge à une nouvelle version, la suppression fonctionne.
 
 ## Limites
 
+- Une page peut encore *naviguer* elle-même vers une URL externe (`location = …`) : la CSP ne l'empêche pas. Dans l'app Tauri, il faudra intercepter ces navigations côté Rust (phase 3, avec la fenêtre de l'overlay).
+- La fréquence des messages du pont n'est pas bornée, seulement leur taille.
 - Envoyer une image *vers* un agent n'est pas encore possible : le daemon ne transmet que du texte.
 - Aucune ressource externe dans une page (pas de CDN) : les bibliothèques doivent être en ligne.
