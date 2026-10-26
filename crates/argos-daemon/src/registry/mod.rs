@@ -4,9 +4,11 @@
 
 mod board;
 mod surfaces;
+mod triggers;
 
 pub use board::{Position, TaskUpdate};
 pub use surfaces::MAX_HTML;
+pub use triggers::{MIN_EVERY_SECONDS, NewTrigger};
 
 use argos_core::{AgentId, AgentRecord, AgentState, Charter, EngineKind, Level};
 use rusqlite::types::Type;
@@ -40,6 +42,10 @@ pub enum RegistryError {
     SurfaceNotFound(String),
     #[error("surface : {0}")]
     Surface(String),
+    #[error("déclencheur inconnu : {0}")]
+    TriggerNotFound(String),
+    #[error("déclencheur : {0}")]
+    Trigger(String),
 }
 
 pub type Result<T> = std::result::Result<T, RegistryError>;
@@ -71,11 +77,12 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 4] = [
+const MIGRATIONS: [&str; 5] = [
     AGENTS_SCHEMA,
     board::SCHEMA,
     PROFILE_COLUMN,
     surfaces::SCHEMA,
+    triggers::SCHEMA,
 ];
 
 /// v3 : profil de la politique de modèles (T8).
@@ -324,6 +331,7 @@ impl Registry {
         }
         // Un Worker retiré en pleine tâche la laisse interrompue, à relancer.
         board::interrupt_tasks_of(&tx, &retired)?;
+        triggers::drop_triggers_of(&tx, &retired)?;
         tx.commit()?;
         Ok(retired)
     }

@@ -26,9 +26,9 @@ pub fn contract(record: &AgentRecord, policy: &ModelPolicy) -> String {
         Level::Worker => WORKER.to_string(),
     };
     let surfaces = if record.level.has_memory() {
-        SURFACES
+        format!("{SURFACES}{TRIGGERS}")
     } else {
-        ""
+        String::new()
     };
     format!(
         "{COMMON}\n{body}{surfaces}\nTon répertoire de travail : {}.\n",
@@ -121,6 +121,15 @@ surface_push ; argos.on('message', f) reçoit tes réponses ; argos.surface déc
 Fais-la sobre, lisible en clair comme en sombre ; mets-la à jour (surface_update) plutôt \
 que d'en créer une nouvelle.\n";
 
+const TRIGGERS: &str = "## Déclencheurs\n\
+Pour ce qui doit revenir sans qu'on te parle, crée un déclencheur (trigger_create) : \
+every (toutes les N minutes), cron (à heure fixe), watch (nouveau fichier dans un dossier), \
+webhook (appel d'un service externe, par exemple une automatisation Home Assistant ; donne \
+son URL à l'utilisateur), switch (interrupteur qu'il actionne). Sa consigne te revient \
+préfixée « [Déclencheur « nom » (tr-…, source)] », même si tu étais au repos : traite-la \
+comme une demande, brièvement, et ne dérange l'utilisateur que si elle le justifie. Ne \
+crée pas de déclencheur plus fréquent que nécessaire : chaque réveil coûte.\n";
+
 const WORKER: &str = "## Ton rôle : un Worker\n\
 Tu exécutes une seule tâche, celle que ton Agent t'a confiée, et rien d'autre.\n\
 - Fais-la complètement, dans ton répertoire de travail.\n\
@@ -179,6 +188,7 @@ mod tests {
             !worker.contains("surface_create"),
             "un Worker n'a pas de surface"
         );
+        assert!(agent.contains("trigger_create") && !worker.contains("trigger_create"));
         assert!(worker.contains("report_to_agent"));
         assert!(!worker.contains("spawn_worker"));
     }

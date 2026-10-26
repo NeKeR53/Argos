@@ -2,7 +2,7 @@ use argos_core::{AgentRecord, EngineKind, Level};
 use argos_daemon::config::{Config, load_or_create_token};
 use argos_daemon::registry::{Registry, RegistryError};
 use argos_daemon::supervisor::{Supervisor, SupervisorSettings};
-use argos_daemon::{api, mcp};
+use argos_daemon::{api, events, mcp};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
@@ -57,6 +57,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         token_path.display()
     );
     println!("serveur MCP des agents sur {mcp_url}/mcp/<jeton de session>");
+
+    tokio::spawn(events::Events::new(supervisor.clone()).run());
 
     tokio::select! {
         served = api::serve(listener, supervisor.clone(), token) => served?,

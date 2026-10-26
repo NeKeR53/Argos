@@ -2,7 +2,7 @@
 //! JSON sur une trame texte. Le client envoie des [`Request`] ; le daemon répond par
 //! [`ServerMessage::Reply`] (même `id`) et pousse en continu des [`ServerMessage::Event`].
 
-use crate::{AgentId, AgentRecord, Board, SurfaceDoc, SurfaceMeta, TurnOutcome, Usage};
+use crate::{AgentId, AgentRecord, Board, SurfaceDoc, SurfaceMeta, Trigger, TurnOutcome, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -73,6 +73,22 @@ pub enum Command {
     SurfaceDelete {
         surface: String,
     },
+    /// Les déclencheurs dont un agent est propriétaire ou cible (D29).
+    Triggers {
+        agent: AgentId,
+    },
+    /// Actionne un déclencheur (l'interrupteur, ou n'importe lequel pour l'essayer).
+    FireTrigger {
+        trigger: String,
+    },
+    /// Active ou suspend un déclencheur.
+    SetTrigger {
+        trigger: String,
+        enabled: bool,
+    },
+    DeleteTrigger {
+        trigger: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -108,6 +124,9 @@ pub enum Reply {
     },
     Surface {
         surface: SurfaceDoc,
+    },
+    Triggers {
+        triggers: Vec<Trigger>,
     },
     /// Commande exécutée ; `affected` liste les agents touchés (stop, retrait…).
     Done {

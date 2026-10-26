@@ -355,6 +355,58 @@ async fn the_assistant_builds_a_live_cockpit_and_feeds_it() {
     stage.panic_stop().await;
 }
 
+#[tokio::test]
+#[ignore = "consomme des tokens"]
+async fn the_assistant_sets_up_a_switch_and_reacts_when_it_is_flipped() {
+    let mut stage = Stage::new().await;
+    let assistant = stage.assistant.id.clone();
+    stage
+        .supervisor
+        .send(
+            &assistant,
+            "Crée un interrupteur « pause café » : quand je l'actionne, rappelle-moi en une \
+             phrase de m'étirer et de boire de l'eau.",
+        )
+        .await
+        .unwrap();
+    wait(&mut stage.events, |event| match event {
+        DaemonEvent::TurnCompleted { agent, .. } if *agent == assistant => Some(()),
+        _ => None,
+    })
+    .await;
+    let switch = stage
+        .supervisor
+        .registry()
+        .triggers_of(&assistant)
+        .unwrap()
+        .into_iter()
+        .find(|trigger| trigger.kind == argos_core::TriggerKind::Switch)
+        .expect("un interrupteur a été créé");
+    println!(
+        "Interrupteur {} « {} » : {}",
+        switch.id, switch.name, switch.prompt
+    );
+
+    // L'utilisateur l'actionne, comme la console le ferait (commande fire_trigger).
+    argos_daemon::events::fire(
+        &stage.supervisor,
+        &switch,
+        Some("Actionné par l'utilisateur.".into()),
+    );
+    let reaction = wait(&mut stage.events, |event| match event {
+        DaemonEvent::Message { agent, text } if *agent == assistant => Some(text.clone()),
+        _ => None,
+    })
+    .await;
+    println!("Réaction de l'Assistant : {reaction}");
+    let lowered = reaction.to_lowercase();
+    assert!(
+        lowered.contains("étir") || lowered.contains("eau"),
+        "{reaction}"
+    );
+    stage.panic_stop().await;
+}
+
 /// Premier événement pour lequel `pick` rend une valeur (dans le délai de la recette).
 async fn wait<T>(
     events: &mut broadcast::Receiver<DaemonEvent>,

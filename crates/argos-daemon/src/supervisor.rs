@@ -152,6 +152,11 @@ impl Supervisor {
         true
     }
 
+    /// Adresse du serveur HTTP du daemon (MCP et webhooks), s'il écoute.
+    pub fn mcp_url(&self) -> Option<&str> {
+        self.inner.settings.mcp_url.as_deref()
+    }
+
     pub fn policy(&self) -> &ModelPolicy {
         &self.inner.settings.policy
     }

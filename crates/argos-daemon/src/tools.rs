@@ -5,10 +5,12 @@
 //! (D17) et son compte rendu met la tâche à jour.
 
 use crate::policy::ModelPolicy;
-use crate::registry::{NewAgent, Position, TaskUpdate};
+use crate::registry::{NewAgent, NewTrigger, Position, TaskUpdate};
 use crate::supervisor::{Supervisor, SupervisorError};
 use argos_core::protocol::{AgentStatus, Origin};
-use argos_core::{AgentId, AgentRecord, AgentState, Charter, Level, MissionState, TaskState};
+use argos_core::{
+    AgentId, AgentRecord, AgentState, Charter, Level, MissionState, TaskState, TriggerKind,
+};
 use serde_json::{Value, json};
 use std::fmt::Display;
 
@@ -25,6 +27,7 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
     if level.has_memory() {
         tools.extend(memory_tools());
         tools.extend(surface_tools());
+        tools.extend(trigger_tools());
     }
     let profiles: Vec<&String> = policy.profiles.keys().collect();
     for tool in &mut tools {
@@ -38,6 +41,57 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
         }
     }
     tools
+}
+
+/// Déclencheurs de l'Assistant et des Agents (D29–D31) : ce qui les réveille sans qu'on
+/// leur parle.
+fn trigger_tools() -> Vec<Tool> {
+    vec![
+        tool(
+            "trigger_create",
+            "Crée un déclencheur : à chaque événement, sa consigne te sera remise (ou à l'un de tes Agents, pour l'Assistant), même au repos. Sources : every (toutes les N minutes), cron (expression à 5 champs, heure locale), watch (nouveau fichier dans un dossier), webhook (appel HTTP externe, par exemple une automatisation Home Assistant), switch (interrupteur que l'utilisateur actionne).",
+            &[
+                ("name", "Nom court."),
+                ("source", "every, cron, watch, webhook ou switch."),
+                ("prompt", "La consigne à exécuter à chaque déclenchement."),
+                (
+                    "every_minutes",
+                    "Pour every : l'intervalle en minutes (1 au moins).",
+                ),
+                (
+                    "cron",
+                    "Pour cron : l'expression, par exemple « 0 8 * * 1-5 ».",
+                ),
+                (
+                    "path",
+                    "Pour watch : le dossier à surveiller (chemin absolu).",
+                ),
+                (
+                    "target",
+                    "Pour l'Assistant : l'Agent qui reçoit les événements. Par défaut, toi.",
+                ),
+            ],
+            &["name", "source", "prompt"],
+        ),
+        tool(
+            "trigger_list",
+            "Liste les déclencheurs dont tu es propriétaire ou cible.",
+            &[],
+            &[],
+        ),
+        tool(
+            "trigger_set",
+            "Active (on) ou suspend (off) un de tes déclencheurs.",
+            &[("trigger", TRIGGER_REF), ("status", "on ou off.")],
+            &["trigger", "status"],
+        ),
+        tool(
+            "trigger_delete",
+            "Supprime un de tes déclencheurs.",
+            &[("trigger", TRIGGER_REF)],
+            &["trigger"],
+        ),
+    ]
 }
 
 /// Surfaces de l'Assistant et des Agents (D26–D28) : pages HTML hébergées par l'app.
@@ -344,6 +398,7 @@ fn level_tools(level: Level) -> Vec<Tool> {
 
 const AGENT_REF: &str = "Identifiant ou nom de l'Agent.";
 const WORKER_REF: &str = "Identifiant du Worker.";
+const TRIGGER_REF: &str = "Identifiant du déclencheur (tr-…).";
 const SURFACE_REF: &str = "Identifiant de la surface (s-…).";
 const PEER_REF: &str = "Nom (ou identifiant) de l'autre Agent.";
 const TASK_REF: &str = "Identifiant de la tâche (t-…).";
@@ -362,6 +417,8 @@ fn tool(
                 "outcome" => &["progress", "done", "blocked"],
                 "mode" => &["replace", "append"],
                 "kind" => &["cockpit", "artifact"],
+                "source" => &["every", "cron", "watch", "webhook", "switch"],
+                "status" => &["on", "off"],
                 "state" => &["pending", "in_progress", "blocked", "done", "cancelled"],
                 _ => &[],
             };
@@ -586,6 +643,40 @@ pub async fn call(
             memory.write(&caller.id, file, text(args, "content")?, append)?;
             Ok(format!("{file} mis à jour."))
         }
+        (Level::Assistant | Level::Agent, "trigger_create") => {
+            create_trigger(supervisor, caller, args)
+        }
+        (Level::Assistant | Level::Agent, "trigger_list") => {
+            let triggers = supervisor
+                .registry()
+                .triggers_of(&caller.id)
+                .map_err(said)?;
+            if triggers.is_empty() {
+                return Ok("Aucun déclencheur.".into());
+            }
+            Ok(json!(triggers).to_string())
+        }
+        (Level::Assistant | Level::Agent, "trigger_set") => {
+            let id = own_trigger(supervisor, caller, text(args, "trigger")?)?;
+            let enabled = match text(args, "status")? {
+                "on" => true,
+                "off" => false,
+                other => return Err(format!("état « {other} » : on ou off")),
+            };
+            supervisor
+                .registry()
+                .set_trigger_enabled(&id, enabled)
+                .map_err(said)?;
+            Ok(format!(
+                "Déclencheur {id} {}.",
+                if enabled { "actif" } else { "suspendu" }
+            ))
+        }
+        (Level::Assistant | Level::Agent, "trigger_delete") => {
+            let id = own_trigger(supervisor, caller, text(args, "trigger")?)?;
+            supervisor.registry().delete_trigger(&id).map_err(said)?;
+            Ok(format!("Déclencheur {id} supprimé."))
+        }
         (Level::Assistant | Level::Agent, "surface_create") => {
             let kind = text(args, "kind")?.parse().map_err(said)?;
             let html = raw(args, "html")?;
@@ -702,6 +793,74 @@ fn create_agent(
         agent.id,
         agent.workdir.display()
     ))
+}
+
+fn create_trigger(
+    supervisor: &Supervisor,
+    caller: &AgentRecord,
+    args: &Value,
+) -> Result<String, String> {
+    let kind: TriggerKind = text(args, "source")?.parse().map_err(said)?;
+    let target = match optional(args, "target") {
+        None => caller.id.clone(),
+        Some(reference) if caller.level == Level::Assistant => {
+            if reference == caller.id.as_str() {
+                caller.id.clone()
+            } else {
+                child(supervisor, caller, reference)?.id
+            }
+        }
+        Some(reference) if reference == caller.id.as_str() => caller.id.clone(),
+        Some(_) => return Err("un Agent ne crée de déclencheur que pour lui-même".into()),
+    };
+    let spec = match kind {
+        TriggerKind::Every => {
+            let minutes: u64 = text(args, "every_minutes")?
+                .parse()
+                .map_err(|_| "every_minutes : un nombre entier de minutes".to_string())?;
+            (minutes * 60).to_string()
+        }
+        TriggerKind::Cron => text(args, "cron")?.to_string(),
+        TriggerKind::Watch => text(args, "path")?.to_string(),
+        TriggerKind::Switch | TriggerKind::Webhook => String::new(),
+    };
+    let trigger = supervisor
+        .registry()
+        .add_trigger(NewTrigger {
+            owner: caller.id.clone(),
+            target,
+            name: text(args, "name")?.into(),
+            kind,
+            spec,
+            prompt: text(args, "prompt")?.into(),
+        })
+        .map_err(said)?;
+    journal(
+        supervisor,
+        &caller.id,
+        &format!(
+            "déclencheur « {} » ({}, {}) créé",
+            trigger.name, trigger.id, trigger.kind
+        ),
+    );
+    let mut done = format!("Déclencheur {} « {} » actif.", trigger.id, trigger.name);
+    if let Some(secret) = &trigger.secret {
+        let base = supervisor.mcp_url().unwrap_or("http://<daemon>");
+        done.push_str(&format!(
+            " URL à appeler (POST, le corps accompagne la consigne) : {base}/hooks/{}/{secret}",
+            trigger.id
+        ));
+    }
+    Ok(done)
+}
+
+/// Un déclencheur dont `caller` est propriétaire.
+fn own_trigger(supervisor: &Supervisor, caller: &AgentRecord, id: &str) -> Result<String, String> {
+    let trigger = supervisor.registry().trigger(id).map_err(said)?;
+    if trigger.owner != caller.id {
+        return Err(format!("le déclencheur {id} n'est pas le tien"));
+    }
+    Ok(trigger.id)
 }
 
 async fn assign_mission(

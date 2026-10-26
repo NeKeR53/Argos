@@ -286,6 +286,52 @@ pub struct SurfaceDoc {
     pub html: String,
 }
 
+/// Nature d'un déclencheur (D29–D30).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TriggerKind {
+    /// À intervalle régulier (`spec` : secondes).
+    Every,
+    /// Selon une expression cron à 5 champs (`spec`), heure locale du nœud.
+    Cron,
+    /// Interrupteur actionné à la main par l'utilisateur.
+    Switch,
+    /// Surveillance d'un dossier du nœud (`spec` : chemin) : un événement par nouveau fichier.
+    Watch,
+    /// Webhook entrant : un appel HTTP avec le secret du déclencheur.
+    Webhook,
+}
+
+text_form!(TriggerKind {
+    Every => "every",
+    Cron => "cron",
+    Switch => "switch",
+    Watch => "watch",
+    Webhook => "webhook",
+});
+
+/// Source d'événements qui stimule un agent (D29) : à chaque déclenchement, sa
+/// consigne est remise à l'agent cible, qu'elle réveille s'il est parké.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Trigger {
+    pub id: String,
+    /// L'agent qui l'a créé.
+    pub owner: AgentId,
+    /// L'agent qui reçoit les événements.
+    pub target: AgentId,
+    pub name: String,
+    pub kind: TriggerKind,
+    /// Paramètre selon la nature : secondes, expression cron, chemin ; vide sinon.
+    pub spec: String,
+    /// Consigne remise à l'agent à chaque déclenchement.
+    pub prompt: String,
+    /// Secret d'un webhook, à mettre dans son URL.
+    pub secret: Option<String>,
+    pub enabled: bool,
+    pub created_at: u64,
+    pub last_fired: Option<u64>,
+}
+
 /// Issue d'un tour d'agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]

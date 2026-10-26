@@ -4,6 +4,7 @@ pub mod api;
 pub mod config;
 pub mod contracts;
 pub mod engine;
+pub mod events;
 pub mod mcp;
 pub mod memory;
 pub mod policy;

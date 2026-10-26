@@ -1,6 +1,7 @@
 //! API WebSocket du daemon pour la GUI (protocole : `argos_core::protocol`). Locale et
 //! protégée par un jeton : elle pilote des agents qui exécutent des commandes.
 
+use crate::events;
 use crate::supervisor::Supervisor;
 use argos_core::protocol::{Command, Origin, Reply, Request, ServerMessage};
 use argos_core::{AgentId, Level, PROTOCOL_VERSION};
@@ -184,6 +185,33 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
                 .await
                 .map_err(said)?;
             done(vec![meta.agent])
+        }
+        Command::Triggers { agent } => Reply::Triggers {
+            triggers: supervisor.registry().triggers_of(&agent).map_err(said)?,
+        },
+        Command::FireTrigger { trigger } => {
+            let trigger = supervisor.registry().trigger(&trigger).map_err(said)?;
+            let target = trigger.target.clone();
+            events::fire(
+                supervisor,
+                &trigger,
+                Some("Actionné par l'utilisateur.".into()),
+            );
+            done(vec![target])
+        }
+        Command::SetTrigger { trigger, enabled } => {
+            let trigger = supervisor
+                .registry()
+                .set_trigger_enabled(&trigger, enabled)
+                .map_err(said)?;
+            done(vec![trigger.target])
+        }
+        Command::DeleteTrigger { trigger } => {
+            let trigger = supervisor
+                .registry()
+                .delete_trigger(&trigger)
+                .map_err(said)?;
+            done(vec![trigger.target])
         }
         Command::SurfaceDelete { surface } => {
             let meta = supervisor

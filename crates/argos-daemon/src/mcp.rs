@@ -26,8 +26,36 @@ pub fn router(supervisor: Supervisor) -> Router {
             "/mcp/{token}",
             post(handle).get(no_stream).delete(no_stream),
         )
+        .route("/hooks/{trigger}/{secret}", post(hook))
         .with_state(supervisor)
 }
+
+/// Webhook entrant (D30) : le corps de l'appel accompagne la consigne du déclencheur.
+/// Un déclencheur inconnu, suspendu, d'une autre nature ou un mauvais secret : 404.
+async fn hook(
+    State(supervisor): State<Supervisor>,
+    Path((trigger, secret)): Path<(String, String)>,
+    body: String,
+) -> StatusCode {
+    let Ok(found) = supervisor.registry().trigger(&trigger) else {
+        return StatusCode::NOT_FOUND;
+    };
+    let authorized = found.kind == argos_core::TriggerKind::Webhook
+        && found.enabled
+        && found.secret.as_deref() == Some(secret.as_str());
+    if !authorized {
+        return StatusCode::NOT_FOUND;
+    }
+    let mut body: String = body.chars().take(MAX_HOOK_BODY).collect();
+    if body.trim().is_empty() {
+        body = "(appel sans contenu)".into();
+    }
+    crate::events::fire(&supervisor, &found, Some(format!("Reçu :\n{body}")));
+    StatusCode::ACCEPTED
+}
+
+/// Caractères du corps d'un webhook transmis à l'agent, au plus.
+const MAX_HOOK_BODY: usize = 20_000;
 
 /// Pas de flux SSE ni de session : le protocole autorise à les refuser ainsi.
 async fn no_stream() -> StatusCode {
