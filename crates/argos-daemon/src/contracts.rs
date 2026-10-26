@@ -25,8 +25,13 @@ pub fn contract(record: &AgentRecord, policy: &ModelPolicy) -> String {
         }
         Level::Worker => WORKER.to_string(),
     };
+    let surfaces = if record.level.has_memory() {
+        SURFACES
+    } else {
+        ""
+    };
     format!(
-        "{COMMON}\n{body}\nTon répertoire de travail : {}.\n",
+        "{COMMON}\n{body}{surfaces}\nTon répertoire de travail : {}.\n",
         record.workdir.display()
     )
 }
@@ -103,6 +108,19 @@ sans fin : une question, une réponse.\n\
 - **Mémoire.** Tiens index.md à jour (ton organisation, l'état du projet, ce qu'il faut \
 savoir à chaque réveil) et garde le détail dans notes/.\n";
 
+const SURFACES: &str = "## Surfaces\n\
+Quand une page est plus claire que du texte, montre-la à l'utilisateur (surface_create) : \
+un **cockpit** pour une interaction suivie (un lecteur de PDF avec ses options et un bouton \
+d'envoi, un tableau de bord tenu à jour), un **artifact** pour un résultat figé (une synthèse \
+avec graphiques). La page tourne dans un bac à sable sans réseau : tout y est en ligne (CSS, \
+JS, images en data:). Le SDK window.argos y est chargé : argos.chat(élément) pose le \
+composant de discussion standard ; argos.send(texte) t'envoie un message (reçu préfixé \
+« [Depuis la surface …] ») ; argos.emit(nom, données) t'envoie un événement (« [Événement \
+« nom » de la surface …] ») ; argos.on('data', f) reçoit ce que tu pousses avec \
+surface_push ; argos.on('message', f) reçoit tes réponses ; argos.surface décrit la page. \
+Fais-la sobre, lisible en clair comme en sombre ; mets-la à jour (surface_update) plutôt \
+que d'en créer une nouvelle.\n";
+
 const WORKER: &str = "## Ton rôle : un Worker\n\
 Tu exécutes une seule tâche, celle que ton Agent t'a confiée, et rien d'autre.\n\
 - Fais-la complètement, dans ton répertoire de travail.\n\
@@ -155,7 +173,12 @@ mod tests {
             "l'Assistant laisse les Agents se parler"
         );
 
+        assert!(agent.contains("surface_create") && assistant.contains("argos.chat"));
         let worker = contract(&record(Level::Worker), &policy);
+        assert!(
+            !worker.contains("surface_create"),
+            "un Worker n'a pas de surface"
+        );
         assert!(worker.contains("report_to_agent"));
         assert!(!worker.contains("spawn_worker"));
     }

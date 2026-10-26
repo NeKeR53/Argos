@@ -24,6 +24,7 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
     let mut tools = level_tools(level);
     if level.has_memory() {
         tools.extend(memory_tools());
+        tools.extend(surface_tools());
     }
     let profiles: Vec<&String> = policy.profiles.keys().collect();
     for tool in &mut tools {
@@ -37,6 +38,45 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
         }
     }
     tools
+}
+
+/// Surfaces de l'Assistant et des Agents (D26–D28) : pages HTML hébergées par l'app.
+fn surface_tools() -> Vec<Tool> {
+    vec![
+        tool(
+            "surface_create",
+            "Crée une page HTML pour l'utilisateur. Un cockpit est vivant (tu le mets à jour, tu lui pousses des données, il t'envoie ses actions) ; un artifact est un résultat figé (synthèse, graphiques). La page tourne dans un bac à sable sans réseau : tout doit être dans le HTML (CSS et JS en ligne, images en data:). Le SDK window.argos y est déjà chargé.",
+            &[
+                ("kind", "cockpit ou artifact."),
+                ("title", "Titre court, affiché dans l'onglet."),
+                ("html", "La page complète : HTML, CSS et JS en ligne."),
+            ],
+            &["kind", "title", "html"],
+        ),
+        tool(
+            "surface_update",
+            "Remplace le code et/ou le titre d'une de tes surfaces ; la page se recharge chez l'utilisateur.",
+            &[
+                ("surface", SURFACE_REF),
+                ("html", "Le nouveau code complet."),
+                ("title", "Le nouveau titre."),
+            ],
+            &["surface"],
+        ),
+        tool(
+            "surface_push",
+            "Pousse des données vers un de tes cockpits ouverts, sans le recharger : la page les reçoit par argos.on('data', …).",
+            &[("surface", SURFACE_REF), ("data", "Les données, en JSON.")],
+            &["surface", "data"],
+        ),
+        tool("surface_list", "Liste tes surfaces.", &[], &[]),
+        tool(
+            "surface_delete",
+            "Supprime une de tes surfaces.",
+            &[("surface", SURFACE_REF)],
+            &["surface"],
+        ),
+    ]
 }
 
 /// Mémoire persistante de l'Assistant et des Agents (D23–D24).
@@ -304,6 +344,7 @@ fn level_tools(level: Level) -> Vec<Tool> {
 
 const AGENT_REF: &str = "Identifiant ou nom de l'Agent.";
 const WORKER_REF: &str = "Identifiant du Worker.";
+const SURFACE_REF: &str = "Identifiant de la surface (s-…).";
 const PEER_REF: &str = "Nom (ou identifiant) de l'autre Agent.";
 const TASK_REF: &str = "Identifiant de la tâche (t-…).";
 const POSITION: &str = "« top », « bottom » ou un rang (1 = en tête).";
@@ -320,6 +361,7 @@ fn tool(
             let choices: &[&str] = match *key {
                 "outcome" => &["progress", "done", "blocked"],
                 "mode" => &["replace", "append"],
+                "kind" => &["cockpit", "artifact"],
                 "state" => &["pending", "in_progress", "blocked", "done", "cancelled"],
                 _ => &[],
             };
@@ -543,6 +585,51 @@ pub async fn call(
             let append = optional(args, "mode") == Some("append");
             memory.write(&caller.id, file, text(args, "content")?, append)?;
             Ok(format!("{file} mis à jour."))
+        }
+        (Level::Assistant | Level::Agent, "surface_create") => {
+            let kind = text(args, "kind")?.parse().map_err(said)?;
+            let html = raw(args, "html")?;
+            let surface = supervisor
+                .registry()
+                .add_surface(&caller.id, kind, text(args, "title")?, html)
+                .map_err(said)?;
+            let id = surface.id.clone();
+            supervisor.publish_surface(surface, false);
+            Ok(format!(
+                "Surface {id} créée ; l'utilisateur la voit dans un onglet."
+            ))
+        }
+        (Level::Assistant | Level::Agent, "surface_update") => {
+            let id = own_surface(supervisor, caller, text(args, "surface")?)?;
+            let html = args["html"].as_str().filter(|html| !html.trim().is_empty());
+            let surface = supervisor
+                .registry()
+                .update_surface(&id, html, optional(args, "title"))
+                .map_err(said)?;
+            let version = surface.version;
+            supervisor.publish_surface(surface, false);
+            Ok(format!("Surface {id} mise à jour (version {version})."))
+        }
+        (Level::Assistant | Level::Agent, "surface_push") => {
+            let id = own_surface(supervisor, caller, text(args, "surface")?)?;
+            let data = raw(args, "data")?;
+            // Du JSON si possible ; sinon le texte tel quel.
+            let data = serde_json::from_str(data).unwrap_or_else(|_| Value::from(data));
+            supervisor.push_surface(&id, data);
+            Ok(format!("Données poussées vers {id}."))
+        }
+        (Level::Assistant | Level::Agent, "surface_list") => {
+            let surfaces = supervisor.registry().surfaces(&caller.id).map_err(said)?;
+            if surfaces.is_empty() {
+                return Ok("Aucune surface pour l'instant.".into());
+            }
+            Ok(json!(surfaces).to_string())
+        }
+        (Level::Assistant | Level::Agent, "surface_delete") => {
+            let id = own_surface(supervisor, caller, text(args, "surface")?)?;
+            let surface = supervisor.registry().delete_surface(&id).map_err(said)?;
+            supervisor.publish_surface(surface, true);
+            Ok(format!("Surface {id} supprimée."))
         }
         (Level::Assistant | Level::Agent, "memory_search") => {
             let found = supervisor
@@ -942,6 +1029,15 @@ fn own_mission(supervisor: &Supervisor, caller: &AgentRecord, id: &str) -> Resul
     Ok(mission.id)
 }
 
+/// Une surface de `caller`.
+fn own_surface(supervisor: &Supervisor, caller: &AgentRecord, id: &str) -> Result<String, String> {
+    let surface = supervisor.registry().surface_meta(id).map_err(said)?;
+    if surface.agent != caller.id {
+        return Err(format!("la surface {id} n'est pas la tienne"));
+    }
+    Ok(surface.id)
+}
+
 /// Une tâche du board de `caller`.
 fn own_task(supervisor: &Supervisor, caller: &AgentRecord, id: &str) -> Result<String, String> {
     let task = supervisor.registry().task(id).map_err(said)?;
@@ -983,6 +1079,14 @@ fn listed(statuses: Vec<AgentStatus>) -> Result<String, String> {
         return Ok("Aucun pour l'instant.".into());
     }
     Ok(Value::from(statuses.iter().map(summary).collect::<Vec<_>>()).to_string())
+}
+
+/// Argument texte non vide, sans le rogner (code HTML, JSON).
+fn raw<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
+    args[key]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("argument « {key} » manquant"))
 }
 
 fn text<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {

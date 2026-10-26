@@ -5,7 +5,7 @@ mod common;
 use argos_core::protocol::{Command, DaemonEvent, Reply, Request, ServerMessage};
 use argos_core::{AgentId, PROTOCOL_VERSION};
 use argos_daemon::api;
-use common::world::{World, world};
+use common::world::{World, until, world};
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
@@ -240,4 +240,100 @@ async fn errors_come_back_as_replies() {
         }
         other => panic!("erreur attendue, reçu {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_surface_talks_to_its_agent_through_the_console() {
+    let mut w = world();
+    let surface = w
+        .supervisor
+        .registry()
+        .add_surface(
+            &w.agent.id,
+            argos_core::SurfaceKind::Cockpit,
+            "Lecteur PDF",
+            "<p>pdf</p>",
+        )
+        .unwrap();
+    let mut client = connect(&serve(&w).await).await;
+
+    match ask(
+        &mut client,
+        1,
+        Command::Surfaces {
+            agent: w.agent.id.clone(),
+        },
+    )
+    .await
+    {
+        Reply::Surfaces { surfaces } => assert_eq!(surfaces, vec![surface.clone()]),
+        other => panic!("surfaces attendues, reçu {other:?}"),
+    }
+    match ask(
+        &mut client,
+        2,
+        Command::Surface {
+            surface: surface.id.clone(),
+        },
+    )
+    .await
+    {
+        Reply::Surface { surface: doc } => assert_eq!(doc.html, "<p>pdf</p>"),
+        other => panic!("surface attendue, reçu {other:?}"),
+    }
+
+    let reply = ask(
+        &mut client,
+        3,
+        Command::SurfaceSend {
+            surface: surface.id.clone(),
+            text: "page suivante".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        reply,
+        Reply::Done {
+            affected: vec![w.agent.id.clone()]
+        }
+    );
+    // L'input est publié avant la réponse : on le lit sur le flux du superviseur.
+    let expected = format!(
+        "[Depuis la surface « Lecteur PDF » ({})]\npage suivante",
+        surface.id
+    );
+    let agent = w.agent.id.clone();
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent: a, text, .. } if *a == agent && *text == expected)
+    })
+    .await;
+
+    let reply = ask(
+        &mut client,
+        4,
+        Command::SurfaceEmit {
+            surface: surface.id.clone(),
+            name: "page".into(),
+            payload: serde_json::json!({"n": 3}),
+        },
+    )
+    .await;
+    assert!(matches!(reply, Reply::Done { .. }));
+
+    let reply = ask(
+        &mut client,
+        5,
+        Command::SurfaceDelete {
+            surface: surface.id.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(reply, Reply::Done { .. }));
+    assert!(
+        w.supervisor
+            .registry()
+            .surfaces(&w.agent.id)
+            .unwrap()
+            .is_empty()
+    );
 }
