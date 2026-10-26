@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentStatus, Origin, ServerMessage } from "./protocol";
+import type { AgentStatus, Origin, ServerMessage, Trigger } from "./protocol";
 import { parseServerMessage } from "./protocol";
 import {
   initialState,
@@ -416,5 +416,109 @@ describe("surfaces", () => {
       server({ type: "event", event: { type: "agent_updated", agent: { ...domotique, state: "retired" } } }),
     );
     expect(state.surfaces.dom).toBeUndefined();
+  });
+});
+
+describe("texte en streaming", () => {
+  const delta = (agent: string, text: string): Action =>
+    server({ type: "event", event: { type: "message_delta", agent, text } });
+  const message = (agent: string, text: string): Action =>
+    server({ type: "event", event: { type: "message", agent, text } });
+
+  it("s'écrit au fil des fragments puis laisse place au message complet", () => {
+    let state = run(tree, input("a0", "bonjour"), delta("a0", "Bon"), delta("a0", "jour à "));
+    expect(thread(state, "a0").slice(1)).toEqual([{ kind: "streaming", text: "Bonjour à " }]);
+
+    state = reduce(state, message("a0", "Bonjour à toi."));
+    expect(thread(state, "a0").slice(1)).toEqual([{ kind: "agent", text: "Bonjour à toi." }]);
+    // Un outil entre deux messages : le second message s'écrit à part.
+    state = [
+      server({ type: "event", event: { type: "tool", agent: "a0", name: "Bash" } }),
+      delta("a0", "Fini"),
+      message("a0", "Fini."),
+    ].reduce(reduce, state);
+    expect(thread(state, "a0").slice(1)).toEqual([
+      { kind: "agent", text: "Bonjour à toi." },
+      { kind: "tool", name: "Bash" },
+      { kind: "agent", text: "Fini." },
+    ]);
+  });
+
+  it("garde le texte reçu d'un tour interrompu", () => {
+    const state = run(
+      tree,
+      delta("a0", "J'allais dire"),
+      server({
+        type: "event",
+        event: { type: "turn_completed", agent: "a0", outcome: { status: "interrupted" }, usage: null },
+      }),
+    );
+    expect(thread(state, "a0")).toEqual([
+      { kind: "agent", text: "J'allais dire" },
+      { kind: "turn", outcome: { status: "interrupted" }, usage: null },
+    ]);
+  });
+
+  it("ne fait pas relire le board à chaque fragment", () => {
+    const state = run(tree, delta("dom", "a"), delta("dom", "b"));
+    expect(state.boardRevisions).toEqual({});
+  });
+});
+
+describe("déclencheurs", () => {
+  const trigger = (id: string, owner: string, target: string, extra: Partial<Trigger> = {}): Trigger => ({
+    id,
+    owner,
+    target,
+    name: `déclencheur ${id}`,
+    kind: "switch",
+    spec: "",
+    prompt: "Fais le point.",
+    secret: null,
+    enabled: true,
+    created_at: 1,
+    last_fired: null,
+    ...extra,
+  });
+  const listed = (id: number, agent: string, triggers: Trigger[]): Action[] => [
+    { type: "requested", id, command: { command: "triggers", agent } },
+    server({ type: "reply", id, reply: { kind: "triggers", triggers } }),
+  ];
+
+  it("garde la liste de chaque agent", () => {
+    const state = run(tree, ...listed(2, "dom", [trigger("tr-1", "dom", "dom")]), ...listed(3, "a0", []));
+    expect(state.triggers.dom.map((t) => t.id)).toEqual(["tr-1"]);
+    expect(state.triggers.a0).toEqual([]);
+  });
+
+  it("relit la cible et le propriétaire quand un déclencheur part", () => {
+    const state = run(
+      tree,
+      ...listed(2, "a0", [trigger("tr-1", "a0", "dom")]),
+      ...listed(3, "dom", [trigger("tr-1", "a0", "dom")]),
+      input("dom", "[Déclencheur « pause » (tr-1, switch)]\nFais le point.", { kind: "argos" }),
+      input("dom", "un message ordinaire"),
+    );
+    expect(state.triggerRevisions).toEqual({ dom: 1, a0: 1 });
+  });
+
+  it("relit les listes concernées après une action", () => {
+    const state = run(
+      tree,
+      ...listed(2, "dom", [trigger("tr-1", "dom", "dom")]),
+      ...listed(3, "a0", [trigger("tr-9", "a0", "a0")]),
+      { type: "requested", id: 4, command: { command: "set_trigger", trigger: "tr-1", enabled: false } },
+      server({ type: "reply", id: 4, reply: { kind: "done", affected: [] } }),
+    );
+    expect(state.triggerRevisions).toEqual({ dom: 1 });
+  });
+
+  it("disparaissent avec leur agent retiré", () => {
+    let state = run(tree, ...listed(2, "dom", [trigger("tr-1", "dom", "dom")]));
+    state = reduce(
+      state,
+      server({ type: "event", event: { type: "agent_updated", agent: { ...domotique, state: "retired" } } }),
+    );
+    expect(state.triggers.dom).toBeUndefined();
   });
 });

@@ -144,6 +144,38 @@ describe("messages du daemon", () => {
     }
   });
 
+  it("lisent les fragments de message et les déclencheurs", () => {
+    const trigger = {
+      id: "tr-1a2b3c4d",
+      owner: "a0",
+      target: "a1",
+      name: "maison",
+      kind: "webhook",
+      spec: "",
+      prompt: "Regarde ce que Home Assistant signale.",
+      secret: "s3cr3t",
+      enabled: true,
+      created_at: 1,
+      last_fired: null,
+    };
+    const frames = [
+      { type: "event", event: { type: "message_delta", agent: "a1", text: "Bon" } },
+      { type: "reply", id: 8, reply: { kind: "triggers", triggers: [trigger] } },
+    ];
+    for (const frame of frames) expect(parseServerMessage(JSON.stringify(frame))).toEqual(frame);
+    expect(JSON.parse(encodeRequest(9, { command: "set_trigger", trigger: "tr-1", enabled: false }))).toEqual({
+      id: 9,
+      command: "set_trigger",
+      trigger: "tr-1",
+      enabled: false,
+    });
+    expect(() =>
+      parseServerMessage(
+        JSON.stringify({ type: "reply", id: 8, reply: { kind: "triggers", triggers: [{ ...trigger, kind: "mqtt" }] } }),
+      ),
+    ).toThrow(ProtocolError);
+  });
+
   it("acceptent hello", () => {
     expect(parseServerMessage('{"type":"hello","protocol":1}')).toEqual({ type: "hello", protocol: 1 });
   });

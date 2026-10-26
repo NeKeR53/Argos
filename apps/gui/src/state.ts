@@ -16,6 +16,7 @@ import {
   type ServerMessage,
   type SurfaceDoc,
   type SurfaceMeta,
+  type Trigger,
   type TurnOutcome,
   type Usage,
 } from "./protocol";
@@ -51,6 +52,8 @@ export type ThreadEntry =
    */
   | { seq: number; kind: "input"; text: string; from: Origin | null; console: ConsoleSend | null }
   | { seq: number; kind: "agent"; text: string }
+  /** Message en cours d'écriture (`message_delta`), remplacé par le message complet. */
+  | { seq: number; kind: "streaming"; text: string }
   | { seq: number; kind: "tool"; name: string }
   | { seq: number; kind: "turn"; outcome: TurnOutcome; usage: Usage | null }
   | { seq: number; kind: "exited"; code: number | null };
@@ -113,6 +116,13 @@ export interface AppState {
    * est relue (rattrape une surface créée ou modifiée sans événement).
    */
   surfaceRevisions: Record<AgentId, number>;
+  /** Déclencheurs dont l'agent est propriétaire ou cible, par agent. */
+  triggers: Record<AgentId, Trigger[]>;
+  /**
+   * Compteur incrémenté quand un déclencheur d'un agent part ou change : la liste
+   * affichée est relue.
+   */
+  triggerRevisions: Record<AgentId, number>;
   /** Escalades encore affichées dans le bandeau. */
   escalations: Escalation[];
   /** Escalades arrivées depuis la dernière consultation de l'Assistant. */
@@ -155,6 +165,8 @@ export const initialState: AppState = {
   surfaceDocs: {},
   surfaceFeeds: {},
   surfaceRevisions: {},
+  triggers: {},
+  triggerRevisions: {},
   escalations: [],
   unseenEscalations: 0,
   pending: {},
@@ -235,8 +247,20 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
       const withDoc = { ...next, surfaceDocs: { ...next.surfaceDocs, [meta.id]: reply.surface } };
       return withSurface(withDoc, meta);
     }
+    case "triggers":
+      if (command?.command !== "triggers") return next;
+      return { ...next, triggers: { ...next.triggers, [command.agent]: reply.triggers } };
     case "done":
-      return command?.command === "send" ? deliver(next, command.agent, id, "delivered") : next;
+      if (command?.command === "send") return deliver(next, command.agent, id, "delivered");
+      // Un déclencheur actionné, suspendu ou supprimé : les listes qui le montrent sont relues.
+      if (
+        command?.command === "fire_trigger" ||
+        command?.command === "set_trigger" ||
+        command?.command === "delete_trigger"
+      ) {
+        return touchTriggersOf(next, command.trigger);
+      }
+      return next;
     case "error": {
       // Id 0 ou inconnu : requête illisible, ou réponse d'une connexion précédente.
       const context = command ? describeCommand(command, next.agents) : "Le daemon signale";
@@ -248,17 +272,27 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
 
 function onEvent(state: AppState, event: DaemonEvent): AppState {
   switch (event.type) {
-    case "input":
+    case "input": {
       // L'agent se met au travail : ses surfaces le montrent (`argos.on('busy')`).
-      return feedAgent(onInput(state, event.agent, event.from, event.text), event.agent, { type: "busy", busy: true });
+      let next = feedAgent(onInput(state, event.agent, event.from, event.text), event.agent, {
+        type: "busy",
+        busy: true,
+      });
+      // Un déclencheur vient de partir : sa date de dernier déclenchement a changé.
+      if (classifyInput(event.text).category === "trigger") next = touchTriggersAiming(next, event.agent);
+      return next;
+    }
+    case "message_delta":
+      return withDelta(state, event.agent, event.text);
     case "message": {
-      const next = append(state, event.agent, { kind: "agent", text: event.text });
+      const next = withMessage(state, event.agent, event.text);
       return feedAgent(next, event.agent, { type: "message", text: event.text });
     }
     case "tool":
       return append(state, event.agent, { kind: "tool", name: event.name });
     case "turn_completed": {
-      const next = append(feedAgent(state, event.agent, { type: "busy", busy: false }), event.agent, {
+      const settled = settleStreaming(state, event.agent);
+      const next = append(feedAgent(settled, event.agent, { type: "busy", busy: false }), event.agent, {
         kind: "turn",
         outcome: event.outcome,
         usage: event.usage,
@@ -271,7 +305,7 @@ function onEvent(state: AppState, event: DaemonEvent): AppState {
       };
     }
     case "exited":
-      return append(state, event.agent, { kind: "exited", code: event.code });
+      return append(settleStreaming(state, event.agent), event.agent, { kind: "exited", code: event.code });
     case "agent_updated": {
       const id = event.agent.id;
       const next = upsert(state, event.agent);
@@ -284,6 +318,69 @@ function onEvent(state: AppState, event: DaemonEvent): AppState {
     case "surface_data":
       return feed(state, event.surface, { type: "data", data: event.data });
   }
+}
+
+// --- Texte en streaming -----------------------------------------------------------
+
+/** Index de la ligne en cours d'écriture d'un fil, ou -1. */
+function streamingIndex(thread: ThreadEntry[]): number {
+  for (let index = thread.length - 1; index >= 0; index--) {
+    if (thread[index].kind === "streaming") return index;
+  }
+  return -1;
+}
+
+/** Un fragment s'ajoute au message en cours, ou en ouvre un. */
+function withDelta(state: AppState, agent: AgentId, text: string): AppState {
+  const thread = state.threads[agent] ?? [];
+  const index = streamingIndex(thread);
+  if (index < 0) return append(state, agent, { kind: "streaming", text });
+  const updated = thread.map((entry, at) =>
+    at === index && entry.kind === "streaming" ? { ...entry, text: entry.text + text } : entry,
+  );
+  return { ...state, threads: { ...state.threads, [agent]: updated } };
+}
+
+/** Le message complet prend la place du texte en cours, sans doublon. */
+function withMessage(state: AppState, agent: AgentId, text: string): AppState {
+  const thread = state.threads[agent] ?? [];
+  const index = streamingIndex(thread);
+  if (index < 0) return append(state, agent, { kind: "agent", text });
+  const updated = thread.map((entry, at): ThreadEntry => (at === index ? { seq: entry.seq, kind: "agent", text } : entry));
+  return { ...state, threads: { ...state.threads, [agent]: updated } };
+}
+
+/** Tour fini sans message complet (interruption, panne) : le texte reçu reste tel quel. */
+function settleStreaming(state: AppState, agent: AgentId): AppState {
+  const thread = state.threads[agent] ?? [];
+  const index = streamingIndex(thread);
+  if (index < 0) return state;
+  const entry = thread[index];
+  return withMessage(state, agent, entry.kind === "streaming" ? entry.text : "");
+}
+
+// --- Déclencheurs -----------------------------------------------------------------
+
+function touchTriggers(state: AppState, agent: AgentId): AppState {
+  return {
+    ...state,
+    triggerRevisions: { ...state.triggerRevisions, [agent]: (state.triggerRevisions[agent] ?? 0) + 1 },
+  };
+}
+
+/** Un déclencheur a visé `target` : sa liste, et celles de leurs propriétaires, sont relues. */
+function touchTriggersAiming(state: AppState, target: AgentId): AppState {
+  const owners = Object.entries(state.triggers)
+    .filter(([agent, list]) => agent !== target && list.some((trigger) => trigger.target === target))
+    .map(([agent]) => agent);
+  return [target, ...owners].reduce(touchTriggers, state);
+}
+
+/** Relit les listes qui montrent ce déclencheur. */
+function touchTriggersOf(state: AppState, trigger: string): AppState {
+  return Object.entries(state.triggers)
+    .filter(([, list]) => list.some((candidate) => candidate.id === trigger))
+    .reduce((next, [agent]) => touchTriggers(next, agent), state);
 }
 
 // --- Surfaces ---------------------------------------------------------------------
@@ -370,7 +467,16 @@ function withEscalation(state: AppState, text: string): AppState {
 
 /** Marque à relire le board de l'Agent concerné par l'événement (lui ou son Worker). */
 function touchBoard(state: AppState, event: DaemonEvent): AppState {
-  if (event.type === "notice" || event.type === "surface_updated" || event.type === "surface_data") return state;
+  // Les fragments de texte ne changent pas le board ; les relire à chaque fragment
+  // ferait une requête par mot.
+  if (
+    event.type === "notice" ||
+    event.type === "surface_updated" ||
+    event.type === "surface_data" ||
+    event.type === "message_delta"
+  ) {
+    return state;
+  }
   const subject = event.type === "agent_updated" ? event.agent : state.agents[event.agent];
   if (!subject) return state;
   const owner =
@@ -420,9 +526,13 @@ function upsert(state: AppState, agent: AgentStatus): AppState {
     const cleared = (state.surfaces[agent.id] ?? []).reduce((next, s) => withoutSurface(next, s.id), state);
     const surfaces = { ...cleared.surfaces };
     delete surfaces[agent.id];
+    // Le daemon supprime ses déclencheurs avec lui.
+    const triggers = { ...cleared.triggers };
+    delete triggers[agent.id];
     return {
       ...cleared,
       surfaces,
+      triggers,
       agents,
       threads,
       boards,
@@ -562,5 +672,13 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `Événement « ${command.name} » de la surface ${command.surface}`;
     case "surface_delete":
       return `Suppression de la surface ${command.surface}`;
+    case "triggers":
+      return `Lecture des déclencheurs de ${target(command.agent)}`;
+    case "fire_trigger":
+      return `Déclencheur ${command.trigger}`;
+    case "set_trigger":
+      return `${command.enabled ? "Activation" : "Suspension"} du déclencheur ${command.trigger}`;
+    case "delete_trigger":
+      return `Suppression du déclencheur ${command.trigger}`;
   }
 }

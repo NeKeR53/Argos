@@ -127,6 +127,32 @@ export interface SurfaceDoc extends SurfaceMeta {
 /** Valeur JSON quelconque (`serde_json::Value`). */
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
+/**
+ * Nature d'un déclencheur (D29–D30) : intervalle (`spec` en secondes), cron (`spec` :
+ * expression à 5 champs), interrupteur, dossier surveillé (`spec` : chemin), webhook.
+ */
+export type TriggerKind = "every" | "cron" | "switch" | "watch" | "webhook";
+
+/** Source d'événements qui stimule un agent : sa consigne est remise à la cible. */
+export interface Trigger {
+  id: string;
+  /** L'agent qui l'a créé. */
+  owner: AgentId;
+  /** L'agent qui reçoit les événements. */
+  target: AgentId;
+  name: string;
+  kind: TriggerKind;
+  /** Paramètre selon la nature ; vide pour un interrupteur ou un webhook. */
+  spec: string;
+  /** Consigne remise à l'agent à chaque déclenchement. */
+  prompt: string;
+  /** Secret d'un webhook, à mettre dans son URL. */
+  secret: string | null;
+  enabled: boolean;
+  created_at: number;
+  last_fired: number | null;
+}
+
 /** Ce que l'utilisateur peut demander (`Command`, tag `command`). */
 export type Command =
   | { command: "tree" }
@@ -148,7 +174,14 @@ export type Command =
   /** Événement structuré émis par une surface (`argos.emit`) : remis à son agent. */
   | { command: "surface_emit"; surface: string; name: string; payload: Json }
   /** L'utilisateur ferme définitivement une surface. */
-  | { command: "surface_delete"; surface: string };
+  | { command: "surface_delete"; surface: string }
+  /** Les déclencheurs dont un agent est propriétaire ou cible (D29). */
+  | { command: "triggers"; agent: AgentId }
+  /** Actionne un déclencheur (l'interrupteur, ou n'importe lequel pour l'essayer). */
+  | { command: "fire_trigger"; trigger: string }
+  /** Active ou suspend un déclencheur. */
+  | { command: "set_trigger"; trigger: string; enabled: boolean }
+  | { command: "delete_trigger"; trigger: string };
 
 /** Requête complète : `Command` aplatie avec l'`id` choisi par le client. */
 export type Request = { id: number } & Command;
@@ -160,6 +193,7 @@ export type Reply =
   | { kind: "board"; board: Board }
   | { kind: "surfaces"; surfaces: SurfaceMeta[] }
   | { kind: "surface"; surface: SurfaceDoc }
+  | { kind: "triggers"; triggers: Trigger[] }
   | { kind: "done"; affected: AgentId[] }
   | { kind: "error"; message: string };
 
@@ -174,6 +208,11 @@ export type DaemonEvent =
    * remis, avec son expéditeur.
    */
   | { type: "input"; agent: AgentId; from: Origin; text: string }
+  /**
+   * Fragment du message que l'agent est en train d'écrire (D37) ; le message complet
+   * suit avec `message`.
+   */
+  | { type: "message_delta"; agent: AgentId; text: string }
   /** Ce que l'agent a dit. */
   | { type: "message"; agent: AgentId; text: string }
   | { type: "tool"; agent: AgentId; name: string }
@@ -266,6 +305,17 @@ function checkReply(reply: Record<string, unknown>) {
     case "surface":
       string(checkSurface(reply.surface).html, "surface.html");
       break;
+    case "triggers":
+      array(reply.triggers, "reply.triggers").forEach((value) => {
+        const trigger = object(value, "trigger");
+        string(trigger.id, "trigger.id");
+        string(trigger.target, "trigger.target");
+        if (!TRIGGER_KINDS.includes(trigger.kind as TriggerKind)) {
+          throw new ProtocolError(`source de déclencheur inconnue : ${String(trigger.kind)}`);
+        }
+        if (typeof trigger.enabled !== "boolean") throw new ProtocolError("trigger.enabled : booléen attendu");
+      });
+      break;
     case "done":
       array(reply.affected, "reply.affected");
       break;
@@ -308,6 +358,7 @@ function checkEvent(event: Record<string, unknown>) {
       if (from.kind === "agent") string(from.agent, "event.from.agent");
       break;
     }
+    case "message_delta":
     case "message":
       string(event.text, "event.text");
       break;
@@ -329,6 +380,8 @@ function checkEvent(event: Record<string, unknown>) {
 }
 
 const TASK_STATES: TaskState[] = ["pending", "in_progress", "blocked", "done", "cancelled", "interrupted"];
+
+const TRIGGER_KINDS: TriggerKind[] = ["every", "cron", "switch", "watch", "webhook"];
 
 function checkSurface(value: unknown): Record<string, unknown> {
   const surface = object(value, "surface");

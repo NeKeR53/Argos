@@ -2,6 +2,8 @@
 // Une seule fenêtre ; l'orbe, l'overlay et les fenêtres flottantes viennent en phase 3.
 
 import { useCallback, useEffect, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
+import { resolveHooksBase } from "./hooks";
 import "./App.css";
 import type { AgentId, AgentStatus, SurfaceMeta } from "./protocol";
 import {
@@ -31,6 +33,10 @@ const NO_SURFACES: SurfaceMeta[] = [];
 
 export default function App() {
   const { state, dispatch, send } = useDaemon();
+  const [hooksBase, setHooksBase] = useState<string | null>(null);
+  useEffect(() => {
+    void resolveHooksBase().then(setHooksBase);
+  }, []);
   const [panicAsked, setPanicAsked] = useState(false);
   const [retiring, setRetiring] = useState<AgentStatus | null>(null);
   const connected = state.connection.status === "connected";
@@ -42,8 +48,10 @@ export default function App() {
     send({ command: "panic_stop" });
   }, [send]);
 
-  // Raccourci : un premier appui demande confirmation, un second confirme.
+  // Raccourci : un premier appui demande confirmation, un second confirme. Dans l'app
+  // Tauri, le raccourci global (géré par l'orbe) le remplace.
   useEffect(() => {
+    if (isTauri()) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isPanicShortcut(event)) return;
       event.preventDefault();
@@ -121,6 +129,9 @@ export default function App() {
               surfaceDocs={state.surfaceDocs}
               surfaceFeeds={state.surfaceFeeds}
               surfaceRevision={state.surfaceRevisions[agent.id] ?? 0}
+              triggers={state.triggers[agent.id]}
+              triggerRevision={state.triggerRevisions[agent.id] ?? 0}
+              hooksBase={hooksBase}
               connected={connected}
               send={send}
               isLiving={isLiving}
