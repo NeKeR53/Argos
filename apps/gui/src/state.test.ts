@@ -323,3 +323,98 @@ describe("expéditeur", () => {
     ]);
   });
 });
+
+describe("surfaces", () => {
+  const meta = (id: string, agent: string, version = 1, created_at = 1) => ({
+    id,
+    agent,
+    kind: "cockpit" as const,
+    title: `Surface ${id}`,
+    version,
+    created_at,
+    updated_at: created_at,
+  });
+  const listed = (id: number, agent: string, surfaces: ReturnType<typeof meta>[]): Action[] => [
+    { type: "requested", id, command: { command: "surfaces", agent } },
+    server({ type: "reply", id, reply: { kind: "surfaces", surfaces } }),
+  ];
+  const updated = (surface: ReturnType<typeof meta>, deleted = false) =>
+    server({ type: "event", event: { type: "surface_updated", surface, deleted } });
+  /** Le flux d'une surface sans les numéros de ligne. */
+  const feedOf = (state: AppState, surface: string) =>
+    (state.surfaceFeeds[surface] ?? []).map(({ seq: _, ...item }) => item);
+
+  it("tient la liste d'un agent : lecture, création, nouvelle version, suppression", () => {
+    let state = run(tree, ...listed(2, "dom", [meta("s-b", "dom", 1, 20), meta("s-a", "dom", 1, 10)]));
+    expect(state.surfaces.dom.map((s) => s.id)).toEqual(["s-a", "s-b"]);
+
+    state = reduce(reduce(state, updated(meta("s-c", "dom", 1, 30))), updated(meta("s-a", "dom", 2, 10)));
+    expect(state.surfaces.dom.map((s) => [s.id, s.version])).toEqual([
+      ["s-a", 2],
+      ["s-b", 1],
+      ["s-c", 1],
+    ]);
+
+    state = reduce(state, updated(meta("s-b", "dom"), true));
+    expect(state.surfaces.dom.map((s) => s.id)).toEqual(["s-a", "s-c"]);
+  });
+
+  it("vide la liste d'un agent sans surface, d'après la requête", () => {
+    const state = run(tree, ...listed(2, "dom", [meta("s-a", "dom")]), ...listed(3, "dom", []));
+    expect(state.surfaces.dom).toEqual([]);
+  });
+
+  it("garde le code lu et oublie tout d'une surface supprimée", () => {
+    const doc = { ...meta("s-a", "dom", 2), html: "<p>salut</p>" };
+    let state = run(
+      tree,
+      server({ type: "reply", id: 4, reply: { kind: "surface", surface: doc } }),
+      server({ type: "event", event: { type: "surface_data", surface: "s-a", data: { lampes: 4 } } }),
+    );
+    expect(state.surfaceDocs["s-a"]).toEqual(doc);
+    expect(state.surfaces.dom.map((s) => s.version)).toEqual([2]);
+    expect(feedOf(state, "s-a")).toEqual([{ type: "data", data: { lampes: 4 } }]);
+
+    state = reduce(state, updated(meta("s-a", "dom", 2), true));
+    expect(state.surfaces.dom).toEqual([]);
+    expect(state.surfaceDocs["s-a"]).toBeUndefined();
+    expect(state.surfaceFeeds["s-a"]).toBeUndefined();
+  });
+
+  it("remet aux surfaces d'un agent ses envois, ses messages et l'état du tour", () => {
+    const state = run(
+      tree,
+      ...listed(2, "dom", [meta("s-a", "dom"), meta("s-b", "dom", 1, 2)]),
+      { type: "requested", id: 3, command: { command: "surface_send", surface: "s-a", text: "allume" } },
+      input("dom", "[Depuis la surface « Surface s-a » (s-a)]\nallume"),
+      server({ type: "event", event: { type: "message", agent: "dom", text: "reply 1" } }),
+      server({ type: "event", event: { type: "message", agent: "a0", text: "pas pour elles" } }),
+      server({
+        type: "event",
+        event: { type: "turn_completed", agent: "dom", outcome: { status: "completed" }, usage: null },
+      }),
+    );
+    expect(feedOf(state, "s-a")).toEqual([
+      { type: "sent", text: "allume" },
+      { type: "busy", busy: true },
+      { type: "message", text: "reply 1" },
+      { type: "busy", busy: false },
+    ]);
+    expect(feedOf(state, "s-b")).toEqual([
+      { type: "busy", busy: true },
+      { type: "message", text: "reply 1" },
+      { type: "busy", busy: false },
+    ]);
+  });
+
+  it("relit la liste après un changement de l'agent, et la retire avec lui", () => {
+    let state = run(tree, ...listed(2, "dom", [meta("s-a", "dom")]));
+    state = reduce(state, server({ type: "event", event: { type: "agent_updated", agent: { ...domotique, busy: true } } }));
+    expect(state.surfaceRevisions.dom).toBe(1);
+    state = reduce(
+      state,
+      server({ type: "event", event: { type: "agent_updated", agent: { ...domotique, state: "retired" } } }),
+    );
+    expect(state.surfaces.dom).toBeUndefined();
+  });
+});

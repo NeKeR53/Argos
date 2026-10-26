@@ -10,9 +10,12 @@ import {
   type Board,
   type Command,
   type DaemonEvent,
+  type Json,
   type Origin,
   type Reply,
   type ServerMessage,
+  type SurfaceDoc,
+  type SurfaceMeta,
   type TurnOutcome,
   type Usage,
 } from "./protocol";
@@ -61,6 +64,17 @@ export interface Notice {
   agent?: AgentId | null;
 }
 
+/**
+ * Une ligne du flux d'une surface, rejoué en entier à chaque chargement de la page puis
+ * remis au fil de l'eau par le pont : textes envoyés depuis la surface, messages de son
+ * agent, état du tour, données poussées par l'agent.
+ */
+export type FeedItem =
+  | { seq: number; type: "sent"; text: string }
+  | { seq: number; type: "message"; text: string }
+  | { seq: number; type: "busy"; busy: boolean }
+  | { seq: number; type: "data"; data: Json };
+
 /** Un Agent qui a besoin de l'utilisateur (D12), remonté par l'Assistant. */
 export interface Escalation {
   id: number;
@@ -88,6 +102,17 @@ export interface AppState {
    * son board affiché est à relire quand il change.
    */
   boardRevisions: Record<AgentId, number>;
+  /** Surfaces de chaque agent, par ordre de création. */
+  surfaces: Record<AgentId, SurfaceMeta[]>;
+  /** Code des surfaces déjà lues, par id de surface. */
+  surfaceDocs: Record<string, SurfaceDoc>;
+  /** Ce que le pont doit remettre à chaque surface, par id de surface (voir `FeedItem`). */
+  surfaceFeeds: Record<string, FeedItem[]>;
+  /**
+   * Compteur incrémenté à chaque `agent_updated` d'un agent : sa liste de surfaces affichée
+   * est relue (rattrape une surface créée ou modifiée sans événement).
+   */
+  surfaceRevisions: Record<AgentId, number>;
   /** Escalades encore affichées dans le bandeau. */
   escalations: Escalation[];
   /** Escalades arrivées depuis la dernière consultation de l'Assistant. */
@@ -112,6 +137,8 @@ export type Action =
 
 /** Au-delà, les lignes les plus anciennes d'un fil sont oubliées. */
 export const THREAD_LIMIT = 500;
+/** Au-delà, les lignes les plus anciennes du flux d'une surface sont oubliées. */
+export const FEED_LIMIT = 500;
 const NOTICE_LIMIT = 5;
 const ESCALATION_LIMIT = 5;
 
@@ -124,6 +151,10 @@ export const initialState: AppState = {
   spent: {},
   boards: {},
   boardRevisions: {},
+  surfaces: {},
+  surfaceDocs: {},
+  surfaceFeeds: {},
+  surfaceRevisions: {},
   escalations: [],
   unseenEscalations: 0,
   pending: {},
@@ -141,6 +172,8 @@ export function reduce(state: AppState, action: Action): AppState {
     case "requested": {
       const next = { ...state, pending: { ...state.pending, [action.id]: action.command } };
       const command = action.command;
+      // Le chat de la surface montre ce qui en est parti, y compris après un rechargement.
+      if (command.command === "surface_send") return feed(next, command.surface, { type: "sent", text: command.text });
       if (command.command !== "send") return next;
       // Affiché tout de suite ; l'`input` du daemon le confirmera sans le dupliquer.
       return append(next, command.agent, {
@@ -191,6 +224,17 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
       return upsert(next, reply.agent);
     case "board":
       return { ...next, boards: { ...next.boards, [reply.board.agent]: reply.board } };
+    case "surfaces": {
+      // La réponse ne dit pas de quel agent il s'agit quand la liste est vide : la requête le dit.
+      const agent = command?.command === "surfaces" ? command.agent : reply.surfaces[0]?.agent;
+      if (!agent) return next;
+      return { ...next, surfaces: { ...next.surfaces, [agent]: sortedSurfaces(reply.surfaces) } };
+    }
+    case "surface": {
+      const { html: _, ...meta } = reply.surface;
+      const withDoc = { ...next, surfaceDocs: { ...next.surfaceDocs, [meta.id]: reply.surface } };
+      return withSurface(withDoc, meta);
+    }
     case "done":
       return command?.command === "send" ? deliver(next, command.agent, id, "delivered") : next;
     case "error": {
@@ -205,13 +249,16 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
 function onEvent(state: AppState, event: DaemonEvent): AppState {
   switch (event.type) {
     case "input":
-      return onInput(state, event.agent, event.from, event.text);
-    case "message":
-      return append(state, event.agent, { kind: "agent", text: event.text });
+      // L'agent se met au travail : ses surfaces le montrent (`argos.on('busy')`).
+      return feedAgent(onInput(state, event.agent, event.from, event.text), event.agent, { type: "busy", busy: true });
+    case "message": {
+      const next = append(state, event.agent, { kind: "agent", text: event.text });
+      return feedAgent(next, event.agent, { type: "message", text: event.text });
+    }
     case "tool":
       return append(state, event.agent, { kind: "tool", name: event.name });
     case "turn_completed": {
-      const next = append(state, event.agent, {
+      const next = append(feedAgent(state, event.agent, { type: "busy", busy: false }), event.agent, {
         kind: "turn",
         outcome: event.outcome,
         usage: event.usage,
@@ -225,11 +272,58 @@ function onEvent(state: AppState, event: DaemonEvent): AppState {
     }
     case "exited":
       return append(state, event.agent, { kind: "exited", code: event.code });
-    case "agent_updated":
-      return upsert(state, event.agent);
+    case "agent_updated": {
+      const id = event.agent.id;
+      const next = upsert(state, event.agent);
+      return { ...next, surfaceRevisions: { ...next.surfaceRevisions, [id]: (next.surfaceRevisions[id] ?? 0) + 1 } };
+    }
     case "notice":
       return notify(state, "info", event.text, event.agent);
+    case "surface_updated":
+      return event.deleted ? withoutSurface(state, event.surface.id) : withSurface(state, event.surface);
+    case "surface_data":
+      return feed(state, event.surface, { type: "data", data: event.data });
   }
+}
+
+// --- Surfaces ---------------------------------------------------------------------
+
+function sortedSurfaces(surfaces: SurfaceMeta[]): SurfaceMeta[] {
+  return [...surfaces].sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
+}
+
+/** Ajoute ou met à jour une surface dans la liste de son agent. */
+function withSurface(state: AppState, meta: SurfaceMeta): AppState {
+  const list = state.surfaces[meta.agent] ?? [];
+  const others = list.filter((surface) => surface.id !== meta.id);
+  return { ...state, surfaces: { ...state.surfaces, [meta.agent]: sortedSurfaces([...others, meta]) } };
+}
+
+/** Une surface supprimée disparaît partout : liste, code, flux. */
+function withoutSurface(state: AppState, id: string): AppState {
+  const surfaces: Record<AgentId, SurfaceMeta[]> = {};
+  for (const [agent, list] of Object.entries(state.surfaces)) {
+    surfaces[agent] = list.filter((surface) => surface.id !== id);
+  }
+  const surfaceDocs = { ...state.surfaceDocs };
+  delete surfaceDocs[id];
+  const surfaceFeeds = { ...state.surfaceFeeds };
+  delete surfaceFeeds[id];
+  return { ...state, surfaces, surfaceDocs, surfaceFeeds };
+}
+
+type NewFeedItem = FeedItem extends infer I ? (I extends unknown ? Omit<I, "seq"> : never) : never;
+
+/** Ajoute une ligne au flux d'une surface. */
+function feed(state: AppState, surface: string, item: NewFeedItem): AppState {
+  const seq = state.seq + 1;
+  const items = [...(state.surfaceFeeds[surface] ?? []), { ...item, seq } as FeedItem].slice(-FEED_LIMIT);
+  return { ...state, seq, surfaceFeeds: { ...state.surfaceFeeds, [surface]: items } };
+}
+
+/** Ajoute une ligne au flux de chacune des surfaces connues d'un agent. */
+function feedAgent(state: AppState, agent: AgentId, item: NewFeedItem): AppState {
+  return (state.surfaces[agent] ?? []).reduce((next, surface) => feed(next, surface.id, item), state);
 }
 
 /**
@@ -276,7 +370,7 @@ function withEscalation(state: AppState, text: string): AppState {
 
 /** Marque à relire le board de l'Agent concerné par l'événement (lui ou son Worker). */
 function touchBoard(state: AppState, event: DaemonEvent): AppState {
-  if (event.type === "notice") return state;
+  if (event.type === "notice" || event.type === "surface_updated" || event.type === "surface_data") return state;
   const subject = event.type === "agent_updated" ? event.agent : state.agents[event.agent];
   if (!subject) return state;
   const owner =
@@ -322,8 +416,13 @@ function upsert(state: AppState, agent: AgentStatus): AppState {
     delete threads[agent.id];
     const boards = { ...state.boards };
     delete boards[agent.id];
+    // Ses surfaces partent avec lui.
+    const cleared = (state.surfaces[agent.id] ?? []).reduce((next, s) => withoutSurface(next, s.id), state);
+    const surfaces = { ...cleared.surfaces };
+    delete surfaces[agent.id];
     return {
-      ...state,
+      ...cleared,
+      surfaces,
       agents,
       threads,
       boards,
@@ -453,5 +552,15 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `Retrait de ${target(command.agent)}`;
     case "panic_stop":
       return "Panic stop";
+    case "surfaces":
+      return `Lecture des surfaces de ${target(command.agent)}`;
+    case "surface":
+      return `Lecture de la surface ${command.surface}`;
+    case "surface_send":
+      return `Envoi depuis la surface ${command.surface}`;
+    case "surface_emit":
+      return `Événement « ${command.name} » de la surface ${command.surface}`;
+    case "surface_delete":
+      return `Suppression de la surface ${command.surface}`;
   }
 }

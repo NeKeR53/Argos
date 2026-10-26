@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import "./App.css";
-import type { AgentId, AgentStatus } from "./protocol";
+import type { AgentId, AgentStatus, SurfaceMeta } from "./protocol";
 import {
   assistantOf,
   displayName,
@@ -26,6 +26,8 @@ function isPanicShortcut(event: KeyboardEvent): boolean {
 
 const isMac = navigator.platform.toLowerCase().startsWith("mac");
 const PANIC_SHORTCUT = isMac ? "⌘⇧X" : "Ctrl+Maj+X";
+/** Liste vide stable : évite de relancer les effets des surfaces à chaque rendu. */
+const NO_SURFACES: SurfaceMeta[] = [];
 
 export default function App() {
   const { state, dispatch, send } = useDaemon();
@@ -115,6 +117,10 @@ export default function App() {
               spent={state.spent[agent.id]}
               board={state.boards[agent.id]}
               boardRevision={state.boardRevisions[agent.id] ?? 0}
+              surfaces={state.surfaces[agent.id] ?? NO_SURFACES}
+              surfaceDocs={state.surfaceDocs}
+              surfaceFeeds={state.surfaceFeeds}
+              surfaceRevision={state.surfaceRevisions[agent.id] ?? 0}
               connected={connected}
               send={send}
               isLiving={isLiving}

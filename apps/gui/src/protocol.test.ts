@@ -113,6 +113,37 @@ describe("messages du daemon", () => {
     });
   });
 
+  it("lisent les surfaces : listes, code, mises à jour et données", () => {
+    const meta = {
+      id: "s-1a2b3c4d",
+      agent: "a1",
+      kind: "cockpit",
+      title: "Salon",
+      version: 2,
+      created_at: 1,
+      updated_at: 2,
+    };
+    const frames = [
+      { type: "reply", id: 5, reply: { kind: "surfaces", surfaces: [meta] } },
+      { type: "reply", id: 6, reply: { kind: "surface", surface: { ...meta, html: "<p>salut</p>" } } },
+      { type: "event", event: { type: "surface_updated", surface: meta, deleted: false } },
+      { type: "event", event: { type: "surface_data", surface: "s-1a2b3c4d", data: { lampes: [1, 2] } } },
+      { type: "event", event: { type: "surface_data", surface: "s-1a2b3c4d", data: null } },
+    ];
+    for (const frame of frames) expect(parseServerMessage(JSON.stringify(frame))).toEqual(frame);
+    expect(
+      JSON.parse(encodeRequest(7, { command: "surface_emit", surface: "s-1", name: "allumer", payload: { piece: "salon" } })),
+    ).toEqual({ id: 7, command: "surface_emit", surface: "s-1", name: "allumer", payload: { piece: "salon" } });
+    for (const bad of [
+      { type: "event", event: { type: "surface_updated", surface: { ...meta, kind: "widget" }, deleted: false } },
+      { type: "event", event: { type: "surface_updated", surface: meta } },
+      { type: "event", event: { type: "surface_data", surface: "s-1" } },
+      { type: "reply", id: 6, reply: { kind: "surface", surface: meta } },
+    ]) {
+      expect(() => parseServerMessage(JSON.stringify(bad))).toThrow(ProtocolError);
+    }
+  });
+
   it("acceptent hello", () => {
     expect(parseServerMessage('{"type":"hello","protocol":1}')).toEqual({ type: "hello", protocol: 1 });
   });

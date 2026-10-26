@@ -104,6 +104,29 @@ export interface Board {
   tasks: Task[];
 }
 
+/** Nature d'une surface (D26) : vivante et bidirectionnelle, ou snapshot autonome. */
+export type SurfaceKind = "cockpit" | "artifact";
+
+/** Une page HTML produite par un agent et hébergée par l'app (D26–D28). */
+export interface SurfaceMeta {
+  id: string;
+  agent: AgentId;
+  kind: SurfaceKind;
+  title: string;
+  /** Incrémentée à chaque nouveau code : la page se recharge. */
+  version: number;
+  created_at: number;
+  updated_at: number;
+}
+
+/** Une surface avec son code (`SurfaceDoc` : la meta aplatie plus `html`). */
+export interface SurfaceDoc extends SurfaceMeta {
+  html: string;
+}
+
+/** Valeur JSON quelconque (`serde_json::Value`). */
+export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
+
 /** Ce que l'utilisateur peut demander (`Command`, tag `command`). */
 export type Command =
   | { command: "tree" }
@@ -115,7 +138,17 @@ export type Command =
   | { command: "park"; agent: AgentId }
   | { command: "stop"; agent: AgentId }
   | { command: "retire"; agent: AgentId }
-  | { command: "panic_stop" };
+  | { command: "panic_stop" }
+  /** Les surfaces d'un agent (D26). */
+  | { command: "surfaces"; agent: AgentId }
+  /** Une surface avec son code, pour l'afficher. */
+  | { command: "surface"; surface: string }
+  /** Texte envoyé depuis une surface (`argos.send`) : remis à son agent, préfixé. */
+  | { command: "surface_send"; surface: string; text: string }
+  /** Événement structuré émis par une surface (`argos.emit`) : remis à son agent. */
+  | { command: "surface_emit"; surface: string; name: string; payload: Json }
+  /** L'utilisateur ferme définitivement une surface. */
+  | { command: "surface_delete"; surface: string };
 
 /** Requête complète : `Command` aplatie avec l'`id` choisi par le client. */
 export type Request = { id: number } & Command;
@@ -125,6 +158,8 @@ export type Reply =
   | { kind: "tree"; agents: AgentStatus[] }
   | { kind: "agent"; agent: AgentStatus }
   | { kind: "board"; board: Board }
+  | { kind: "surfaces"; surfaces: SurfaceMeta[] }
+  | { kind: "surface"; surface: SurfaceDoc }
   | { kind: "done"; affected: AgentId[] }
   | { kind: "error"; message: string };
 
@@ -153,7 +188,11 @@ export type DaemonEvent =
   /** L'agent a changé dans le registre ou en exécution. */
   | { type: "agent_updated"; agent: AgentStatus }
   /** Information courte du daemon pour l'utilisateur (repli de modèle, plafond…). */
-  | { type: "notice"; agent: AgentId | null; text: string };
+  | { type: "notice"; agent: AgentId | null; text: string }
+  /** Une surface a été créée, mise à jour (nouvelle `version`) ou supprimée. */
+  | { type: "surface_updated"; surface: SurfaceMeta; deleted: boolean }
+  /** Données poussées par l'agent vers son cockpit (`argos.on('data')`). */
+  | { type: "surface_data"; surface: string; data: Json };
 
 /** Message du daemon (`ServerMessage`, tag `type`). */
 export type ServerMessage =
@@ -221,6 +260,12 @@ function checkReply(reply: Record<string, unknown>) {
       });
       break;
     }
+    case "surfaces":
+      array(reply.surfaces, "reply.surfaces").forEach((surface) => checkSurface(surface));
+      break;
+    case "surface":
+      string(checkSurface(reply.surface).html, "surface.html");
+      break;
     case "done":
       array(reply.affected, "reply.affected");
       break;
@@ -240,6 +285,16 @@ function checkEvent(event: Record<string, unknown>) {
   if (event.type === "notice") {
     if (event.agent !== null) string(event.agent, "event.agent");
     string(event.text, "event.text");
+    return;
+  }
+  if (event.type === "surface_updated") {
+    checkSurface(event.surface);
+    if (typeof event.deleted !== "boolean") throw new ProtocolError("surface_updated.deleted : booléen attendu");
+    return;
+  }
+  if (event.type === "surface_data") {
+    string(event.surface, "event.surface");
+    if (!("data" in event)) throw new ProtocolError("surface_data sans data");
     return;
   }
   string(event.agent, "event.agent");
@@ -274,6 +329,18 @@ function checkEvent(event: Record<string, unknown>) {
 }
 
 const TASK_STATES: TaskState[] = ["pending", "in_progress", "blocked", "done", "cancelled", "interrupted"];
+
+function checkSurface(value: unknown): Record<string, unknown> {
+  const surface = object(value, "surface");
+  string(surface.id, "surface.id");
+  string(surface.agent, "surface.agent");
+  string(surface.title, "surface.title");
+  number(surface.version, "surface.version");
+  if (surface.kind !== "cockpit" && surface.kind !== "artifact") {
+    throw new ProtocolError(`nature de surface inconnue : ${String(surface.kind)}`);
+  }
+  return surface;
+}
 
 function checkAgent(value: unknown) {
   const agent = object(value, "agent");

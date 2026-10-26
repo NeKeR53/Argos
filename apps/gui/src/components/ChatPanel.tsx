@@ -1,14 +1,24 @@
-// Panneau de l'agent sélectionné : en-tête et actions de contrôle, board d'un Agent,
-// fil des messages, saisie. Un Worker s'affiche en lecture seule (D2).
+// Panneau de l'agent sélectionné : en-tête et actions de contrôle, onglets « Chat » et
+// surfaces, board d'un Agent, fil des messages, saisie. Un Worker s'affiche en lecture
+// seule (D2) et n'a pas de surface.
 
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { AgentId, AgentStatus, Board, Command, Origin } from "../protocol";
-import { displayName, isAddressable, isRetirable, shortId, type ConsoleSend, type ThreadEntry } from "../state";
+import type { AgentId, AgentStatus, Board, Command, Origin, SurfaceDoc, SurfaceMeta } from "../protocol";
+import {
+  displayName,
+  isAddressable,
+  isRetirable,
+  shortId,
+  type ConsoleSend,
+  type FeedItem,
+  type ThreadEntry,
+} from "../state";
 import { engineLabel, formatCost, formatUsage, levelLabel, outcomeLabel } from "../format";
 import { classifyInput } from "../inputs";
 import { AgentFlags } from "./AgentTree";
 import { BoardSection } from "./BoardSection";
 import { StatusDot } from "./StatusDot";
+import { SurfaceView } from "./SurfaceView";
 
 interface Props {
   agent: AgentStatus;
@@ -19,6 +29,11 @@ interface Props {
   /** Board d'un Agent (absent pour les autres niveaux ou avant la première lecture). */
   board: Board | undefined;
   boardRevision: number;
+  /** Surfaces de l'agent (jamais pour un Worker), leur code et leur flux. */
+  surfaces: SurfaceMeta[];
+  surfaceDocs: Record<string, SurfaceDoc>;
+  surfaceFeeds: Record<string, FeedItem[]>;
+  surfaceRevision: number;
   connected: boolean;
   send: (command: Command) => boolean;
   isLiving: (agent: AgentId) => boolean;
@@ -33,6 +48,20 @@ export function ChatPanel(props: Props) {
   const addressable = isAddressable(agent);
   // Board ouvert ou replié : le choix suit l'utilisateur d'un Agent à l'autre.
   const [boardOpen, setBoardOpen] = useState(true);
+  // Onglet affiché, par agent : on retrouve la surface qu'on regardait.
+  const [tabs, setTabs] = useState<Record<AgentId, string>>({});
+  // Une surface supprimée laisse place au chat.
+  const surface = props.surfaces.find((candidate) => candidate.id === tabs[agent.id]) ?? null;
+
+  // Liste des surfaces : lue à la sélection, relue après chaque changement de l'agent
+  // (rafales regroupées), tenue à jour entre-temps par `surface_updated`.
+  const { surfaceRevision } = props;
+  useEffect(() => {
+    if (!connected || !addressable) return;
+    const timer = setTimeout(() => send({ command: "surfaces", agent: agent.id }), 250);
+    return () => clearTimeout(timer);
+  }, [agent.id, addressable, surfaceRevision, connected, send]);
+
   return (
     <section className="chat" aria-label={`Fil de ${displayName(agent)}`}>
       <header className="chat-header">
@@ -104,25 +133,83 @@ export function ChatPanel(props: Props) {
         </p>
       )}
 
-      {agent.level === "agent" && (
-        <BoardSection
-          agent={agent}
-          board={props.board}
-          revision={props.boardRevision}
-          connected={connected}
-          open={boardOpen}
-          onToggle={setBoardOpen}
-          send={send}
-          isLiving={props.isLiving}
-          onSelect={onSelect}
+      {addressable && (
+        <SurfaceTabs
+          surfaces={props.surfaces}
+          active={surface?.id ?? null}
+          onChange={(tab) => setTabs((current) => ({ ...current, [agent.id]: tab ?? CHAT_TAB }))}
         />
       )}
 
-      {/* Clés par agent : défilement et brouillon ne passent pas d'un agent à l'autre. */}
-      <Thread key={`thread-${agent.id}`} entries={thread} nameOf={nameOf} />
+      {surface ? (
+        <SurfaceView
+          key={surface.id}
+          meta={surface}
+          doc={props.surfaceDocs[surface.id]}
+          feed={props.surfaceFeeds[surface.id] ?? EMPTY_FEED}
+          busy={agent.busy}
+          connected={connected}
+          send={send}
+        />
+      ) : (
+        <>
+          {agent.level === "agent" && (
+            <BoardSection
+              agent={agent}
+              board={props.board}
+              revision={props.boardRevision}
+              connected={connected}
+              open={boardOpen}
+              onToggle={setBoardOpen}
+              send={send}
+              isLiving={props.isLiving}
+              onSelect={onSelect}
+            />
+          )}
 
-      {addressable && <Composer key={`composer-${agent.id}`} agent={agent} connected={connected} send={send} />}
+          {/* Clés par agent : défilement et brouillon ne passent pas d'un agent à l'autre. */}
+          <Thread key={`thread-${agent.id}`} entries={thread} nameOf={nameOf} />
+
+          {addressable && <Composer key={`composer-${agent.id}`} agent={agent} connected={connected} send={send} />}
+        </>
+      )}
     </section>
+  );
+}
+
+const CHAT_TAB = "chat";
+const EMPTY_FEED: FeedItem[] = [];
+
+/** « Chat » puis un onglet par surface, avec sa nature (cockpit ou artifact). */
+function SurfaceTabs(props: {
+  surfaces: SurfaceMeta[];
+  active: string | null;
+  onChange: (surface: string | null) => void;
+}) {
+  const { surfaces, active, onChange } = props;
+  if (surfaces.length === 0) return null;
+  return (
+    <div className="tabs" role="tablist" aria-label="Chat et surfaces">
+      <button type="button" role="tab" className="tab" aria-selected={active === null} onClick={() => onChange(null)}>
+        Chat
+      </button>
+      {surfaces.map((surface) => (
+        <button
+          key={surface.id}
+          type="button"
+          role="tab"
+          className="tab"
+          aria-selected={active === surface.id}
+          title={`${surface.title} (${surface.id}, v${surface.version})`}
+          onClick={() => onChange(surface.id)}
+        >
+          <span className="tab-title">{surface.title}</span>
+          <span className="surface-kind" data-kind={surface.kind}>
+            {surface.kind}
+          </span>
+        </button>
+      ))}
+    </div>
   );
 }
 
