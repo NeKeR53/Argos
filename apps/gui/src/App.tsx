@@ -3,8 +3,16 @@
 
 import { useCallback, useEffect, useState } from "react";
 import "./App.css";
-import type { AgentStatus } from "./protocol";
-import { displayName, selectedAgent, treeOf, type Connection, type Notice } from "./state";
+import type { AgentId, AgentStatus } from "./protocol";
+import {
+  assistantOf,
+  displayName,
+  selectedAgent,
+  treeOf,
+  type Connection,
+  type Escalation,
+  type Notice,
+} from "./state";
 import { useDaemon } from "./useDaemon";
 import { AgentTree } from "./components/AgentTree";
 import { ChatPanel } from "./components/ChatPanel";
@@ -44,7 +52,11 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [connected, panicAsked, panic]);
 
-  const select = (agent: AgentStatus) => dispatch({ type: "select", agent: agent.id });
+  const select = (id: AgentId) => dispatch({ type: "select", agent: id });
+  const isLiving = (id: AgentId) => id in state.agents;
+  const assistant = assistantOf(state);
+  // La marque d'escalade reste sur l'Assistant jusqu'à ce qu'on le consulte.
+  const alerts: Record<AgentId, number> = assistant ? { [assistant.id]: state.unseenEscalations } : {};
 
   return (
     <div className="app">
@@ -70,22 +82,41 @@ export default function App() {
             <span className="muted">{state.order.length || ""}</span>
           </div>
           {roots.length > 0 ? (
-            <AgentTree roots={roots} selected={agent?.id ?? null} onSelect={(id) => dispatch({ type: "select", agent: id })} />
+            <AgentTree roots={roots} selected={agent?.id ?? null} alerts={alerts} onSelect={select} />
           ) : (
             <p className="sidebar-empty muted">{connected ? "Arbre vide." : "En attente du daemon…"}</p>
           )}
         </aside>
 
         <main className="main">
-          <Notices notices={state.notices} onDismiss={(id) => dispatch({ type: "dismiss", notice: id })} />
+          <Escalations
+            escalations={state.escalations}
+            isLiving={isLiving}
+            onOpen={(escalation) => {
+              // L'Agent s'il est connu, sinon l'Assistant qui a reçu l'escalade.
+              const target = escalation.agent && isLiving(escalation.agent) ? escalation.agent : assistant?.id;
+              if (target) select(target);
+              dispatch({ type: "dismiss_escalation", escalation: escalation.id });
+            }}
+            onDismiss={(id) => dispatch({ type: "dismiss_escalation", escalation: id })}
+          />
+          <Notices
+            notices={state.notices}
+            agents={state.agents}
+            onOpen={select}
+            onDismiss={(id) => dispatch({ type: "dismiss", notice: id })}
+          />
           {agent ? (
             <ChatPanel
               agent={agent}
               parent={agent.parent ? (state.agents[agent.parent] ?? null) : null}
               thread={state.threads[agent.id] ?? []}
               spent={state.spent[agent.id]}
+              board={state.boards[agent.id]}
+              boardRevision={state.boardRevisions[agent.id] ?? 0}
               connected={connected}
               send={send}
+              isLiving={isLiving}
               onRetire={setRetiring}
               onSelect={select}
             />
@@ -154,14 +185,59 @@ function ConnectionBadge({ connection }: { connection: Connection }) {
   );
 }
 
-function Notices({ notices, onDismiss }: { notices: Notice[]; onDismiss: (id: number) => void }) {
+/** Erreurs des commandes et informations du daemon, avec un lien vers l'agent concerné. */
+function Notices(props: {
+  notices: Notice[];
+  agents: Record<AgentId, AgentStatus>;
+  onOpen: (agent: AgentId) => void;
+  onDismiss: (id: number) => void;
+}) {
+  const { notices, agents, onOpen, onDismiss } = props;
   if (notices.length === 0) return null;
   return (
     <div className="notices" role="alert">
       {notices.map((notice) => (
         <div key={notice.id} className="notice" data-tone={notice.tone}>
           <span>{notice.text}</span>
+          {notice.agent && agents[notice.agent] && (
+            <button type="button" className="link" onClick={() => onOpen(notice.agent!)}>
+              Ouvrir {displayName(agents[notice.agent])}
+            </button>
+          )}
           <button type="button" className="notice-close" aria-label="Fermer" onClick={() => onDismiss(notice.id)}>
+            ×
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Escalades vers l'utilisateur (D12) : visibles quel que soit l'agent affiché. */
+function Escalations(props: {
+  escalations: Escalation[];
+  isLiving: (id: AgentId) => boolean;
+  onOpen: (escalation: Escalation) => void;
+  onDismiss: (id: number) => void;
+}) {
+  if (props.escalations.length === 0) return null;
+  return (
+    <div className="escalations" role="alert">
+      {props.escalations.map((escalation) => (
+        <div key={escalation.id} className="escalation">
+          <div className="escalation-text">
+            <strong>L'Agent {escalation.name} a besoin de vous</strong>
+            {escalation.text && <span className="escalation-body">{escalation.text}</span>}
+          </div>
+          <button type="button" className="button" onClick={() => props.onOpen(escalation)}>
+            {escalation.agent && props.isLiving(escalation.agent) ? `Ouvrir ${escalation.name}` : "Voir l'Assistant"}
+          </button>
+          <button
+            type="button"
+            className="notice-close"
+            aria-label="Fermer"
+            onClick={() => props.onDismiss(escalation.id)}
+          >
             ×
           </button>
         </div>

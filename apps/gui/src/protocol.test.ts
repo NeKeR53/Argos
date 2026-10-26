@@ -47,6 +47,7 @@ describe("messages du daemon", () => {
               parent: null,
               engine: "claude",
               model: "claude-opus-5-5",
+              profile: null,
               workdir: "/tmp/a0",
               charter: null,
               state: "parked",
@@ -64,6 +65,54 @@ describe("messages du daemon", () => {
     );
   });
 
+  it("lisent input, notice et le board", () => {
+    const frames = [
+      { type: "event", event: { type: "input", agent: "a1", text: "[Mission m-1a2b3c4d de l'Assistant]\néclairage" } },
+      { type: "event", event: { type: "notice", agent: "a1", text: "quota épuisé : bascule sur gpt-6-luna" } },
+      { type: "event", event: { type: "notice", agent: null, text: "plafond de dépense atteint" } },
+      {
+        type: "reply",
+        id: 3,
+        reply: {
+          kind: "board",
+          board: {
+            agent: "a1",
+            missions: [{ id: "m-1", agent: "a1", text: "éclairage", state: "open", created_at: 1 }],
+            tasks: [
+              {
+                id: "t-1",
+                agent: "a1",
+                mission: "m-1",
+                title: "inventaire",
+                detail: null,
+                state: "in_progress",
+                worker: "w1",
+                result: null,
+                created_at: 1,
+                updated_at: 2,
+              },
+            ],
+          },
+        },
+      },
+      {
+        type: "event",
+        event: {
+          type: "turn_completed",
+          agent: "a1",
+          outcome: { status: "completed" },
+          usage: { input_tokens: 38430, output_tokens: 4, cost_usd: 0.0076878, context_window: 1000000 },
+        },
+      },
+    ];
+    for (const frame of frames) expect(parseServerMessage(JSON.stringify(frame))).toEqual(frame);
+    expect(JSON.parse(encodeRequest(4, { command: "board", agent: "a1" }))).toEqual({
+      id: 4,
+      command: "board",
+      agent: "a1",
+    });
+  });
+
   it("acceptent hello", () => {
     expect(parseServerMessage('{"type":"hello","protocol":1}')).toEqual({ type: "hello", protocol: 1 });
   });
@@ -77,6 +126,8 @@ describe("messages du daemon", () => {
       '{"type":"event","event":{"type":"message","agent":"a1"}}',
       '{"type":"event","event":{"type":"turn_completed","agent":"a1","outcome":{"status":"bof"},"usage":null}}',
       '{"type":"event","event":{"type":"agent_updated","agent":{"id":"a1","level":"assistant"}}}',
+      '{"type":"event","event":{"type":"notice","agent":null}}',
+      '{"type":"reply","id":1,"reply":{"kind":"board","board":{"agent":"a1","missions":[],"tasks":[{"id":"t","state":"bof"}]}}}',
     ]) {
       expect(() => parseServerMessage(frame), frame).toThrow(ProtocolError);
     }

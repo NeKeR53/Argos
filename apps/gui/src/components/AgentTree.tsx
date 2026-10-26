@@ -8,14 +8,16 @@ import { StatusDot } from "./StatusDot";
 interface Props {
   roots: TreeNode[];
   selected: AgentId | null;
+  /** Escalades non lues, par agent qui les a reçues (l'Assistant). */
+  alerts: Record<AgentId, number>;
   onSelect: (agent: AgentId) => void;
 }
 
-export function AgentTree({ roots, selected, onSelect }: Props) {
+export function AgentTree({ roots, ...rest }: Props) {
   return (
     <ul className="tree" role="tree" aria-label="Arbre des agents">
       {roots.map((node) => (
-        <Branch key={node.agent.id} node={node} depth={0} selected={selected} onSelect={onSelect} />
+        <Branch key={node.agent.id} node={node} depth={0} {...rest} />
       ))}
     </ul>
   );
@@ -23,9 +25,10 @@ export function AgentTree({ roots, selected, onSelect }: Props) {
 
 type BranchProps = Omit<Props, "roots"> & { node: TreeNode; depth: number };
 
-function Branch({ node, depth, selected, onSelect }: BranchProps) {
+function Branch({ node, depth, selected, alerts, onSelect }: BranchProps) {
   const { agent, children } = node;
   const isSelected = agent.id === selected;
+  const alert = alerts[agent.id] ?? 0;
   return (
     <li role="treeitem" aria-selected={isSelected} aria-expanded={children.length ? true : undefined}>
       <button
@@ -42,6 +45,11 @@ function Branch({ node, depth, selected, onSelect }: BranchProps) {
           <span className="tree-name">
             {displayName(agent)}
             {agent.level !== "worker" && <span className="tree-id">{shortId(agent.id)}</span>}
+            {alert > 0 && (
+              <span className="alert-badge" title={`${alert} escalade(s) non lue(s)`}>
+                {alert}
+              </span>
+            )}
           </span>
           <span className="tree-meta">
             {levelLabel[agent.level]} · {engineLabel(agent)}
@@ -52,7 +60,14 @@ function Branch({ node, depth, selected, onSelect }: BranchProps) {
       {children.length > 0 && (
         <ul role="group">
           {children.map((child) => (
-            <Branch key={child.agent.id} node={child} depth={depth + 1} selected={selected} onSelect={onSelect} />
+            <Branch
+              key={child.agent.id}
+              node={child}
+              depth={depth + 1}
+              selected={selected}
+              alerts={alerts}
+              onSelect={onSelect}
+            />
           ))}
         </ul>
       )}
