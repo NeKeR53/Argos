@@ -560,7 +560,8 @@ textarea {
 .entry-input[data-category="mission"] .bubble,
 .entry-input[data-category="task"] .bubble,
 .entry-input[data-category="question"] .bubble,
-.entry-input[data-category="information"] .bubble {
+.entry-input[data-category="information"] .bubble,
+.entry-input[data-category="surface"] .bubble {
   border-left-color: var(--accent);
 }
 
@@ -742,6 +743,93 @@ textarea {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+
+/* --- Onglets et surfaces -------------------------------------------------------- */
+
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px 6px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab[aria-selected="true"] {
+  border-bottom-color: var(--accent);
+  color: var(--text);
+  font-weight: 550;
+}
+
+.tab-title {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.surface-kind {
+  padding: 0 5px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 15px;
+  color: var(--text-muted);
+}
+
+.surface-kind[data-kind="cockpit"] {
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  color: var(--accent);
+}
+
+.surface {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.surface-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.surface-title {
+  font-weight: 600;
+}
+
+.surface-frame {
+  flex: 1;
+  width: 100%;
+  border: none;
+  /* La page de l'agent choisit son fond ; blanc par défaut, comme un navigateur. */
+  background: #fff;
+}
+
+.surface-loading {
+  padding: 16px;
 }
 
 /* --- Escalades ------------------------------------------------------------------ */

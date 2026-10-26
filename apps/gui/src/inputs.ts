@@ -4,6 +4,7 @@
 //   [Tâche t-… confiée par …]               [Rapport de …]
 //   [Rapport sur la tâche t-… (done) de …]  [Escalade pour l'utilisateur de …]
 //   [Question de …]                         [Information de …]
+//   [Depuis la surface « … » (s-…)]         [Événement « … » de la surface « … » (s-…)]
 //   [Argos] …
 // Un message sans préfixe reconnu est un message libre ; son expéditeur vient de l'événement.
 
@@ -16,6 +17,7 @@ export type InputCategory =
   | "escalation"
   | "question"
   | "information"
+  | "surface"
   | "argos";
 
 export interface ClassifiedInput {
@@ -35,6 +37,8 @@ const CATEGORIES: [string, InputCategory][] = [
   ["Escalade ", "escalation"],
   ["Question ", "question"],
   ["Information ", "information"],
+  ["Depuis la surface ", "surface"],
+  ["Événement ", "surface"],
   ["Argos", "argos"],
 ];
 
