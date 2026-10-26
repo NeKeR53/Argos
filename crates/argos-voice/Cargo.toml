@@ -1,0 +1,19 @@
+[package]
+name = "argos-voice"
+description = "Moteur vocal local Argos : push-to-talk, STT whisper.cpp et TTS système en streaming"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal = "0.18"
+libc = "0.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+toml = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "test-util"] }
