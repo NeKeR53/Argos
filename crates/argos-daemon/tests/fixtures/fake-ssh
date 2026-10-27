@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+# Faux `ssh` pour les tests : il ne contacte JAMAIS aucun hôte.
+# Il accepte les arguments d'un vrai `ssh -N -L bind:port:dest:port hôte` mais, à la
+# place du tunnel distant, ouvre un relais TCP local : chaque connexion reçue sur
+# bind_host:bind_port est recopiée vers dest_host:dest_port (le « distant » est simulé
+# en local). Variables d'environnement :
+#   FAKE_SSH_LOG=<fichier>          ajoute une ligne avec tous les arguments reçus ;
+#   FAKE_SSH_FAIL=<valeur>          échoue tout de suite, comme un hôte injoignable.
+# Un bind impossible sort en 255, comme ExitOnForwardFailure=yes.
+import os
+import signal
+import socket
+import sys
+import threading
+
+
+def usage(message):
+    print(f"ssh: {message}", file=sys.stderr)
+    sys.exit(255)
+
+
+def parse_args(argv):
+    """Renvoie (spec -L ou None, hôte). Les options sans rapport sont ignorées."""
+    forward = None
+    host = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "-N":
+            i += 1
+        elif arg == "-o":  # une valeur, ignorée
+            i += 2
+        elif arg == "-L":
+            if i + 1 >= len(argv):
+                usage("option -L sans valeur")
+            forward = argv[i + 1]
+            i += 2
+        else:
+            host = arg  # le dernier positionnel est le nom d'hôte
+            i += 1
+    return forward, host
+
+
+def parse_forward(spec):
+    """`bind_host:bind_port:dest_host:dest_port` -> (bind_host, bind_port, dest_host, dest_port)."""
+    parts = spec.split(":")
+    if len(parts) != 4 or not parts[1].isdigit() or not parts[3].isdigit():
+        usage(f"spécification -L invalide : {spec}")
+    return parts[0], int(parts[1]), parts[2], int(parts[3])
+
+
+def relay(client, dest_host, dest_port):
+    """Recopie les octets dans les deux sens jusqu'à ce qu'un des côtés se ferme."""
+    try:
+        upstream = socket.create_connection((dest_host, dest_port), timeout=5)
+    except OSError:
+        # Destination refusée : on ferme simplement la connexion acceptée.
+        client.close()
+        return
+    upstream.settimeout(None)
+
+    def shutdown_both():
+        # Un côté est fermé : on coupe les deux, ce qui débloque l'autre sens.
+        for sock in (client, upstream):
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def pump(src, dst):
+        try:
+            while True:
+                data = src.recv(65536)
+                if not data:
+                    break
+                dst.sendall(data)
+        except OSError:
+            pass
+        finally:
+            shutdown_both()
+
+    t_up = threading.Thread(target=pump, args=(client, upstream), daemon=True)
+    t_down = threading.Thread(target=pump, args=(upstream, client), daemon=True)
+    t_up.start()
+    t_down.start()
+    t_up.join()
+    t_down.join()
+    client.close()
+    upstream.close()
+
+
+def serve(bind_host, bind_port, dest_host, dest_port):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind((bind_host, bind_port))
+    except OSError as err:
+        print(f"bind {bind_host}:{bind_port}: {err}", file=sys.stderr)
+        print("Could not request local forwarding.", file=sys.stderr)
+        sys.exit(255)
+    srv.listen(16)
+    while True:
+        client, _ = srv.accept()
+        threading.Thread(
+            target=relay, args=(client, dest_host, dest_port), daemon=True
+        ).start()
+
+
+def main():
+    args = sys.argv[1:]
+    forward, host = parse_args(args)
+
+    # Journal : une ligne par invocation, écrite avant tout échec simulé.
+    log = os.environ.get("FAKE_SSH_LOG")
+    if log:
+        with open(log, "a") as f:
+            f.write(" ".join(args) + "\n")
+
+    if host is None:
+        usage("aucun hôte précisé")
+    if "FAKE_SSH_FAIL" in os.environ:
+        usage(f"connect to host {host}: Connection refused")
+    if forward is None:
+        usage("aucune redirection -L précisée")
+
+    bind_host, bind_port, dest_host, dest_port = parse_forward(forward)
+
+    # SIGTERM : sortie propre, sans message.
+    signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
+    try:
+        serve(bind_host, bind_port, dest_host, dest_port)
+    except KeyboardInterrupt:
+        pass
+
+
+if __name__ == "__main__":
+    main()

@@ -1,8 +1,10 @@
 //! Configuration du daemon (`$ARGOS_HOME/config.toml`) et jeton d'accès à l'API.
 
+use crate::node::transport::NodeConfig;
 use crate::policy::{DEFAULT_MODELS, ModelPolicy};
 use argos_core::EngineKind;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::net::SocketAddr;
@@ -27,6 +29,26 @@ listen = "127.0.0.1:7878"
 [mcp]
 # Adresse du serveur MCP par lequel les agents pilotent leurs enfants. Locale seulement.
 listen = "127.0.0.1:7879"
+
+# Autres nœuds (D32, D33) : le hub s'y connecte, l'Assistant peut y placer des Agents.
+# Sur le nœud, lancer `argos-daemon node` (voir son node.toml) ; son jeton est dans
+# $ARGOS_HOME/node-token.
+# [nodes.pi]
+# ssh = "pi"                       # hôte de ~/.ssh/config ; ou url = "ws://127.0.0.1:7880"
+# remote = "127.0.0.1:7880"        # écoute du nœud, vue depuis cet hôte
+# token_file = "/chemin/vers/le/jeton"
+"#;
+
+/// Configuration d'un daemon lancé en mode nœud (`$ARGOS_HOME/node.toml`).
+const DEFAULT_NODE_CONFIG: &str = r#"# Configuration d'Argos en mode nœud (`argos-daemon node`).
+
+[node]
+# Nom du nœud, celui que le hub lui donne dans [nodes.<nom>].
+name = "nœud"
+# Écoute de la connexion du hub. Locale seulement : le hub passe par un tunnel SSH (D32).
+listen = "127.0.0.1:7880"
+# Mandataire MCP local des agents du nœud.
+mcp_listen = "127.0.0.1:7881"
 "#;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -38,6 +60,31 @@ pub struct Config {
     /// Politique de modèles (D22) ; celle par défaut si la section manque.
     #[serde(default)]
     pub models: ModelPolicy,
+    /// Les autres nœuds, par nom.
+    #[serde(default)]
+    pub nodes: BTreeMap<String, NodeConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NodeModeConfig {
+    pub node: NodeSection,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct NodeSection {
+    pub name: String,
+    pub listen: SocketAddr,
+    pub mcp_listen: SocketAddr,
+}
+
+impl NodeModeConfig {
+    /// Lit `node.toml` ; au premier démarrage, écrit d'abord celui par défaut.
+    pub fn load_or_create(path: &Path) -> Result<Self, ConfigError> {
+        if !path.exists() {
+            fs::write(path, DEFAULT_NODE_CONFIG)?;
+        }
+        Ok(toml::from_str(&fs::read_to_string(path)?)?)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -72,6 +119,8 @@ pub enum ConfigError {
     Parse(#[from] toml::de::Error),
     #[error("politique de modèles invalide : {0}")]
     Policy(String),
+    #[error("{0}")]
+    Node(String),
 }
 
 impl Config {
@@ -82,6 +131,9 @@ impl Config {
         }
         let config: Config = toml::from_str(&fs::read_to_string(path)?)?;
         config.models.check().map_err(ConfigError::Policy)?;
+        for (name, node) in &config.nodes {
+            node.check(name).map_err(ConfigError::Node)?;
+        }
         Ok(config)
     }
 }
@@ -116,6 +168,7 @@ mod tests {
         assert_eq!(config.assistant.engine, EngineKind::Claude);
         assert_eq!(config.assistant.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(config.api.listen, "127.0.0.1:7878".parse().unwrap());
+        assert!(config.nodes.is_empty());
 
         fs::write(
             &path,
@@ -128,6 +181,35 @@ mod tests {
         assert_eq!(edited.assistant.model, None);
         // Une config d'avant T4, sans [mcp], reste valide.
         assert_eq!(edited.mcp.listen, "127.0.0.1:7879".parse().unwrap());
+    }
+
+    #[test]
+    fn nodes_are_declared_by_name_and_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let base = "[assistant]\nengine = \"claude\"\n[api]\nlisten = \"127.0.0.1:9000\"\n";
+        fs::write(
+            &path,
+            format!("{base}[nodes.pi]\nssh = \"pi\"\ntoken = \"t\"\n[nodes.vps]\nurl = \"ws://127.0.0.1:7880\"\ntoken = \"u\"\n"),
+        )
+        .unwrap();
+        let config = Config::load_or_create(&path).unwrap();
+        assert_eq!(config.nodes.keys().collect::<Vec<_>>(), ["pi", "vps"]);
+        assert_eq!(config.nodes["pi"].ssh.as_deref(), Some("pi"));
+
+        fs::write(&path, format!("{base}[nodes.pi]\nssh = \"pi\"\n")).unwrap();
+        assert!(matches!(
+            Config::load_or_create(&path),
+            Err(ConfigError::Node(_))
+        ));
+    }
+
+    #[test]
+    fn the_default_node_config_parses() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = NodeModeConfig::load_or_create(&dir.path().join("node.toml")).unwrap();
+        assert_eq!(config.node.listen, "127.0.0.1:7880".parse().unwrap());
+        assert_eq!(config.node.mcp_listen, "127.0.0.1:7881".parse().unwrap());
     }
 
     #[test]

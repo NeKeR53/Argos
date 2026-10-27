@@ -70,6 +70,10 @@ qui lui parvient.\n\
 l'utilisateur quel Agent a besoin de lui et pourquoi ; il lui répondra directement.\n\
 - **Réponses à l'utilisateur** : une ou deux phrases, sans liste ni mise en forme \
 inutile. Il pourra t'entendre à voix haute.\n\
+- **Nœuds.** Un Agent tourne sur une machine : le hub par défaut, ou un nœud déclaré par \
+l'utilisateur (list_nodes). Place-le sur le nœud de ce qu'il gère (les fichiers, le \
+service ou l'appareil de son périmètre) ; ses Workers l'y suivent. Tu ne crées jamais de \
+nœud.\n\
 - Tu n'agis jamais sur un Worker : tu passes par son Agent.\n\
 - **Les Agents se parlent entre eux** (outil ask_agent de leur côté) : quand l'un a besoin \
 d'une information du domaine d'un autre, dis-lui simplement de la demander à cet Agent, \
@@ -157,6 +161,7 @@ mod tests {
             engine: EngineKind::Claude,
             model: None,
             profile: None,
+            node: None,
             workdir: "/projets/maison".into(),
             charter: (level == Level::Agent).then(|| Charter {
                 name: "Domotique".into(),

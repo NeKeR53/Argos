@@ -24,6 +24,7 @@ fn code_worker(w: &World) -> AgentRecord {
             engine: choice.engine,
             model: Some(choice.model),
             profile: Some(profile),
+            node: None,
             workdir: w.home.path().join("code-worker"),
             charter: None,
         })

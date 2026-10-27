@@ -7,6 +7,7 @@ pub mod engine;
 pub mod events;
 pub mod mcp;
 pub mod memory;
+pub mod node;
 pub mod policy;
 pub mod registry;
 pub mod supervisor;

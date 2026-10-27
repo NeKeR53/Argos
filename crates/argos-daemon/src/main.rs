@@ -1,5 +1,7 @@
 use argos_core::{AgentRecord, EngineKind, Level};
-use argos_daemon::config::{Config, load_or_create_token};
+use argos_daemon::config::{Config, NodeModeConfig, load_or_create_token};
+use argos_daemon::node::Nodes;
+use argos_daemon::node::runner::{self, RunnerSettings};
 use argos_daemon::registry::{Registry, RegistryError};
 use argos_daemon::supervisor::{Supervisor, SupervisorSettings};
 use argos_daemon::{api, events, mcp};
@@ -7,10 +9,69 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
 
+type Failure = Box<dyn std::error::Error>;
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Failure> {
     let home = argos_home()?;
     std::fs::create_dir_all(&home)?;
+    match std::env::args().nth(1).as_deref() {
+        None | Some("hub") => hub(home).await,
+        Some("node") => node(home).await,
+        Some("service") => service(home),
+        Some(other) => Err(format!("mode inconnu : {other} (hub, node ou service)").into()),
+    }
+}
+
+/// `service <systemd|launchd> [hub|node]` : écrit le fichier de service qui lance ce
+/// binaire avec ce `ARGOS_HOME` (D33). Ne l'installe pas.
+fn service(home: PathBuf) -> Result<(), Failure> {
+    use argos_daemon::node::service;
+    let kind = std::env::args().nth(2);
+    let mode = std::env::args().nth(3).unwrap_or_else(|| "node".into());
+    if mode != "hub" && mode != "node" {
+        return Err(format!("mode inconnu : {mode} (hub ou node)").into());
+    }
+    let binary = std::env::current_exe()?;
+    let text = match kind.as_deref() {
+        Some("systemd") => service::systemd_unit(&binary, &home, &mode),
+        Some("launchd") => service::launchd_plist(&binary, &home, &mode),
+        _ => return Err("usage : argos-daemon service <systemd|launchd> [hub|node]".into()),
+    };
+    print!("{text}");
+    Ok(())
+}
+
+/// Mode nœud (D32) : exécute les sessions que le hub lui confie.
+async fn node(home: PathBuf) -> Result<(), Failure> {
+    let config = NodeModeConfig::load_or_create(&home.join("node.toml"))?.node;
+    let token_path = home.join("node-token");
+    let token = load_or_create_token(&token_path)?;
+    let listener = TcpListener::bind(config.listen).await?;
+    let mcp_listener = TcpListener::bind(config.mcp_listen).await?;
+    println!(
+        "argos-daemon {} en mode nœud « {} » — hub attendu sur ws://{} (jeton dans {}), mandataire MCP sur {}",
+        env!("CARGO_PKG_VERSION"),
+        config.name,
+        listener.local_addr()?,
+        token_path.display(),
+        mcp_listener.local_addr()?
+    );
+    let settings = RunnerSettings {
+        name: config.name,
+        home: home.clone(),
+        user_codex_home: user_home().join(".codex"),
+        programs: program_overrides(),
+    };
+    tokio::select! {
+        served = runner::serve(listener, mcp_listener, settings, token) => served?,
+        _ = tokio::signal::ctrl_c() => println!("arrêt du nœud"),
+    }
+    Ok(())
+}
+
+/// Mode hub : registre, Assistant, API, MCP, événements, connexions aux nœuds.
+async fn hub(home: PathBuf) -> Result<(), Failure> {
     let config = Config::load_or_create(&home.join("config.toml"))?;
     let token_path = home.join("token");
     let token = load_or_create_token(&token_path)?;
@@ -35,21 +96,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     print_tree(&registry, &assistant)?;
 
-    let user_home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let nodes = Nodes::new(config.nodes.clone());
     let mcp_listener = TcpListener::bind(config.mcp.listen).await?;
     let mcp_url = format!("http://{}", mcp_listener.local_addr()?);
     let supervisor = Supervisor::new(
         registry,
         SupervisorSettings {
             home: home.clone(),
-            user_codex_home: user_home.join(".codex"),
+            user_codex_home: user_home().join(".codex"),
             programs: program_overrides(),
             mcp_url: Some(mcp_url.clone()),
             policy: config.models.clone(),
+            nodes: nodes.clone(),
         },
     );
+    nodes.connect(supervisor.clone(), ssh_program());
+    for node in config.nodes.keys() {
+        println!("nœud déclaré : {node}");
+    }
     let listener = TcpListener::bind(config.api.listen).await?;
     println!(
         "API WebSocket sur ws://{}/?token=… (jeton dans {})",
@@ -77,6 +141,17 @@ fn argos_home() -> Result<PathBuf, &'static str> {
     std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join(".argos"))
         .ok_or("ni ARGOS_HOME ni HOME ne sont définis")
+}
+
+fn user_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
+/// Binaire des tunnels vers les nœuds : `ARGOS_SSH_BIN` (tests), sinon `ssh`.
+fn ssh_program() -> PathBuf {
+    std::env::var_os("ARGOS_SSH_BIN").map_or_else(|| "ssh".into(), PathBuf::from)
 }
 
 /// Binaires de remplacement des moteurs (`ARGOS_CLAUDE_BIN`, `ARGOS_CODEX_BIN`), par

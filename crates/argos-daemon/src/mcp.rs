@@ -58,7 +58,7 @@ async fn hook(
 const MAX_HOOK_BODY: usize = 20_000;
 
 /// Pas de flux SSE ni de session : le protocole autorise à les refuser ainsi.
-async fn no_stream() -> StatusCode {
+pub(crate) async fn no_stream() -> StatusCode {
     StatusCode::METHOD_NOT_ALLOWED
 }
 
@@ -67,25 +67,38 @@ async fn handle(
     Path(token): Path<String>,
     body: String,
 ) -> Response {
-    let Some(caller) = supervisor.agent_for_token(&token) else {
-        return StatusCode::NOT_FOUND.into_response();
+    let (status, reply) = answer(&supervisor, &token, &body).await;
+    match reply {
+        Some(reply) => (status, Json(reply)).into_response(),
+        None => status.into_response(),
+    }
+}
+
+/// Répond à une requête MCP d'une session ; aussi appelé pour les sessions des autres
+/// nœuds, dont le nœud relaie les requêtes au hub (`node`).
+pub async fn answer(
+    supervisor: &Supervisor,
+    token: &str,
+    body: &str,
+) -> (StatusCode, Option<Value>) {
+    let Some(caller) = supervisor.agent_for_token(token) else {
+        return (StatusCode::NOT_FOUND, None);
     };
-    let Ok(message) = serde_json::from_str::<Value>(&body) else {
+    let Ok(message) = serde_json::from_str::<Value>(body) else {
         return (
             StatusCode::BAD_REQUEST,
-            Json(rpc_error(Value::Null, -32700, "JSON illisible")),
-        )
-            .into_response();
+            Some(rpc_error(Value::Null, -32700, "JSON illisible")),
+        );
     };
     // Notifications et réponses du client : rien à rendre.
     let (Some(id), Some(method)) = (message.get("id").cloned(), message["method"].as_str()) else {
-        return StatusCode::ACCEPTED.into_response();
+        return (StatusCode::ACCEPTED, None);
     };
-    let reply = match dispatch(&supervisor, &caller, method, &message["params"]).await {
+    let reply = match dispatch(supervisor, &caller, method, &message["params"]).await {
         Ok(result) => json!({"jsonrpc": "2.0", "id": id, "result": result}),
         Err((code, error)) => rpc_error(id, code, &error),
     };
-    Json(reply).into_response()
+    (StatusCode::OK, Some(reply))
 }
 
 async fn dispatch(

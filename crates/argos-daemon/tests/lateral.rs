@@ -19,6 +19,7 @@ fn mail(w: &World) -> AgentRecord {
             engine: EngineKind::Claude,
             model: None,
             profile: None,
+            node: None,
             workdir: w.home.path().join("mail"),
             charter: Some(Charter {
                 name: "Mail".into(),

@@ -105,7 +105,7 @@ pub(super) async fn spawn(spec: SessionSpec) -> Result<Session, EngineError> {
     let session_id = state.thread_id.clone();
     Ok(Session::launch(
         session_id,
-        pgid,
+        Some(pgid),
         move |commands, events| drive(process, state, commands, events),
     ))
 }
@@ -151,7 +151,7 @@ async fn drive(
                 let message = match command {
                     Some(Command::Send(text)) => Some(state.turn_start(&text)),
                     Some(Command::Interrupt) => state.interrupt(),
-                    Some(Command::Park) | None => break,
+                    Some(Command::Park | Command::Kill) | None => break,
                 };
                 if let Some(message) = message {
                     // Une écriture ratée signifie que le process est mort : la fin de stdout suit.

@@ -59,6 +59,8 @@ pub struct NewAgent {
     pub model: Option<String>,
     /// Profil de la politique de modèles dont viennent moteur et modèle.
     pub profile: Option<String>,
+    /// Nœud d'un Agent (D32) ; ignoré pour un Worker, qui suit son Agent.
+    pub node: Option<String>,
     pub workdir: PathBuf,
     pub charter: Option<Charter>,
 }
@@ -77,17 +79,19 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 6] = [
+const MIGRATIONS: [&str; 7] = [
     AGENTS_SCHEMA,
     board::SCHEMA,
     PROFILE_COLUMN,
     surfaces::SCHEMA,
     triggers::SCHEMA,
     triggers::ARMED_COLUMN,
+    NODE_COLUMN,
 ];
 
 /// v3 : profil de la politique de modèles (T8).
 const PROFILE_COLUMN: &str = "ALTER TABLE agents ADD COLUMN profile TEXT;";
+const NODE_COLUMN: &str = "ALTER TABLE agents ADD COLUMN node TEXT;";
 const SCHEMA_VERSION: i64 = MIGRATIONS.len() as i64;
 
 const AGENTS_SCHEMA: &str = "
@@ -111,7 +115,7 @@ CREATE UNIQUE INDEX one_assistant ON agents(level) WHERE level = 'assistant';
 CREATE UNIQUE INDEX agent_names ON agents(lower(name)) WHERE level = 'agent' AND state != 'retired';
 ";
 
-const COLUMNS: &str = "id, level, parent, engine, model, workdir, name, scope, state, session_id, created_at, profile";
+const COLUMNS: &str = "id, level, parent, engine, model, workdir, name, scope, state, session_id, created_at, profile, node";
 
 impl Registry {
     pub fn open(path: &Path) -> Result<Self> {
@@ -161,6 +165,7 @@ impl Registry {
             engine,
             model,
             profile: None,
+            node: None,
             workdir,
             charter: None,
             state: AgentState::Parked,
@@ -217,6 +222,10 @@ impl Registry {
             engine: new.engine,
             model: new.model,
             profile: new.profile,
+            node: match new.level {
+                Level::Worker => parent.node.clone(),
+                _ => new.node,
+            },
             workdir: new.workdir,
             charter,
             state: AgentState::Parked,
@@ -389,7 +398,7 @@ impl Registry {
         let charter = record.charter.as_ref();
         self.db.execute(
             &format!(
-                "INSERT INTO agents ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)"
+                "INSERT INTO agents ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)"
             ),
             params![
                 record.id.as_str(),
@@ -404,6 +413,7 @@ impl Registry {
                 record.session_id,
                 record.created_at as i64,
                 record.profile,
+                record.node,
             ],
         )?;
         Ok(())
@@ -441,6 +451,7 @@ fn record(row: &Row) -> rusqlite::Result<AgentRecord> {
         session_id: row.get(9)?,
         created_at: row.get::<_, i64>(10)? as u64,
         profile: row.get(11)?,
+        node: row.get(12)?,
     })
 }
 
@@ -502,6 +513,7 @@ mod tests {
         registry
             .create(NewAgent {
                 profile: None,
+                node: None,
                 parent: assistant.id.clone(),
                 level: Level::Agent,
                 engine: EngineKind::Claude,
@@ -519,6 +531,7 @@ mod tests {
     fn new_worker(parent: &AgentRecord) -> NewAgent {
         NewAgent {
             profile: None,
+            node: None,
             parent: parent.id.clone(),
             level: Level::Worker,
             engine: EngineKind::Codex,

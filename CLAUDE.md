@@ -4,14 +4,16 @@ Assistant IA personnel qui délègue à une hiérarchie Assistant → Agents →
 
 ## À lire avant de toucher au code
 
-- [docs/VISION.md](docs/VISION.md) — décisions numérotées (D1…D39). Une décision remise en cause se modifie là, pas en douce dans le code.
+- [docs/VISION.md](docs/VISION.md) — décisions numérotées (D1…D40). Une décision remise en cause se modifie là, pas en douce dans le code.
 - [docs/GLOSSARY.md](docs/GLOSSARY.md) — vocabulaire canonique. Code, docs et prompts d'agents utilisent ces termes.
 - [docs/PHASE-1.md](docs/PHASE-1.md) — tranches en cours, choix d'implémentation et faits vérifiés sur les CLI.
+- [docs/PHASE-2.md](docs/PHASE-2.md), [docs/PHASE-4.md](docs/PHASE-4.md), [docs/PHASE-5.md](docs/PHASE-5.md) — surfaces, multi-nœud, événements : ce qui est fait, les écarts avec la vision, ce qui reste.
 
 ## Structure
 
 - `crates/argos-core` — types partagés daemon/GUI.
-- `crates/argos-daemon` — binaire headless (sessions, contrôle, MCP, mémoire, API WS). Données dans `$ARGOS_HOME` (défaut `~/.argos`) ; utiliser un `ARGOS_HOME` jetable pour les essais.
+- `crates/argos-daemon` — binaire headless (sessions, contrôle, MCP, mémoire, API WS). Données dans `$ARGOS_HOME` (défaut `~/.argos`) ; utiliser un `ARGOS_HOME` jetable pour les essais. `argos-daemon node` le lance en nœud d'exécution (phase 4).
+- `crates/argos-voice` — moteur vocal local (whisper-server, `say`, micro).
 - `apps/gui` — app Tauri 2 : `src-tauri/` (Rust, membre du workspace) et front React/TS (Vite).
 
 ## Commandes

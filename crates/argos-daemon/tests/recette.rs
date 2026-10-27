@@ -63,6 +63,7 @@ impl Stage {
                 programs: HashMap::new(),
                 mcp_url: Some(mcp_url),
                 policy: cheap_policy(),
+                nodes: Default::default(),
             },
         );
         tokio::spawn(argos_daemon::mcp::serve(listener, supervisor.clone()));
@@ -87,6 +88,7 @@ impl Stage {
                 engine: EngineKind::Claude,
                 model: Some("claude-haiku-5-5".into()),
                 profile: Some("standard".into()),
+                node: None,
                 workdir: self.home.path().join(name.to_lowercase()),
                 charter: Some(Charter {
                     name: name.into(),
