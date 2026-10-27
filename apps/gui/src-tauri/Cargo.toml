@@ -22,6 +22,8 @@ serde_json.workspace = true
 # Déjà tiré par Tauri : flux d'événements vocaux, signaux de fin, attente de l'essai simulé.
 tokio = { version = "1", features = ["macros", "signal", "sync", "time"] }
 toml = "1"
+# Réécrit un réglage de `config.toml` sans perdre ses commentaires.
+toml_edit = "0.25"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-global-shortcut = "2"

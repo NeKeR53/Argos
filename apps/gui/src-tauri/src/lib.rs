@@ -61,9 +61,74 @@ fn quit_app(app: AppHandle) {
     });
 }
 
+/// Raccourcis globaux en vigueur, et les erreurs d'enregistrement du démarrage.
+pub struct Shortcuts {
+    config: std::sync::Mutex<daemon::GuiConfig>,
+    errors: std::sync::Mutex<Vec<String>>,
+}
+
+/// Ce que la console affiche et modifie : `[gui]` sans ce qui n'est pas un raccourci.
+#[derive(Debug, Clone, Serialize)]
+pub struct ShortcutsView {
+    push_to_talk: String,
+    console: String,
+    panic: String,
+    /// Raccourcis refusés au démarrage (illisibles, ou pris par une autre app).
+    errors: Vec<String>,
+}
+
+impl Shortcuts {
+    fn view(&self) -> ShortcutsView {
+        let config = self.config.lock().expect("verrou empoisonné");
+        ShortcutsView {
+            push_to_talk: config.push_to_talk.clone(),
+            console: config.console.clone(),
+            panic: config.panic.clone(),
+            errors: self.errors.lock().expect("verrou empoisonné").clone(),
+        }
+    }
+}
+
 mod commands {
-    use super::{AppHandle, VoiceMode, shell, voice};
+    use super::{AppHandle, Shortcuts, ShortcutsView, VoiceMode, daemon, shell, voice};
     use tauri::State;
+
+    /// Raccourcis globaux en vigueur.
+    #[tauri::command]
+    pub fn shortcuts(shortcuts: State<'_, Shortcuts>) -> ShortcutsView {
+        shortcuts.view()
+    }
+
+    /// Change un raccourci (`key` : `push_to_talk`, `console` ou `panic`) : actif tout de
+    /// suite, puis écrit dans `[gui]` de `config.toml`. Refusé, l'ancien reste.
+    #[tauri::command]
+    pub fn set_shortcut(
+        app: AppHandle,
+        shortcuts: State<'_, Shortcuts>,
+        key: String,
+        keys: String,
+    ) -> Result<ShortcutsView, String> {
+        let keys = keys.trim().to_string();
+        {
+            let mut config = shortcuts.config.lock().expect("verrou empoisonné");
+            shell::replace_shortcut(&app, &config, &key, &keys)?;
+            match key.as_str() {
+                "push_to_talk" => config.push_to_talk = keys.clone(),
+                "console" => config.console = keys.clone(),
+                _ => config.panic = keys.clone(),
+            }
+        }
+        shortcuts
+            .errors
+            .lock()
+            .expect("verrou empoisonné")
+            .retain(|error| !error.contains(shell::shortcut_label(&key)));
+        // Actif même si l'écriture échoue ; l'erreur le dit.
+        let home = daemon::argos_home()?;
+        daemon::save_gui_value(&home, &key, &keys)
+            .map_err(|error| format!("raccourci actif, mais non enregistré : {error}"))?;
+        Ok(shortcuts.view())
+    }
 
     /// État vocal de l'orbe (`state` : `"listening"`, `"speaking"` ou `null` ; `level` :
     /// 0 à 1), pour une voix côté front ou pour essayer l'orbe.
@@ -117,6 +182,8 @@ macro_rules! handler {
             toggle_console,
             quit_app,
             commands::set_voice_state,
+            commands::shortcuts,
+            commands::set_shortcut,
             commands::voice_status,
             commands::voice_speak_delta,
             commands::voice_finish_speech,
@@ -171,15 +238,24 @@ pub fn run() {
         .plugin(navigation_guard)
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(voice::Voice::new(gui.speak_typed_replies))
+        .manage(Shortcuts {
+            config: std::sync::Mutex::new(gui.clone()),
+            errors: std::sync::Mutex::default(),
+        })
         .invoke_handler(invoke_handler())
         .setup(move |app| {
             // L'orbe tient lieu d'icône : pas d'icône dans le Dock (D38).
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             place_orb(app.handle());
-            for error in shell::register_shortcuts(app.handle(), &gui) {
+            let errors = shell::register_shortcuts(app.handle(), &gui);
+            for error in &errors {
                 eprintln!("{error}");
             }
+            *app.state::<Shortcuts>()
+                .errors
+                .lock()
+                .expect("verrou empoisonné") = errors;
             // Sans bloquer : le modèle se charge dans une tâche.
             voice::start(app.handle(), config_text.as_deref());
             #[cfg(debug_assertions)]

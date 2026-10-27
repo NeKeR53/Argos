@@ -28,6 +28,12 @@ voice = "Thomas"                    # voix de `say` (`say -v '?'` pour la liste)
 partial_interval_ms = 700
 ```
 
+Les raccourcis se changent aussi depuis la console (bouton « Raccourcis ») : on clique
+« Changer », on appuie la nouvelle combinaison, elle est active tout de suite et réécrite
+dans `[gui]` sans toucher au reste du fichier. Une combinaison déjà prise par une autre app
+est refusée et l'ancienne reste. Une lettre seule est refusée (elle volerait la frappe
+partout) ; une touche F seule est permise, `F13` par exemple pour parler.
+
 Le chemin du modèle n'est écrit nulle part dans le code : sans section `[voice]`, ou avec
 un modèle introuvable, l'app tourne sans voix et dit pourquoi (pastille de l'orbe, avis et
 badge de la console).

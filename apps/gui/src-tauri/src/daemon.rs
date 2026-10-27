@@ -84,6 +84,29 @@ pub fn gui_config_in(home: &Path) -> Result<GuiConfig, String> {
     Ok(read_config(home)?.gui)
 }
 
+/// Change une valeur de `[gui]` dans le texte de `config.toml`, commentaires et autres
+/// sections gardés tels quels ; la section est créée si elle manque.
+pub fn with_gui_value(config: &str, key: &str, value: &str) -> Result<String, String> {
+    let mut document = config
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| format!("config.toml illisible : {error}"))?;
+    let gui = document
+        .entry("gui")
+        .or_insert_with(toml_edit::table)
+        .as_table_mut()
+        .ok_or("[gui] n'est pas une section")?;
+    gui[key] = toml_edit::value(value);
+    Ok(document.to_string())
+}
+
+/// Enregistre une valeur de `[gui]` dans `config.toml`.
+pub fn save_gui_value(home: &Path, key: &str, value: &str) -> Result<(), String> {
+    let path = home.join("config.toml");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let updated = with_gui_value(&text, key, value)?;
+    std::fs::write(&path, updated).map_err(|error| format!("{}: {error}", path.display()))
+}
+
 /// Base des URL de webhooks (`http://<[mcp] listen>`), servis par le daemon.
 pub fn hooks_base_in(home: &Path) -> Result<String, String> {
     hooks_base_from(read_config(home)?)
@@ -279,5 +302,24 @@ mod tests {
         assert_eq!(probe(&refused), Probe::Refused);
         let accepted = answering("HTTP/1.1 101 Switching Protocols\r\n\r\n");
         assert_eq!(probe(&accepted), Probe::Accepted);
+    }
+
+    #[test]
+    fn a_gui_value_is_rewritten_without_losing_the_rest() {
+        let config = "# Mon réglage\n[assistant]\nengine = \"claude\" # moteur\n\n[gui]\npush_to_talk = \"Alt+Space\" # parler\nconsole = \"CmdOrCtrl+Shift+A\"\n";
+        let updated = with_gui_value(config, "push_to_talk", "F13").unwrap();
+        assert!(updated.contains("# Mon réglage"));
+        assert!(updated.contains("engine = \"claude\" # moteur"));
+        assert!(updated.contains("push_to_talk = \"F13\""));
+        assert!(updated.contains("console = \"CmdOrCtrl+Shift+A\""));
+        assert_eq!(
+            parse_config(Some(&updated)).unwrap().gui.push_to_talk,
+            "F13"
+        );
+
+        let created =
+            with_gui_value("[api]\nlisten = \"127.0.0.1:7878\"\n", "panic", "Alt+P").unwrap();
+        assert_eq!(parse_config(Some(&created)).unwrap().gui.panic, "Alt+P");
+        assert!(with_gui_value("gui = 3\n", "panic", "Alt+P").is_err());
     }
 }

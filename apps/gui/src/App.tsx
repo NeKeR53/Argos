@@ -22,14 +22,10 @@ import { voiceReason, voiceStatusLabel, type VoiceStatus } from "./voice";
 import { AgentTree } from "./components/AgentTree";
 import { ChatPanel } from "./components/ChatPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
-
-/** Raccourci du panic stop dans l'app : ⌘⇧X (Ctrl+Maj+X hors macOS). */
-function isPanicShortcut(event: KeyboardEvent): boolean {
-  return (event.metaKey || event.ctrlKey) && event.shiftKey && event.key.toLowerCase() === "x";
-}
+import { ShortcutsDialog } from "./components/ShortcutsDialog";
+import { DEFAULT_SHORTCUTS, formatShortcut, loadShortcuts, matchesShortcut, type Shortcuts } from "./shortcuts";
 
 const isMac = navigator.platform.toLowerCase().startsWith("mac");
-const PANIC_SHORTCUT = isMac ? "⌘⇧X" : "Ctrl+Maj+X";
 /** Liste vide stable : évite de relancer les effets des surfaces à chaque rendu. */
 const NO_SURFACES: SurfaceMeta[] = [];
 /** Cadence de relecture de l'état des nœuds (pas d'événement du daemon pour ça). */
@@ -45,6 +41,12 @@ export default function App() {
     void resolveHooksBase().then(setHooksBase);
   }, []);
   const [panicAsked, setPanicAsked] = useState(false);
+  const [shortcuts, setShortcuts] = useState<Shortcuts>(DEFAULT_SHORTCUTS);
+  const [editingShortcuts, setEditingShortcuts] = useState(false);
+  useEffect(() => {
+    void loadShortcuts().then(setShortcuts).catch(() => undefined);
+  }, []);
+  const panicLabel = formatShortcut(shortcuts.panic, isMac);
   const [retiring, setRetiring] = useState<AgentStatus | null>(null);
   const connected = state.connection.status === "connected";
   const agent = selectedAgent(state);
@@ -68,7 +70,7 @@ export default function App() {
   useEffect(() => {
     if (isTauri()) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isPanicShortcut(event)) return;
+      if (!matchesShortcut(event, shortcuts.panic, isMac)) return;
       event.preventDefault();
       if (!connected) return;
       if (panicAsked) panic();
@@ -76,7 +78,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [connected, panicAsked, panic]);
+  }, [connected, panicAsked, panic, shortcuts.panic]);
 
   const select = (id: AgentId) => dispatch({ type: "select", agent: id });
   const isLiving = (id: AgentId) => id in state.agents;
@@ -93,14 +95,25 @@ export default function App() {
         <NodeDots nodes={state.nodes} />
         <span className="spacer" />
         {VOICE_TRIAL && <VoiceTrial disabled={!connected} />}
+        {isTauri() && (
+          <button
+            type="button"
+            className="button"
+            onClick={() => setEditingShortcuts(true)}
+            title={`Parler : ${formatShortcut(shortcuts.push_to_talk, isMac)}`}
+            data-warning={shortcuts.errors.length > 0 || undefined}
+          >
+            Raccourcis{shortcuts.errors.length > 0 ? " ⚠︎" : ""}
+          </button>
+        )}
         <button
           type="button"
           className="button panic"
           disabled={!connected}
           onClick={() => setPanicAsked(true)}
-          title={`Arrêt dur de tout l'arbre (${PANIC_SHORTCUT})`}
+          title={`Arrêt dur de tout l'arbre (${panicLabel})`}
         >
-          Panic stop <kbd>{PANIC_SHORTCUT}</kbd>
+          Panic stop <kbd>{panicLabel}</kbd>
         </button>
       </header>
 
@@ -176,8 +189,17 @@ export default function App() {
             Arrêt dur de tout l'arbre : l'Assistant, les Agents et leurs Workers. Les sessions se reprendront au
             prochain message.
           </p>
-          <p className="muted">Entrée ou {PANIC_SHORTCUT} confirme, Échap annule.</p>
+          <p className="muted">Entrée ou {panicLabel} confirme, Échap annule.</p>
         </ConfirmDialog>
+      )}
+
+      {editingShortcuts && (
+        <ShortcutsDialog
+          shortcuts={shortcuts}
+          mac={isMac}
+          onChange={setShortcuts}
+          onClose={() => setEditingShortcuts(false)}
+        />
       )}
 
       {retiring && (

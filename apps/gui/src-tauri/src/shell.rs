@@ -71,47 +71,115 @@ pub fn toggle_console<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// Les trois raccourcis globaux, par leur clé dans `[gui]`.
+pub const SHORTCUT_KEYS: [&str; 3] = ["push_to_talk", "console", "panic"];
+
 /// Enregistre les raccourcis globaux de `[gui]`. Rend les erreurs (raccourci illisible
 /// ou déjà pris par une autre app) sans interrompre les autres.
 pub fn register_shortcuts<R: Runtime>(app: &AppHandle<R>, config: &GuiConfig) -> Vec<String> {
-    let shortcuts = app.global_shortcut();
-    let mut errors = vec![];
-    let mut add = |name: &str, keys: &str, handler: fn(&AppHandle<R>, ShortcutState)| {
-        let parsed = match keys.parse::<Shortcut>() {
-            Ok(shortcut) => shortcut,
-            Err(error) => {
-                errors.push(format!("raccourci {name} « {keys} » illisible : {error}"));
-                return;
+    SHORTCUT_KEYS
+        .iter()
+        .filter_map(|key| register_shortcut(app, key, shortcut_of(config, key)).err())
+        .collect()
+}
+
+/// La combinaison d'un raccourci de `config`, par sa clé.
+pub fn shortcut_of<'a>(config: &'a GuiConfig, key: &str) -> &'a str {
+    match key {
+        "push_to_talk" => &config.push_to_talk,
+        "console" => &config.console,
+        _ => &config.panic,
+    }
+}
+
+/// Nom d'un raccourci pour l'utilisateur.
+pub fn shortcut_label(key: &str) -> &'static str {
+    match key {
+        "push_to_talk" => "push-to-talk",
+        "console" => "console",
+        _ => "panic stop",
+    }
+}
+
+/// Lit une combinaison au format de `[gui]` (`Alt+Space`, `CmdOrCtrl+Shift+A`…).
+pub fn parse_shortcut(key: &str, keys: &str) -> Result<Shortcut, String> {
+    keys.parse::<Shortcut>().map_err(|error| {
+        format!(
+            "raccourci {} « {keys} » illisible : {error}",
+            shortcut_label(key)
+        )
+    })
+}
+
+/// Enregistre un raccourci global et son action.
+pub fn register_shortcut<R: Runtime>(
+    app: &AppHandle<R>,
+    key: &str,
+    keys: &str,
+) -> Result<(), String> {
+    let parsed = parse_shortcut(key, keys)?;
+    let handler: fn(&AppHandle<R>, ShortcutState) = match key {
+        "push_to_talk" => |app, state| {
+            // Micro ouvert à l'appui, transcription au relâchement ; l'événement
+            // `push-to-talk` part de là, une fois par appui.
+            crate::voice::push_to_talk(app, state == ShortcutState::Pressed);
+        },
+        "console" => |app, state| {
+            if state == ShortcutState::Pressed {
+                toggle_console(app);
             }
-        };
-        if let Err(error) =
-            shortcuts.on_shortcut(parsed, move |app, _, event| handler(app, event.state))
-        {
-            errors.push(format!(
-                "raccourci {name} « {keys} » indisponible : {error}"
+        },
+        _ => |app, state| {
+            if state == ShortcutState::Pressed {
+                // L'orbe montre la confirmation et, au second appui, envoie l'arrêt.
+                if let Some(orb) = app.get_webview_window(ORB_WINDOW) {
+                    let _ = orb.show();
+                }
+                let _ = app.emit(EVENT_PANIC_SHORTCUT, ());
+            }
+        },
+    };
+    app.global_shortcut()
+        .on_shortcut(parsed, move |app, _, event| handler(app, event.state))
+        .map_err(|error| {
+            format!(
+                "raccourci {} « {keys} » indisponible : {error}",
+                shortcut_label(key)
+            )
+        })
+}
+
+/// Remplace un raccourci à chaud : le nouveau est enregistré à la place de l'ancien,
+/// qui revient si le nouveau est refusé (illisible, déjà pris, en double).
+pub fn replace_shortcut<R: Runtime>(
+    app: &AppHandle<R>,
+    config: &GuiConfig,
+    key: &str,
+    keys: &str,
+) -> Result<(), String> {
+    if !SHORTCUT_KEYS.contains(&key) {
+        return Err(format!("raccourci inconnu : {key}"));
+    }
+    let new = parse_shortcut(key, keys)?;
+    let old_keys = shortcut_of(config, key);
+    let old = old_keys.parse::<Shortcut>().ok();
+    if old == Some(new) {
+        return Ok(());
+    }
+    for other in SHORTCUT_KEYS.iter().filter(|other| **other != key) {
+        if shortcut_of(config, other).parse::<Shortcut>().ok() == Some(new) {
+            return Err(format!(
+                "« {keys} » sert déjà au raccourci {}",
+                shortcut_label(other)
             ));
         }
-    };
-    add("push-to-talk", &config.push_to_talk, |app, state| {
-        // Micro ouvert à l'appui, transcription au relâchement ; l'événement
-        // `push-to-talk` part de là, une fois par appui.
-        crate::voice::push_to_talk(app, state == ShortcutState::Pressed);
-    });
-    add("console", &config.console, |app, state| {
-        if state == ShortcutState::Pressed {
-            toggle_console(app);
-        }
-    });
-    add("panic stop", &config.panic, |app, state| {
-        if state == ShortcutState::Pressed {
-            // L'orbe montre la confirmation et, au second appui, envoie l'arrêt.
-            if let Some(orb) = app.get_webview_window(ORB_WINDOW) {
-                let _ = orb.show();
-            }
-            let _ = app.emit(EVENT_PANIC_SHORTCUT, ());
-        }
-    });
-    errors
+    }
+    if let Some(old) = old {
+        let _ = app.global_shortcut().unregister(old);
+    }
+    register_shortcut(app, key, keys).inspect_err(|_| {
+        let _ = register_shortcut(app, key, old_keys);
+    })
 }
 
 /// Navigations permises dans les webviews de l'app, cadres des surfaces compris : l'app
