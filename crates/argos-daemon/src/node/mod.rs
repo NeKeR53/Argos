@@ -8,6 +8,11 @@
 //!
 //! - [`link`] : côté hub, une connexion par nœud, rétablie quand elle tombe.
 //! - [`runner`] : côté nœud, le daemon lancé en mode `node`.
+//!
+//! La mémoire d'un agent vit sur son nœud (D23), avec son git d'annulation. Le hub y
+//! envoie chaque opération et en tient un miroir sans historique (D25), mis à jour par
+//! le nœud après chaque écriture et à chaque connexion : quand le nœud est injoignable,
+//! le hub lit le miroir et refuse les écritures.
 
 pub mod link;
 pub mod runner;
@@ -17,12 +22,13 @@ pub mod transport;
 pub use link::Nodes;
 
 use crate::engine::EngineEvent;
+use crate::memory::{MemoryOp, MemoryOutput};
 use argos_core::{AgentId, EngineKind};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Version du protocole entre hub et nœud.
-pub const NODE_PROTOCOL: u32 = 1;
+pub const NODE_PROTOCOL: u32 = 2;
 
 /// Ce qu'il faut au nœud pour lancer une session ; il complète le reste lui-même
 /// (binaires, `CODEX_HOME`, adresse de son mandataire MCP).
@@ -61,6 +67,12 @@ pub enum ToNode {
     Kill {
         session: u64,
     },
+    /// Opération sur la mémoire d'un agent du nœud, qui y vit (D23).
+    Memory {
+        call: u64,
+        agent: AgentId,
+        op: MemoryOp,
+    },
     /// Réponse du hub à une requête MCP relayée ; `body` vide quand il n'y a rien à rendre.
     McpReply {
         call: u64,
@@ -89,6 +101,16 @@ pub enum FromNode {
     Event {
         session: u64,
         event: EngineEvent,
+    },
+    MemoryReply {
+        call: u64,
+        result: Result<MemoryOutput, String>,
+    },
+    /// Copie complète de la mémoire d'un agent, pour le miroir du hub : après chaque
+    /// écriture, et pour toutes les mémoires à chaque connexion.
+    MemorySnapshot {
+        agent: AgentId,
+        files: Vec<(String, String)>,
     },
     /// Requête MCP d'un agent du nœud, à servir par le hub.
     McpCall {

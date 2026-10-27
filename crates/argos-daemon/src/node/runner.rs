@@ -9,6 +9,8 @@
 
 use super::{FromNode, NODE_PROTOCOL, RemoteSpec, ToNode, token_in};
 use crate::engine::{McpServer, Session, SessionControl, SessionSpec, prepare_codex_home};
+use crate::memory::{Memory, MemoryOp};
+use argos_core::AgentId;
 use argos_core::EngineKind;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
@@ -59,6 +61,8 @@ struct Inner {
     calls: AtomicU64,
     /// Requêtes MCP relayées au hub, en attente de sa réponse.
     pending: Mutex<HashMap<u64, oneshot::Sender<(u16, String)>>>,
+    /// Les mémoires des agents du nœud, qui vivent ici (D23).
+    memory: Memory,
 }
 
 struct Hub {
@@ -78,13 +82,14 @@ pub async fn serve(
 ) -> std::io::Result<()> {
     let runner = Runner {
         inner: Arc::new(Inner {
-            settings,
             token,
             mcp_url: format!("http://{}", mcp_listener.local_addr()?),
             hub: Mutex::default(),
             epochs: AtomicU64::new(0),
             calls: AtomicU64::new(0),
             pending: Mutex::default(),
+            memory: Memory::new(settings.home.join("memory")),
+            settings,
         }),
     };
     let router = axum::Router::new()
@@ -137,6 +142,11 @@ impl Runner {
             node: self.inner.settings.name.clone(),
             protocol: NODE_PROTOCOL,
         });
+        // Le hub resynchronise ses miroirs : la mémoire a pu changer pendant son absence.
+        tokio::spawn(
+            self.clone()
+                .snapshots(self.inner.memory.agents(), outbox.clone()),
+        );
         let writer = tokio::spawn(async move {
             while let Some(message) = queued.recv().await {
                 let text = serde_json::to_string(&message).expect("message sérialisable");
@@ -223,6 +233,9 @@ impl Runner {
                 Some(control) => control.kill(),
                 None => gone(session),
             },
+            ToNode::Memory { call, agent, op } => {
+                tokio::spawn(self.clone().memory(call, agent, op, outbox.clone()));
+            }
             ToNode::McpReply { call, status, body } => {
                 if let Some(waiting) = locked(&self.inner.pending).remove(&call) {
                     let _ = waiting.send((status, body));
@@ -258,6 +271,37 @@ impl Runner {
             }
         }
         locked(&sessions).remove(&session);
+    }
+
+    async fn memory(self, call: u64, agent: AgentId, op: MemoryOp, outbox: Outbox) {
+        let writes = op.writes();
+        let memory = self.inner.memory.clone();
+        let target = agent.clone();
+        // git est lancé à chaque écriture : hors des threads de l'exécuteur.
+        let result = tokio::task::spawn_blocking(move || memory.apply(&target, op))
+            .await
+            .unwrap_or_else(|error| Err(error.to_string()));
+        let succeeded = result.is_ok();
+        let _ = outbox.send(FromNode::MemoryReply { call, result });
+        if writes && succeeded {
+            self.snapshots(vec![agent], outbox).await;
+        }
+    }
+
+    /// Envoie au hub la copie complète de ces mémoires.
+    async fn snapshots(self, agents: Vec<AgentId>, outbox: Outbox) {
+        let memory = self.inner.memory.clone();
+        let copies = tokio::task::spawn_blocking(move || {
+            agents
+                .into_iter()
+                .filter_map(|agent| Some((memory.snapshot(&agent).ok()?, agent)))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
+        for (files, agent) in copies {
+            let _ = outbox.send(FromNode::MemorySnapshot { agent, files });
+        }
     }
 
     /// Complète la demande du hub avec ce qui dépend du nœud.

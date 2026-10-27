@@ -6,7 +6,7 @@ Objectif (D32, D33) : des Agents qui tournent sur d'autres machines (VPS, Raspbe
 
 ## Architecture
 
-- **Le hub garde tout l'état.** Registre, boards, surfaces, déclencheurs, mémoire et plan de contrôle restent sur le hub. Un nœud n'est qu'un exécuteur : il lance les sessions `claude` / `codex` qu'on lui demande et n'a pas de registre.
+- **Le hub garde l'état de contrôle.** Registre, boards, surfaces, déclencheurs et plan de contrôle restent sur le hub. Un nœud exécute : il lance les sessions `claude` / `codex` qu'on lui demande et garde la mémoire de ses agents (voir plus bas), sans registre.
 - **Une seule connexion, ouverte par le hub.** Le hub se connecte en WebSocket à chaque nœud, directement ou dans un tunnel SSH qu'il ouvre lui-même (`ssh -N -L`). Cette connexion porte :
   - les ordres (`spawn`, `send`, `interrupt`, `park`, `kill`) ;
   - les événements des sessions (le même `EngineEvent` qu'en local, sérialisé) ;
@@ -57,16 +57,20 @@ Dans `tests/nodes.rs`, chaque nœud est un vrai process `argos-daemon node` sur 
 
 S'y ajoutent des tests unitaires : configuration des nœuds et du mode nœud, arguments du tunnel.
 
+## Mémoire sur le nœud de l'agent (D23, D25)
+
+- La mémoire d'un Agent placé sur un nœud vit **sur ce nœud** (`$ARGOS_HOME/memory/<id>` du nœud), avec son git d'annulation.
+- Le hub y envoie chaque opération par la connexion : `ensure`, `write_state`, `log`, `digest`, `list`, `read`, `write`, `search` (`MemoryOp`, protocole v2). Les outils `memory_*`, l'état structuré et le digest du réveil passent tous par `Supervisor::memory_op`.
+- Le hub garde un **miroir** sans historique dans son propre `memory/<id>`. Le nœud lui envoie une copie complète de la mémoire après chaque écriture, et de toutes ses mémoires à chaque connexion : ce qui a changé pendant une coupure revient ainsi au hub. Ce miroir est la source du futur miroir Obsidian du Mac.
+- Nœud injoignable : les lectures se font sur le miroir, les écritures sont refusées (« mémoire non modifiée : nœud … injoignable »). Les faits que le daemon ajoute au journal sont alors perdus, sans bloquer l'action qu'ils décrivent.
+- Test : `an_agents_memory_lives_on_its_node_and_is_mirrored_on_the_hub`.
+
 ## Écarts avec la vision, à trancher
 
-1. **Mémoire sur le hub, pas sur le nœud de l'agent** (D23 dit « sur le nœud de l'agent »).
-   - Les outils de mémoire passent par MCP, donc par le hub, et le digest est construit au réveil, sur le hub.
-   - Garder la mémoire au même endroit que le registre évite toute synchronisation, et le miroir Obsidian sur le Mac (D25) n'a qu'une source à copier.
-   - Prix : un agent d'un nœud n'a plus accès à sa mémoire quand le hub est absent, ce qui le bloque de toute façon aujourd'hui (point suivant).
-2. **Pas d'autonomie des nœuds sans le hub** (D32 la prévoit, avec les escalades en file).
+1. **Pas d'autonomie des nœuds sans le hub** (D32 la prévoit, avec les escalades en file).
    - Aujourd'hui un nœud sans hub parke ses sessions.
    - L'autonomie demande un vrai superviseur local sur le nœud (registre partiel, file d'attente des rapports et escalades, réconciliation au retour). C'est le plus gros morceau restant, et il vaut mieux le concevoir avec les vrais serveurs sous la main.
-3. **Les déclencheurs tournent sur le hub** (D31 : « sur le nœud de ce qu'il observe »). Un watcher de fichier ne voit que les fichiers du hub ; il faudra le déporter sur le nœud.
+2. **Les déclencheurs tournent sur le hub** (D31 : « sur le nœud de ce qu'il observe »). Un watcher de fichier ne voit que les fichiers du hub ; il faudra le déporter sur le nœud.
 
 ## Reste à faire
 

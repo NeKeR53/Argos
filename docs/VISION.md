@@ -55,7 +55,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 
 ## 8. Mémoire
 
-- **D23 — Mémoire persistante pour l'Assistant et les Agents** (pas les Workers), en fichiers Markdown sur le nœud de l'agent : index, journal, notes de domaine, registre des enfants. Deux étages : notes libres écrites par l'agent + état structuré écrit par le daemon. *Écart provisoire (phase 4) : la mémoire d'un agent placé sur un autre nœud reste sur le hub ; à trancher, voir docs/PHASE-4.md.*
+- **D23 — Mémoire persistante pour l'Assistant et les Agents** (pas les Workers), en fichiers Markdown sur le nœud de l'agent : index, journal, notes de domaine, registre des enfants. Deux étages : notes libres écrites par l'agent + état structuré écrit par le daemon. La mémoire vit sur le nœud de l'agent, avec son git ; le hub y relaie chaque opération et en garde un miroir sans historique, mis à jour après chaque écriture et à chaque reconnexion. Nœud absent : lecture sur le miroir, écriture refusée (confirmé par l'utilisateur, phase 4).
 - **D24 — Discipline de contexte** : la session charge un digest + les notes pertinentes à la demande ; avant la saturation, l'agent résume dans sa mémoire puis purge.
 - **D25 — Git local par dossier mémoire** comme journal d'annulation (jamais utilisé pour la synchro). Sync par SSH via le mesh vers le hub, miroir sur le Mac ouvrable dans Obsidian **en consultation seule**.
 

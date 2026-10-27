@@ -11,7 +11,7 @@ use crate::engine::{
     EngineError, EngineEvent, EventStream, McpServer, Session, SessionControl, SessionSpec,
     prepare_codex_home,
 };
-use crate::memory::Memory;
+use crate::memory::{Memory, MemoryOp, MemoryOutput};
 use crate::node::{Nodes, RemoteSpec};
 use crate::policy::ModelPolicy;
 use crate::registry::{NewAgent, Registry, RegistryError};
@@ -64,6 +64,8 @@ pub enum SupervisorError {
     Stopping(AgentId),
     #[error("plafond atteint : {0}")]
     Cap(String),
+    #[error("mémoire : {0}")]
+    Memory(String),
 }
 
 pub type Result<T> = std::result::Result<T, SupervisorError>;
@@ -126,7 +128,8 @@ impl Supervisor {
         }
     }
 
-    /// Les mémoires de l'Assistant et des Agents.
+    /// Les mémoires de l'Assistant et des Agents du hub, et les miroirs de celles des
+    /// autres nœuds. Pour agir sur la mémoire d'un agent, passer par [`Self::memory_op`].
     pub fn memory(&self) -> &Memory {
         &self.inner.memory
     }
@@ -350,11 +353,11 @@ impl Supervisor {
         }
         self.check_parallel_cap(&record)?;
         let spawned = match &record.node {
-            None => match self.spec_for(&record) {
+            None => match self.spec_for(&record).await {
                 Ok(spec) => Session::spawn(spec).await.map_err(SupervisorError::from),
                 Err(error) => Err(error),
             },
-            Some(node) => match self.remote_spec_for(&record) {
+            Some(node) => match self.remote_spec_for(&record).await {
                 Ok(spec) => self
                     .nodes()
                     .spawn(node, spec)
@@ -477,7 +480,7 @@ impl Supervisor {
         self.publish_status(id);
     }
 
-    fn spec_for(&self, record: &AgentRecord) -> Result<SessionSpec> {
+    async fn spec_for(&self, record: &AgentRecord) -> Result<SessionSpec> {
         let settings = &self.inner.settings;
         std::fs::create_dir_all(&record.workdir)?;
         let mut spec = SessionSpec::new(record.engine, &record.workdir);
@@ -497,19 +500,20 @@ impl Supervisor {
             prepare_codex_home(&home, &settings.user_codex_home)?;
             spec.codex_home = Some(home);
         }
-        spec.instructions = Some(self.instructions(record)?);
+        spec.instructions = Some(self.instructions(record).await?);
         Ok(spec)
     }
 
     /// La demande de session d'un agent placé sur un autre nœud. Le nœud complète ce
-    /// qui lui est propre ; la mémoire reste sur le hub, servie par les outils MCP.
-    fn remote_spec_for(&self, record: &AgentRecord) -> Result<RemoteSpec> {
+    /// qui lui est propre.
+    async fn remote_spec_for(&self, record: &AgentRecord) -> Result<RemoteSpec> {
+        let instructions = self.instructions(record).await?;
         Ok(RemoteSpec {
             agent: record.id.clone(),
             engine: record.engine,
             cwd: record.workdir.clone(),
             model: record.model.clone(),
-            instructions: Some(self.instructions(record)?),
+            instructions: Some(instructions),
             resume: record.session_id.clone(),
             read_only: record.level != Level::Worker,
             mcp_token: self
@@ -522,16 +526,73 @@ impl Supervisor {
     }
 
     /// Le contrat du niveau d'abord, puis la mémoire pour ceux qui en ont une.
-    fn instructions(&self, record: &AgentRecord) -> Result<String> {
+    async fn instructions(&self, record: &AgentRecord) -> Result<String> {
         let mut instructions = contracts::contract(record, self.policy());
         if record.level.has_memory() {
-            let memory = &self.inner.memory;
-            memory.ensure(&record.id)?;
-            memory.write_state(&record.id, &self.render_state(record)?)?;
+            let state = self.render_state(record)?;
+            let memory = |op| self.memory_op(record, op);
+            memory(MemoryOp::Ensure)
+                .await
+                .map_err(SupervisorError::Memory)?;
+            memory(MemoryOp::WriteState { state })
+                .await
+                .map_err(SupervisorError::Memory)?;
+            let MemoryOutput::Text(digest) = memory(MemoryOp::Digest)
+                .await
+                .map_err(SupervisorError::Memory)?
+            else {
+                return Err(SupervisorError::Memory("digest illisible".into()));
+            };
             instructions.push('\n');
-            instructions.push_str(&memory.digest(&record.id)?);
+            instructions.push_str(&digest);
         }
         Ok(instructions)
+    }
+
+    /// Opération sur la mémoire d'un agent, là où elle vit : sur le hub, ou sur son nœud
+    /// (D23). Nœud injoignable : une lecture se rabat sur le miroir du hub, une écriture
+    /// est refusée.
+    pub async fn memory_op(
+        &self,
+        record: &AgentRecord,
+        op: MemoryOp,
+    ) -> std::result::Result<MemoryOutput, String> {
+        let Some(node) = &record.node else {
+            return self.inner.memory.apply(&record.id, op);
+        };
+        let writes = op.writes();
+        match self.nodes().memory(node, &record.id, op.clone()).await {
+            Ok(result) => result,
+            Err(_) if !writes => self.inner.memory.apply(&record.id, op),
+            Err(unreachable) => Err(format!("mémoire non modifiée : {unreachable}")),
+        }
+    }
+
+    /// Ajoute un fait au journal d'un agent, sans attendre (D23) ; une erreur n'empêche
+    /// pas l'action qu'il décrit.
+    pub fn memory_log(&self, id: &AgentId, fact: String) {
+        let Ok(record) = self.record(id) else {
+            return;
+        };
+        // Les Workers n'ont pas de mémoire (D18).
+        if !record.level.has_memory() {
+            return;
+        }
+        if record.node.is_none() {
+            let memory = &self.inner.memory;
+            let _ = memory.ensure(id).and_then(|()| memory.log(id, &fact));
+            return;
+        }
+        let supervisor = self.clone();
+        tokio::spawn(async move {
+            if supervisor
+                .memory_op(&record, MemoryOp::Ensure)
+                .await
+                .is_ok()
+            {
+                let _ = supervisor.memory_op(&record, MemoryOp::Log { fact }).await;
+            }
+        });
     }
 
     /// L'état structuré d'un agent, réécrit dans sa mémoire à chaque réveil (D23).
@@ -636,9 +697,9 @@ impl Supervisor {
     /// Parke l'agent et oublie sa session : le prochain réveil repart de sa mémoire.
     async fn renew_session(self, id: AgentId) {
         if self.park(&id).await.is_ok() && self.registry().clear_session(&id).is_ok() {
-            let _ = self.inner.memory.log(
+            self.memory_log(
                 &id,
-                "contexte compacté : la session suivante repart de la mémoire",
+                "contexte compacté : la session suivante repart de la mémoire".into(),
             );
             self.publish_status(&id);
         }
@@ -719,7 +780,7 @@ impl Supervisor {
             next.engine,
             next.model
         );
-        let _ = self.inner.memory.log(&id, &change);
+        self.memory_log(&id, change.clone());
         self.notice(&id, change);
         self.publish_status(&id);
 

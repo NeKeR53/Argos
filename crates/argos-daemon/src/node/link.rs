@@ -8,7 +8,9 @@
 use super::transport::{self, NodeConfig};
 use super::{FromNode, NODE_PROTOCOL, RemoteSpec, ToNode};
 use crate::engine::{Command, EngineError, EngineEvent, Session};
+use crate::memory::{MemoryOp, MemoryOutput};
 use crate::supervisor::Supervisor;
+use argos_core::AgentId;
 use argos_core::protocol::NodeStatus;
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{BTreeMap, HashMap};
@@ -21,6 +23,8 @@ use tokio_tungstenite::tungstenite::Message;
 
 /// Délai laissé au nœud pour lancer une session.
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(60);
+/// Délai laissé au nœud pour une opération sur une mémoire.
+const MEMORY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Attente entre deux tentatives de connexion, doublée à chaque échec.
 const RETRY_FIRST: Duration = Duration::from_millis(500);
 const RETRY_MAX: Duration = Duration::from_secs(30);
@@ -53,6 +57,8 @@ struct LinkState {
     sessions: HashMap<u64, mpsc::UnboundedSender<EngineEvent>>,
     /// Lancements en attente de la réponse du nœud.
     spawning: HashMap<u64, oneshot::Sender<Result<String, String>>>,
+    /// Opérations sur la mémoire en attente de la réponse du nœud.
+    memory: HashMap<u64, oneshot::Sender<Result<MemoryOutput, String>>>,
 }
 
 impl Nodes {
@@ -98,6 +104,42 @@ impl Nodes {
         for link in self.links.values() {
             tokio::spawn(Arc::clone(link).run(supervisor.clone(), ssh.clone()));
         }
+    }
+
+    /// Opération sur la mémoire d'un agent de ce nœud. L'erreur extérieure dit que le
+    /// nœud n'a pas répondu ; l'intérieure vient de la mémoire elle-même.
+    pub async fn memory(
+        &self,
+        node: &str,
+        agent: &AgentId,
+        op: MemoryOp,
+    ) -> Result<Result<MemoryOutput, String>, String> {
+        let link = self
+            .links
+            .get(node)
+            .ok_or_else(|| format!("nœud inconnu : {node}"))?;
+        let call = link.sessions_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let (reply_tx, reply) = oneshot::channel();
+        let outbox = {
+            let mut state = locked(&link.state);
+            let Some(outbox) = state.outbox.clone() else {
+                return Err(unreachable(node, state.error.as_deref()).to_string());
+            };
+            state.memory.insert(call, reply_tx);
+            outbox
+        };
+        let order = ToNode::Memory {
+            call,
+            agent: agent.clone(),
+            op,
+        };
+        if outbox.send(order).is_ok()
+            && let Ok(Ok(result)) = tokio::time::timeout(MEMORY_TIMEOUT, reply).await
+        {
+            return Ok(result);
+        }
+        locked(&link.state).memory.remove(&call);
+        Err(unreachable(node, None).to_string())
     }
 
     /// Lance une session sur un nœud. Erreur si le nœud est inconnu, injoignable ou
@@ -288,6 +330,19 @@ impl Link {
     ) {
         match message {
             FromNode::Hello { .. } => {}
+            FromNode::MemoryReply { call, result } => {
+                if let Some(waiting) = locked(&self.state).memory.remove(&call) {
+                    let _ = waiting.send(result);
+                }
+            }
+            FromNode::MemorySnapshot { agent, files } => {
+                if let Err(error) = supervisor.memory().mirror(&agent, &files) {
+                    eprintln!(
+                        "nœud {} : miroir de la mémoire de {agent} : {error}",
+                        self.name
+                    );
+                }
+            }
             FromNode::Spawned {
                 session,
                 session_id,
@@ -333,6 +388,8 @@ impl Link {
         let (sessions, spawning) = {
             let mut state = locked(&self.state);
             state.outbox = None;
+            // Réponses perdues : les appelants voient le nœud injoignable.
+            state.memory.clear();
             (
                 std::mem::take(&mut state.sessions),
                 std::mem::take(&mut state.spawning),

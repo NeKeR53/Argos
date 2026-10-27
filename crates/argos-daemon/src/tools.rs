@@ -4,6 +4,7 @@
 //! Le board est tenu ici de façon déterministe : un Worker part sur une tâche du board
 //! (D17) et son compte rendu met la tâche à jour.
 
+use crate::memory::{MemoryOp, MemoryOutput};
 use crate::policy::ModelPolicy;
 use crate::registry::{NewAgent, NewTrigger, Position, TaskUpdate};
 use crate::supervisor::{Supervisor, SupervisorError};
@@ -645,19 +646,27 @@ pub async fn call(
             deliver(supervisor, caller, "Question", text(args, "question")?).await
         }
         (Level::Assistant | Level::Agent, "memory_read") => {
-            let memory = supervisor.memory();
-            memory.ensure(&caller.id).map_err(said)?;
-            match optional(args, "file") {
-                Some(file) => memory.read(&caller.id, file),
-                None => Ok(memory.list(&caller.id).map_err(said)?.join("\n")),
+            // Nœud injoignable : la lecture se fera sur le miroir, tel qu'il est.
+            let _ = supervisor.memory_op(caller, MemoryOp::Ensure).await;
+            let op = match optional(args, "file") {
+                Some(file) => MemoryOp::Read { file: file.into() },
+                None => MemoryOp::List,
+            };
+            match supervisor.memory_op(caller, op).await? {
+                MemoryOutput::Text(text) => Ok(text),
+                MemoryOutput::Files(files) => Ok(files.join("\n")),
+                _ => Err("réponse inattendue de la mémoire".into()),
             }
         }
         (Level::Assistant | Level::Agent, "memory_write") => {
-            let memory = supervisor.memory();
-            memory.ensure(&caller.id).map_err(said)?;
+            supervisor.memory_op(caller, MemoryOp::Ensure).await?;
             let file = text(args, "file")?;
-            let append = optional(args, "mode") == Some("append");
-            memory.write(&caller.id, file, text(args, "content")?, append)?;
+            let op = MemoryOp::Write {
+                file: file.into(),
+                content: text(args, "content")?.into(),
+                append: optional(args, "mode") == Some("append"),
+            };
+            supervisor.memory_op(caller, op).await?;
             Ok(format!("{file} mis à jour."))
         }
         (Level::Assistant | Level::Agent, "trigger_create") => {
@@ -740,10 +749,12 @@ pub async fn call(
             Ok(format!("Surface {id} supprimée."))
         }
         (Level::Assistant | Level::Agent, "memory_search") => {
-            let found = supervisor
-                .memory()
-                .search(&caller.id, text(args, "query")?)
-                .map_err(said)?;
+            let op = MemoryOp::Search {
+                query: text(args, "query")?.into(),
+            };
+            let MemoryOutput::Found(found) = supervisor.memory_op(caller, op).await? else {
+                return Err("réponse inattendue de la mémoire".into());
+            };
             if found.is_empty() {
                 return Ok("Rien trouvé.".into());
             }
@@ -765,8 +776,7 @@ fn journal(supervisor: &Supervisor, agent: &AgentId, fact: &str) {
     if fact.chars().count() > 300 {
         fact = fact.chars().take(300).collect::<String>() + "…";
     }
-    let memory = supervisor.memory();
-    let _ = memory.ensure(agent).and_then(|()| memory.log(agent, &fact));
+    supervisor.memory_log(agent, fact);
 }
 
 fn create_agent(

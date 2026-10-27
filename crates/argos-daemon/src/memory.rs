@@ -24,11 +24,60 @@ pub struct Memory {
 }
 
 /// Une ligne trouvée par [`Memory::search`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Found {
     pub file: String,
     pub line: usize,
     pub text: String,
+}
+
+/// Une opération sur la mémoire d'un agent. Sérialisable : pour un agent placé sur un
+/// autre nœud, le hub l'envoie à ce nœud, où vit sa mémoire (D23).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum MemoryOp {
+    Ensure,
+    WriteState {
+        state: String,
+    },
+    Log {
+        fact: String,
+    },
+    Digest,
+    List,
+    Read {
+        file: String,
+    },
+    Write {
+        file: String,
+        content: String,
+        append: bool,
+    },
+    Search {
+        query: String,
+    },
+}
+
+impl MemoryOp {
+    /// L'opération modifie la mémoire : impossible sur le seul miroir.
+    pub fn writes(&self) -> bool {
+        matches!(
+            self,
+            MemoryOp::Ensure
+                | MemoryOp::WriteState { .. }
+                | MemoryOp::Log { .. }
+                | MemoryOp::Write { .. }
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum MemoryOutput {
+    Done,
+    Text(String),
+    Files(Vec<String>),
+    Found(Vec<Found>),
 }
 
 impl Memory {
@@ -158,6 +207,86 @@ impl Memory {
             fs::write(&path, format!("{}\n", content.trim_end())).map_err(said)?;
         }
         commit(&dir, &format!("{file} écrit par l'agent"));
+        Ok(())
+    }
+
+    /// Applique une opération ; les erreurs sont des phrases pour l'agent.
+    pub fn apply(&self, agent: &AgentId, op: MemoryOp) -> Result<MemoryOutput, String> {
+        let said = |error: io::Error| error.to_string();
+        Ok(match op {
+            MemoryOp::Ensure => {
+                self.ensure(agent).map_err(said)?;
+                MemoryOutput::Done
+            }
+            MemoryOp::WriteState { state } => {
+                self.write_state(agent, &state).map_err(said)?;
+                MemoryOutput::Done
+            }
+            MemoryOp::Log { fact } => {
+                self.log(agent, &fact).map_err(said)?;
+                MemoryOutput::Done
+            }
+            MemoryOp::Digest => MemoryOutput::Text(self.digest(agent).map_err(said)?),
+            MemoryOp::List => MemoryOutput::Files(self.list(agent).map_err(said)?),
+            MemoryOp::Read { file } => MemoryOutput::Text(self.read(agent, &file)?),
+            MemoryOp::Write {
+                file,
+                content,
+                append,
+            } => {
+                self.write(agent, &file, &content, append)?;
+                MemoryOutput::Done
+            }
+            MemoryOp::Search { query } => {
+                MemoryOutput::Found(self.search(agent, &query).map_err(said)?)
+            }
+        })
+    }
+
+    /// Agents dont ce dossier tient une mémoire.
+    pub fn agents(&self) -> Vec<AgentId> {
+        let Ok(entries) = fs::read_dir(&self.root) else {
+            return vec![];
+        };
+        let mut agents: Vec<AgentId> = entries
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| self.root.join(name).join("index.md").exists())
+            .map(AgentId::new)
+            .collect();
+        agents.sort();
+        agents
+    }
+
+    /// Tous les fichiers de la mémoire d'un agent et leur contenu, pour son miroir.
+    pub fn snapshot(&self, agent: &AgentId) -> io::Result<Vec<(String, String)>> {
+        let dir = self.dir(agent);
+        self.list(agent)?
+            .into_iter()
+            .map(|file| {
+                let content = fs::read_to_string(dir.join(&file))?;
+                Ok((file, content))
+            })
+            .collect()
+    }
+
+    /// Remplace le miroir de la mémoire d'un agent qui vit sur un autre nœud (D25) :
+    /// copie conforme, sans historique git, les fichiers disparus sont retirés.
+    pub fn mirror(&self, agent: &AgentId, files: &[(String, String)]) -> io::Result<()> {
+        let dir = self.dir(agent);
+        for (file, content) in files {
+            let path = resolve(&dir, file, true).map_err(io::Error::other)?;
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            if fs::read_to_string(&path).ok().as_deref() != Some(content) {
+                fs::write(&path, content)?;
+            }
+        }
+        for stale in self.list(agent)? {
+            if !files.iter().any(|(file, _)| *file == stale) {
+                fs::remove_file(dir.join(stale))?;
+            }
+        }
         Ok(())
     }
 
@@ -385,6 +514,54 @@ mod tests {
             .unwrap();
         let log = String::from_utf8(log.stdout).unwrap();
         assert!(log.lines().count() >= 2, "{log}");
+    }
+
+    #[test]
+    fn a_mirror_is_an_exact_copy_without_history() {
+        let (_root, memory, agent) = memory();
+        memory
+            .apply(
+                &agent,
+                MemoryOp::Write {
+                    file: "notes/a.md".into(),
+                    content: "A".into(),
+                    append: false,
+                },
+            )
+            .unwrap();
+        let snapshot = memory.snapshot(&agent).unwrap();
+        let hub = tempfile::tempdir().unwrap();
+        let mirror = Memory::new(hub.path());
+        mirror.mirror(&agent, &snapshot).unwrap();
+        assert_eq!(mirror.read(&agent, "notes/a.md").unwrap(), "A\n");
+        assert!(!mirror.dir(&agent).join(".git").exists());
+        assert_eq!(mirror.agents(), vec![agent.clone()]);
+
+        // Une note supprimée sur le nœud disparaît du miroir.
+        let without: Vec<_> = snapshot
+            .into_iter()
+            .filter(|(file, _)| file != "notes/a.md")
+            .collect();
+        mirror.mirror(&agent, &without).unwrap();
+        assert!(mirror.read(&agent, "notes/a.md").is_err());
+        // Un chemin hors de la mémoire est refusé.
+        assert!(
+            mirror
+                .mirror(&agent, &[("../x.md".into(), "x".into())])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn writes_are_told_apart_from_reads() {
+        assert!(MemoryOp::Log { fact: "x".into() }.writes());
+        assert!(!MemoryOp::Digest.writes());
+        assert!(
+            !MemoryOp::Read {
+                file: "index.md".into()
+            }
+            .writes()
+        );
     }
 
     #[test]

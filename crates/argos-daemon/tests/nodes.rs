@@ -96,7 +96,7 @@ impl Drop for Node {
 
 /// Un hub sur faux CLI, avec son serveur MCP, connecté aux nœuds donnés.
 struct Hub {
-    _home: TempDir,
+    home: TempDir,
     supervisor: Supervisor,
     events: broadcast::Receiver<DaemonEvent>,
     assistant: AgentRecord,
@@ -127,7 +127,7 @@ async fn hub(nodes: BTreeMap<String, NodeConfig>) -> Hub {
     tokio::spawn(argos_daemon::mcp::serve(mcp, supervisor.clone()));
     nodes.connect(supervisor.clone(), fixture("fake-ssh"));
     Hub {
-        _home: home,
+        home,
         events: supervisor.subscribe(),
         supervisor,
         assistant,
@@ -445,4 +445,76 @@ fn wait_listening(port: u16) {
         std::thread::sleep(Duration::from_millis(25));
     }
     panic!("le nœud n'écoute pas sur {port}");
+}
+
+#[tokio::test]
+async fn an_agents_memory_lives_on_its_node_and_is_mirrored_on_the_hub() {
+    let mut node = Node::start("pi");
+    let mut hub = hub(one("pi", &node)).await;
+    hub.connected("pi").await;
+    let mail = hub.agent_on("pi", "mail");
+    let on_node = node.home.path().join("memory").join(mail.id.as_str());
+    let mirror = hub.home.path().join("memory").join(mail.id.as_str());
+
+    // Le réveil écrit l'état structuré dans la mémoire du nœud.
+    hub.supervisor.send(&mail.id, "bonjour").await.unwrap();
+    until(&mut hub.events, |event| {
+        common::world::is_message(event, &mail.id, "reply 1")
+    })
+    .await;
+    let state = std::fs::read_to_string(on_node.join("state.md")).unwrap();
+    assert!(state.contains("Nœud : pi"), "{state}");
+    assert!(
+        on_node.join(".git").exists(),
+        "l'historique vit sur le nœud"
+    );
+
+    // L'agent écrit par ses outils : sur le nœud, puis copié sur le hub.
+    let call = |name: &'static str, args: Value| {
+        let supervisor = hub.supervisor.clone();
+        let mail = mail.clone();
+        async move { argos_daemon::tools::call(&supervisor, &mail, name, &args).await }
+    };
+    call(
+        "memory_write",
+        json!({"file": "notes/expéditeurs.md", "content": "La banque écrit le lundi."}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(on_node.join("notes/expéditeurs.md")).unwrap(),
+        "La banque écrit le lundi.\n"
+    );
+    poll(|| std::fs::read_to_string(mirror.join("notes/expéditeurs.md")).ok()).await;
+    assert!(mirror.join("state.md").exists());
+    assert!(
+        !mirror.join(".git").exists(),
+        "le miroir n'a pas d'historique"
+    );
+    let found = call("memory_search", json!({"query": "banque"}))
+        .await
+        .unwrap();
+    assert!(found.contains("notes/expéditeurs.md:1"), "{found}");
+
+    // Nœud absent : la lecture vient du miroir, l'écriture est refusée.
+    node.kill();
+    poll(|| (!hub.supervisor.nodes().status()[0].connected).then_some(())).await;
+    let read = call("memory_read", json!({"file": "notes/expéditeurs.md"}))
+        .await
+        .unwrap();
+    assert_eq!(read, "La banque écrit le lundi.\n");
+    let refused = call("memory_write", json!({"file": "index.md", "content": "x"}))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("injoignable"), "{refused}");
+
+    // Ce qui a changé sur le nœud pendant l'absence revient au miroir à la reconnexion.
+    std::fs::write(on_node.join("notes/expéditeurs.md"), "Changé sur place.\n").unwrap();
+    node.restart();
+    hub.connected("pi").await;
+    poll(|| {
+        let mirrored = std::fs::read_to_string(mirror.join("notes/expéditeurs.md")).ok()?;
+        (mirrored == "Changé sur place.\n").then_some(())
+    })
+    .await;
 }
