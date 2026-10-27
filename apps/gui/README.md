@@ -38,6 +38,18 @@ Le chemin du modèle n'est écrit nulle part dans le code : sans section `[voice
 un modèle introuvable, l'app tourne sans voix et dit pourquoi (pastille de l'orbe, avis et
 badge de la console).
 
+## Orbe
+
+- Une pastille discrète (120×36 pt au repos), qui grandit seulement quand il se passe
+  quelque chose : réflexion, écoute (ondes qui suivent la voix), parole (une bouche qui
+  articule le texte que `say` prononce), confirmation du panic stop.
+- Clic : console. Glisser : déplacer. Double-clic, ou clic droit puis « Remettre en
+  place » : retour à la place par défaut (en bas au milieu de l'écran principal).
+- La position est gardée dans `$ARGOS_HOME/gui-state.json`, et ramenée dans un écran si
+  l'écran a changé.
+- Démo sans daemon ni voix, dans un navigateur : `orb.html?demo=all` (ou `demo=listening`,
+  `demo=speaking&t=1.2`…), servie par `npm run dev`.
+
 ## Voix
 
 - Réservée à l'Assistant (D3) : la transcription d'un appui lui est envoyée comme un

@@ -20,6 +20,8 @@ export type VoiceEvent =
   | { type: "partial"; text: string }
   | { type: "final"; text: string }
   | { type: "speech_started" }
+  /** Phrase lancée par `say`, texte exact : la bouche de l'orbe la suit. */
+  | { type: "utterance"; text: string }
   | { type: "speech_finished"; interrupted: boolean }
   | { type: "error"; message: string };
 

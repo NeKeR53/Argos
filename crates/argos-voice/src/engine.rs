@@ -35,6 +35,11 @@ pub enum VoiceEvent {
         text: String,
     },
     SpeechStarted,
+    /// Phrase confiée à la synthèse, émise au lancement de chaque `say` : son texte
+    /// exact, pour animer la parole (le TTS système ne donne pas de niveau sonore).
+    Utterance {
+        text: String,
+    },
     /// Fin du discours : dit jusqu'au bout, ou coupé par un barge-in.
     SpeechFinished {
         interrupted: bool,
@@ -372,6 +377,9 @@ mod tests {
             drain(&mut f.events),
             vec![
                 VoiceEvent::SpeechStarted,
+                VoiceEvent::Utterance {
+                    text: "Voici une longue réponse.".into()
+                },
                 VoiceEvent::SpeechFinished { interrupted: true }
             ]
         );
@@ -404,8 +412,14 @@ mod tests {
             drain(&mut f.events),
             vec![
                 VoiceEvent::SpeechStarted,
+                VoiceEvent::Utterance {
+                    text: "Bonjour Alexandre".into()
+                },
                 VoiceEvent::SpeechFinished { interrupted: false },
                 VoiceEvent::SpeechStarted,
+                VoiceEvent::Utterance {
+                    text: "Encore une phrase.".into()
+                },
                 VoiceEvent::SpeechFinished { interrupted: true },
             ]
         );
@@ -474,6 +488,12 @@ mod tests {
         assert_eq!(
             json(VoiceEvent::SpeechFinished { interrupted: true }),
             r#"{"type":"speech_finished","interrupted":true}"#
+        );
+        assert_eq!(
+            json(VoiceEvent::Utterance {
+                text: "Bonjour.".into()
+            }),
+            r#"{"type":"utterance","text":"Bonjour."}"#
         );
     }
 }
