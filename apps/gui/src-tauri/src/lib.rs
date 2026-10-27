@@ -1,4 +1,5 @@
 mod daemon;
+mod orb;
 mod shell;
 mod voice;
 
@@ -162,6 +163,18 @@ mod commands {
         voice::stop_speech(&app);
     }
 
+    /// La pastille de l'orbe change de taille (points) : la fenêtre suit, centre fixe.
+    #[tauri::command]
+    pub fn orb_resize(app: AppHandle, width: f64, height: f64) {
+        crate::orb::resize(&app, width, height);
+    }
+
+    /// Double-clic ou menu de l'orbe : retour à sa place par défaut.
+    #[tauri::command]
+    pub fn orb_reset_position(app: AppHandle) {
+        crate::orb::reset(&app);
+    }
+
     /// Mode d'essai sans micro (debug seulement) : une transcription comme si
     /// l'utilisateur l'avait dite, envoyée à l'Assistant par le front.
     #[cfg(debug_assertions)]
@@ -188,6 +201,8 @@ macro_rules! handler {
             commands::voice_speak_delta,
             commands::voice_finish_speech,
             commands::voice_stop_speech,
+            commands::orb_resize,
+            commands::orb_reset_position,
             $($debug_only),*
         ]
     };
@@ -238,6 +253,7 @@ pub fn run() {
         .plugin(navigation_guard)
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(voice::Voice::new(gui.speak_typed_replies))
+        .manage(orb::OrbPlacement::default())
         .manage(Shortcuts {
             config: std::sync::Mutex::new(gui.clone()),
             errors: std::sync::Mutex::default(),
@@ -247,7 +263,7 @@ pub fn run() {
             // L'orbe tient lieu d'icône : pas d'icône dans le Dock (D38).
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-            place_orb(app.handle());
+            orb::restore(app.handle());
             let errors = shell::register_shortcuts(app.handle(), &gui);
             for error in &errors {
                 eprintln!("{error}");
@@ -263,14 +279,17 @@ pub fn run() {
             exit_on_signals(app.handle());
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|window, event| match event {
             // Fermer la console la cache : l'orbe reste, et la rouvre.
-            if let WindowEvent::CloseRequested { api, .. } = event
-                && window.label() == shell::MAIN_WINDOW
-            {
+            WindowEvent::CloseRequested { api, .. } if window.label() == shell::MAIN_WINDOW => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            // L'orbe déplacée : sa position est gardée pour le prochain lancement.
+            WindowEvent::Moved(_) if window.label() == shell::ORB_WINDOW => {
+                orb::moved(window.app_handle());
+            }
+            _ => {}
         })
         .build(context)
         .expect("échec du lancement de la GUI Argos");
@@ -325,18 +344,4 @@ fn simulate_from_env(app: &AppHandle) {
         eprintln!("voix : essai simulé « {text} »");
         voice::simulate(&app, text);
     });
-}
-
-/// L'orbe se pose en haut à droite de l'écran principal.
-fn place_orb(app: &AppHandle) {
-    let Some(orb) = app.get_webview_window(shell::ORB_WINDOW) else {
-        return;
-    };
-    let (Ok(Some(monitor)), Ok(size)) = (orb.primary_monitor(), orb.outer_size()) else {
-        return;
-    };
-    let margin = (32.0 * monitor.scale_factor()) as i32;
-    let x = monitor.position().x + monitor.size().width as i32 - size.width as i32 - margin;
-    let y = monitor.position().y + margin * 2;
-    let _ = orb.set_position(tauri::PhysicalPosition::new(x, y));
 }

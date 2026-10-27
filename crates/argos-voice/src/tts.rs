@@ -121,6 +121,10 @@ async fn run(
                     speaking = true;
                     emit(VoiceEvent::SpeechStarted);
                 }
+                // Le texte exact de la phrase lancée : la GUI en tire l'animation de la bouche.
+                emit(VoiceEvent::Utterance {
+                    text: sentence.clone(),
+                });
                 current = Some(speaker.speak(sentence));
             } else if speaking && finished {
                 speaking = false;
@@ -242,6 +246,36 @@ pub(crate) mod tests {
         Duration::from_millis(n)
     }
 
+    fn utterance(text: &str) -> VoiceEvent {
+        VoiceEvent::Utterance { text: text.into() }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn each_sentence_announces_its_exact_text_when_it_starts() {
+        let speaker = Arc::new(FakeSpeaker::new(ms(10)));
+        let (events, mut rx) = broadcast::channel(64);
+        let queue = SpeechQueue::spawn(speaker.clone(), events);
+        queue.delta("Première phrase. Seconde ");
+        tokio::time::sleep(ms(1)).await;
+        // La seconde n'est pas encore lancée : son texte n'est pas encore annoncé.
+        assert_eq!(
+            drain(&mut rx),
+            vec![VoiceEvent::SpeechStarted, utterance("Première phrase.")]
+        );
+        queue.delta("phrase.");
+        queue.finish();
+        tokio::time::sleep(ms(1_000)).await;
+        assert_eq!(
+            drain(&mut rx),
+            vec![
+                utterance("Seconde phrase."),
+                VoiceEvent::SpeechFinished { interrupted: false }
+            ]
+        );
+        // L'annonce correspond à ce que le parleur a reçu, mot pour mot.
+        assert_eq!(speaker.log()[2], Spoken::Started("Seconde phrase.".into()));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn sentences_are_spoken_as_soon_as_complete_then_the_rest_at_the_end() {
         let speaker = Arc::new(FakeSpeaker::new(ms(10)));
@@ -256,7 +290,10 @@ pub(crate) mod tests {
             speaker.log(),
             vec![Spoken::Started("Bonjour à toi.".into())]
         );
-        assert_eq!(drain(&mut rx), vec![VoiceEvent::SpeechStarted]);
+        assert_eq!(
+            drain(&mut rx),
+            vec![VoiceEvent::SpeechStarted, utterance("Bonjour à toi.")]
+        );
 
         queue.delta(" regarde tes mails");
         queue.finish();
@@ -272,7 +309,10 @@ pub(crate) mod tests {
         );
         assert_eq!(
             drain(&mut rx),
-            vec![VoiceEvent::SpeechFinished { interrupted: false }]
+            vec![
+                utterance("Je regarde tes mails"),
+                VoiceEvent::SpeechFinished { interrupted: false }
+            ]
         );
     }
 
@@ -284,13 +324,19 @@ pub(crate) mod tests {
         queue.delta("Une phrase. ");
         tokio::time::sleep(ms(500)).await;
         // Phrase dite, mais le flux continue : le discours n'est pas fini.
-        assert_eq!(drain(&mut rx), vec![VoiceEvent::SpeechStarted]);
+        assert_eq!(
+            drain(&mut rx),
+            vec![VoiceEvent::SpeechStarted, utterance("Une phrase.")]
+        );
         queue.delta("Une autre.");
         queue.finish();
         tokio::time::sleep(ms(500)).await;
         assert_eq!(
             drain(&mut rx),
-            vec![VoiceEvent::SpeechFinished { interrupted: false }]
+            vec![
+                utterance("Une autre."),
+                VoiceEvent::SpeechFinished { interrupted: false }
+            ]
         );
         assert_eq!(speaker.log().len(), 4);
     }
@@ -315,6 +361,7 @@ pub(crate) mod tests {
             drain(&mut rx),
             vec![
                 VoiceEvent::SpeechStarted,
+                utterance("Première phrase assez longue."),
                 VoiceEvent::SpeechFinished { interrupted: true }
             ]
         );
@@ -339,6 +386,7 @@ pub(crate) mod tests {
             drain(&mut rx),
             vec![
                 VoiceEvent::SpeechStarted,
+                utterance("Nouveau départ."),
                 VoiceEvent::SpeechFinished { interrupted: false }
             ]
         );

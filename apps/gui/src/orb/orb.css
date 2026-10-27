@@ -1,5 +1,5 @@
-/* Orbe (D38) : une sphère sobre sur fond transparent. `--level` (0 à 1) vient de la voix
-   et module l'écoute et la parole. */
+/* Orbe (D38) : une pastille sombre et translucide, comme une île flottante. Au repos elle
+   tient en 120×36 ; elle grandit en douceur quand l'Assistant réfléchit, écoute ou parle. */
 
 html,
 body {
@@ -17,173 +17,211 @@ body {
 }
 
 .orb-root {
-  --hue-a: #6f84ff;
-  --hue-b: #3d54c9;
-  --ring: rgb(111 132 255 / 0.45);
-  position: relative;
   display: grid;
   place-items: center;
   height: 100%;
+  cursor: default;
 }
 
-.orb-root[data-mode="listening"] {
-  --hue-a: #5fd4b0;
-  --hue-b: #1f8f6e;
-  --ring: rgb(95 212 176 / 0.55);
-}
+/* --- Pastille ------------------------------------------------------------------- */
 
-.orb-root[data-mode="speaking"] {
-  --hue-a: #ffb46b;
-  --hue-b: #d9772b;
-  --ring: rgb(255 180 107 / 0.5);
-}
-
-.orb-root[data-mode="offline"] {
-  --hue-a: #a3a3aa;
-  --hue-b: #66666d;
-  --ring: rgb(163 163 170 / 0.3);
-}
-
-.orb {
-  position: relative;
-  width: 84px;
-  height: 84px;
-  cursor: pointer;
-}
-
-.orb-core,
-.orb-halo {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-}
-
-.orb-core {
-  background: radial-gradient(circle at 35% 30%, #fff 0%, var(--hue-a) 30%, var(--hue-b) 100%);
-  box-shadow:
-    inset 0 -6px 14px rgb(0 0 0 / 0.25),
-    0 4px 14px rgb(0 0 0 / 0.25);
-  transition:
-    transform 90ms linear,
-    background 300ms ease;
-}
-
-.orb-halo {
-  inset: -8px;
-  border: 2px solid var(--ring);
-  opacity: 0.6;
-  transition:
-    transform 90ms linear,
-    opacity 200ms ease;
-}
-
-/* Repos : respiration lente. */
-.orb-root[data-mode="idle"] .orb-core {
-  animation: breathe 4.5s ease-in-out infinite;
-}
-
-/* Réflexion : un arc qui tourne autour du cœur. */
-.orb-root[data-mode="thinking"] .orb-halo {
-  border-color: transparent;
-  border-top-color: var(--hue-a);
-  border-right-color: var(--ring);
-  opacity: 1;
-  animation: spin 1.4s linear infinite;
-}
-
-/* Écoute : le halo suit le niveau de la voix de l'utilisateur. */
-.orb-root[data-mode="listening"] .orb-halo {
-  opacity: calc(0.45 + var(--level) * 0.55);
-  transform: scale(calc(1 + var(--level) * 0.22));
-}
-
-/* Parole : le cœur suit le niveau de la voix de l'Assistant ; `say` n'en donnant pas, le
-   halo bat doucement pour montrer qu'elle parle. */
-.orb-root[data-mode="speaking"] .orb-core {
-  transform: scale(calc(0.94 + var(--level) * 0.12));
-}
-
-.orb-root[data-mode="speaking"] .orb-halo {
-  animation: talk 0.9s ease-in-out infinite;
-}
-
-/* Voix indisponible : un trait discret barre le halo (la raison est dans le titre). */
-.orb-root[data-mute] .orb::after {
-  content: "";
-  position: absolute;
-  right: -2px;
-  bottom: 4px;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background:
-    linear-gradient(45deg, transparent 44%, #fff 44%, #fff 56%, transparent 56%),
-    rgb(110 110 118 / 0.95);
-}
-
-.orb-caption {
-  position: absolute;
-  bottom: 0;
-  left: 4px;
-  right: 4px;
-  padding: 2px 6px;
-  border-radius: 8px;
-  background: rgb(28 28 32 / 0.85);
-  color: #fff;
-  font-size: 9.5px;
-  line-height: 1.25;
-  text-align: center;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.orb-root[data-mode="offline"] .orb-core {
-  opacity: 0.7;
-}
-
-/* Panic stop armé : halo rouge pulsé jusqu'au second appui. */
-.orb-root[data-armed] .orb-halo,
-.orb-root[data-stopped] .orb-halo {
-  border-color: #e5483e;
-  opacity: 1;
-  animation: alarm 0.7s ease-in-out infinite;
-}
-
-.orb-hint {
-  position: absolute;
-  bottom: 2px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 2px 7px;
+.pill {
+  --status: #57c274;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
   border-radius: 999px;
-  background: rgb(200 50 42 / 0.92);
-  color: #fff;
-  font-size: 9.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  pointer-events: none;
+  border: 1px solid rgb(255 255 255 / 0.1);
+  background: rgb(20 20 24 / 0.78);
+  box-shadow:
+    0 6px 18px rgb(0 0 0 / 0.28),
+    inset 0 1px 0 rgb(255 255 255 / 0.06);
+  color: rgb(255 255 255 / 0.9);
+  font-size: 11.5px;
+  overflow: hidden;
+  transition:
+    width 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    height 240ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    background-color 240ms ease,
+    transform 80ms linear;
 }
+
+.pill[data-mode="offline"] {
+  --status: #8a8a92;
+  background: rgb(20 20 24 / 0.62);
+}
+
+.pill[data-mode="thinking"] {
+  --status: #8396ff;
+}
+
+.pill[data-mode="listening"] {
+  --status: #5fd4b0;
+}
+
+.pill[data-mode="speaking"] {
+  --status: #ffb46b;
+}
+
+.pill[data-escalation] {
+  --status: #e7a33e;
+}
+
+.pill[data-armed],
+.pill[data-stopped] {
+  background: rgb(176 36 30 / 0.92);
+  border-color: rgb(255 120 110 / 0.5);
+}
+
+/* Pastille d'état : couleur de l'état, discrète. */
+.pill-status {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status);
+  box-shadow: 0 0 6px var(--status);
+}
+
+.pill[data-escalation] .pill-status {
+  animation: beacon 1.6s ease-in-out infinite;
+}
+
+.pill-badge {
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #e7a33e;
+  color: #1a1206;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Repos : un petit motif d'ondes au calme. */
+.pill-glyph {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.pill-glyph i {
+  display: block;
+  width: 3px;
+  border-radius: 2px;
+  background: rgb(255 255 255 / 0.45);
+}
+
+.pill-glyph i:nth-child(1),
+.pill-glyph i:nth-child(5) {
+  height: 5px;
+}
+
+.pill-glyph i:nth-child(2),
+.pill-glyph i:nth-child(4) {
+  height: 9px;
+}
+
+.pill-glyph i:nth-child(3) {
+  height: 12px;
+}
+
+.pill[data-mode="offline"] .pill-glyph i {
+  background: rgb(255 255 255 / 0.22);
+}
+
+/* Réflexion : trois points qui passent en vague. */
+.pill-thinking {
+  display: flex;
+  gap: 5px;
+}
+
+.pill-thinking i {
+  display: block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #a9b6ff;
+  animation: think 1.2s ease-in-out infinite;
+}
+
+.pill-thinking i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.pill-thinking i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+/* Écoute : les ondes, puis la transcription en cours. */
+.orb-waves {
+  display: block;
+  flex-shrink: 0;
+}
+
+.pill-caption {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: rgb(255 255 255 / 0.85);
+}
+
+/* Parole : un visage minimal. */
+.orb-face {
+  display: block;
+}
+
+.orb-eye {
+  fill: #f2f2f5;
+}
+
+.orb-mouth {
+  fill: #4a1c22;
+  stroke: #ffb46b;
+  stroke-width: 2.4;
+  stroke-linejoin: round;
+}
+
+.pill-alert {
+  white-space: nowrap;
+  font-weight: 600;
+  color: #fff;
+}
+
+.pill-mute {
+  flex-shrink: 0;
+  fill: rgb(255 255 255 / 0.5);
+  stroke: rgb(255 255 255 / 0.5);
+  stroke-width: 1.3;
+  stroke-linecap: round;
+}
+
+.pill-mute .pill-mute-bar {
+  stroke: #ff8a80;
+  stroke-width: 1.6;
+}
+
+/* --- Menu (clic droit) ---------------------------------------------------------- */
 
 .orb-menu {
-  position: absolute;
-  top: 6px;
-  left: 50%;
-  transform: translateX(-50%);
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 2px;
-  padding: 4px;
-  border-radius: 8px;
-  background: rgb(30 30 34 / 0.94);
+  height: 36px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgb(20 20 24 / 0.92);
 }
 
 .orb-menu button {
-  padding: 3px 8px;
+  padding: 4px 9px;
   border: none;
-  border-radius: 5px;
+  border-radius: 999px;
   background: none;
   color: #fff;
   font: inherit;
@@ -192,38 +230,62 @@ body {
 }
 
 .orb-menu button:hover {
-  background: rgb(255 255 255 / 0.12);
+  background: rgb(255 255 255 / 0.14);
 }
 
-@keyframes breathe {
-  50% {
-    transform: scale(0.96);
+@keyframes think {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
   }
 }
 
-@keyframes talk {
+@keyframes beacon {
   50% {
-    transform: scale(1.1);
-    opacity: 0.9;
-  }
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@keyframes alarm {
-  50% {
-    transform: scale(1.08);
-    opacity: 0.55;
+    box-shadow: 0 0 11px var(--status);
+    opacity: 0.6;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .orb-core,
-  .orb-halo {
+  .pill,
+  .pill-thinking i,
+  .pill-status {
     animation: none !important;
+    transition: none !important;
   }
+}
+
+/* --- Démo (orb.html?demo=…) ----------------------------------------------------- */
+
+.orb-demo {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  background: linear-gradient(135deg, #d9dde6, #9aa7bd);
+}
+
+.orb-demo[data-gallery] {
+  grid-template-columns: repeat(3, 300px);
+  gap: 22px 18px;
+  padding: 24px;
+  align-content: center;
+  justify-content: center;
+}
+
+.orb-demo-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.orb-demo-label {
+  font-size: 11px;
+  color: #2a2f3a;
 }
