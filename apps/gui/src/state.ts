@@ -3,6 +3,7 @@
 // pas d'historique : les fils de messages commencent à la connexion (phase 1).
 
 import { classifyInput, escalationSource } from "./inputs";
+import { voiceReason, type VoiceStatus } from "./voice";
 import {
   PROTOCOL_VERSION,
   type AgentId,
@@ -16,6 +17,7 @@ import {
   type ServerMessage,
   type SurfaceDoc,
   type SurfaceMeta,
+  type NodeStatus,
   type Trigger,
   type TurnOutcome,
   type Usage,
@@ -50,7 +52,15 @@ export type ThreadEntry =
    * Ce que l'agent reçoit ; `console` est présent pour un message parti d'ici, `from` une
    * fois l'expéditeur connu par l'événement du daemon.
    */
-  | { seq: number; kind: "input"; text: string; from: Origin | null; console: ConsoleSend | null }
+  | {
+      seq: number;
+      kind: "input";
+      text: string;
+      from: Origin | null;
+      console: ConsoleSend | null;
+      /** Demande faite à la voix (transcription envoyée par l'orbe). */
+      voice?: boolean;
+    }
   | { seq: number; kind: "agent"; text: string }
   /** Message en cours d'écriture (`message_delta`), remplacé par le message complet. */
   | { seq: number; kind: "streaming"; text: string }
@@ -79,6 +89,15 @@ export type FeedItem =
   | { seq: number; type: "data"; data: Json };
 
 /** Un Agent qui a besoin de l'utilisateur (D12), remonté par l'Assistant. */
+export interface VoiceView {
+  /** `null` hors de l'app Tauri : pas de voix dans un navigateur. */
+  status: VoiceStatus | null;
+  /** Transcription partielle de l'appui en cours, montrée dans le fil de l'Assistant. */
+  dictation: string | null;
+  /** Transcriptions envoyées à l'Assistant, en attente de leur `input`. */
+  spoken: string[];
+}
+
 export interface Escalation {
   id: number;
   /** Nom de l'Agent tel qu'écrit dans le préfixe. */
@@ -123,6 +142,10 @@ export interface AppState {
    * affichée est relue.
    */
   triggerRevisions: Record<AgentId, number>;
+  /** La voix vue de la console : état, dictée en cours, transcriptions envoyées. */
+  voice: VoiceView;
+  /** Nœuds déclarés (D32), relus régulièrement ; `null` avant la première lecture. */
+  nodes: NodeStatus[] | null;
   /** Escalades encore affichées dans le bandeau. */
   escalations: Escalation[];
   /** Escalades arrivées depuis la dernière consultation de l'Assistant. */
@@ -143,7 +166,12 @@ export type Action =
   | { type: "requested"; id: number; command: Command }
   | { type: "select"; agent: AgentId }
   | { type: "dismiss"; notice: number }
-  | { type: "dismiss_escalation"; escalation: number };
+  | { type: "dismiss_escalation"; escalation: number }
+  /** Voix (événements du cœur Rust, voir `voice.ts`). */
+  | { type: "voice_status"; status: VoiceStatus }
+  | { type: "voice_partial"; text: string }
+  | { type: "voice_transcript"; text: string }
+  | { type: "voice_error"; message: string };
 
 /** Au-delà, les lignes les plus anciennes d'un fil sont oubliées. */
 export const THREAD_LIMIT = 500;
@@ -151,6 +179,8 @@ export const THREAD_LIMIT = 500;
 export const FEED_LIMIT = 500;
 const NOTICE_LIMIT = 5;
 const ESCALATION_LIMIT = 5;
+/** Transcriptions gardées en attente de leur `input` (au-delà, les plus vieilles partent). */
+const SPOKEN_LIMIT = 10;
 
 export const initialState: AppState = {
   connection: { status: "connecting" },
@@ -167,6 +197,8 @@ export const initialState: AppState = {
   surfaceRevisions: {},
   triggers: {},
   triggerRevisions: {},
+  voice: { status: null, dictation: null, spoken: [] },
+  nodes: null,
   escalations: [],
   unseenEscalations: 0,
   pending: {},
@@ -204,6 +236,23 @@ export function reduce(state: AppState, action: Action): AppState {
       return { ...state, notices: state.notices.filter((notice) => notice.id !== action.notice) };
     case "dismiss_escalation":
       return { ...state, escalations: state.escalations.filter((e) => e.id !== action.escalation) };
+    case "voice_status": {
+      const previous = state.voice.status;
+      const next = { ...state, voice: { ...state.voice, status: action.status } };
+      const reason = voiceReason(action.status);
+      // Pas de voix : on le dit une fois, avec la raison.
+      if (!reason || (previous && voiceReason(previous) === reason)) return next;
+      return notify(next, action.status.status === "failed" ? "warning" : "info", `Voix indisponible : ${reason}`);
+    }
+    case "voice_partial":
+      return { ...state, voice: { ...state.voice, dictation: action.text } };
+    case "voice_transcript": {
+      const text = action.text.trim();
+      const spoken = text ? [...state.voice.spoken, text].slice(-SPOKEN_LIMIT) : state.voice.spoken;
+      return { ...state, voice: { ...state.voice, dictation: null, spoken } };
+    }
+    case "voice_error":
+      return notify(state, "error", `Voix : ${action.message}`);
   }
 }
 
@@ -250,6 +299,8 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
     case "triggers":
       if (command?.command !== "triggers") return next;
       return { ...next, triggers: { ...next.triggers, [command.agent]: reply.triggers } };
+    case "nodes":
+      return { ...next, nodes: reply.nodes };
     case "done":
       if (command?.command === "send") return deliver(next, command.agent, id, "delivered");
       // Un déclencheur actionné, suspendu ou supprimé : les listes qui le montrent sont relues.
@@ -445,7 +496,14 @@ function onInput(state: AppState, agent: AgentId, from: Origin, text: string): A
     );
     next = { ...state, threads: { ...state.threads, [agent]: updated } };
   } else {
-    next = append(state, agent, { kind: "input", text, from, console: null });
+    // Une transcription envoyée par l'orbe revient ici comme un message de l'utilisateur.
+    const spoken =
+      from.kind === "user" && state.agents[agent]?.level === "assistant" ? state.voice.spoken.indexOf(text) : -1;
+    const base =
+      spoken < 0
+        ? state
+        : { ...state, voice: { ...state.voice, spoken: state.voice.spoken.filter((_, at) => at !== spoken) } };
+    next = append(base, agent, { kind: "input", text, from, console: null, ...(spoken < 0 ? {} : { voice: true }) });
   }
   return state.agents[agent]?.level === "assistant" ? withEscalation(next, text) : next;
 }
@@ -680,5 +738,7 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `${command.enabled ? "Activation" : "Suspension"} du déclencheur ${command.trigger}`;
     case "delete_trigger":
       return `Suppression du déclencheur ${command.trigger}`;
+    case "nodes":
+      return "Lecture des nœuds";
   }
 }

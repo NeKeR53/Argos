@@ -30,6 +30,11 @@ export interface AgentRecord {
    * `standard`, `léger`…). Absent pour l'Assistant, choisi par l'utilisateur.
    */
   profile: string | null;
+  /**
+   * Nœud où tourne sa session (D32) ; `null` pour le nœud du hub. Un Worker tourne sur le
+   * nœud de son Agent.
+   */
+  node: string | null;
   workdir: string;
   /** Présente pour les Agents seulement. */
   charter: Charter | null;
@@ -150,6 +155,11 @@ export interface Trigger {
   secret: string | null;
   enabled: boolean;
   created_at: number;
+  /**
+   * Dernière (ré)activation : un périodique compte ses échéances à partir d'ici ou de son
+   * dernier déclenchement, le plus récent des deux.
+   */
+  armed_at: number;
   last_fired: number | null;
 }
 
@@ -181,7 +191,17 @@ export type Command =
   | { command: "fire_trigger"; trigger: string }
   /** Active ou suspend un déclencheur. */
   | { command: "set_trigger"; trigger: string; enabled: boolean }
-  | { command: "delete_trigger"; trigger: string };
+  | { command: "delete_trigger"; trigger: string }
+  /** Les nœuds déclarés et l'état de leur connexion (D32). */
+  | { command: "nodes" };
+
+/** Un nœud déclaré dans la configuration du hub (`NodeStatus`). */
+export interface NodeStatus {
+  name: string;
+  connected: boolean;
+  /** Dernière erreur de connexion, tant que le nœud est injoignable. */
+  error: string | null;
+}
 
 /** Requête complète : `Command` aplatie avec l'`id` choisi par le client. */
 export type Request = { id: number } & Command;
@@ -194,6 +214,7 @@ export type Reply =
   | { kind: "surfaces"; surfaces: SurfaceMeta[] }
   | { kind: "surface"; surface: SurfaceDoc }
   | { kind: "triggers"; triggers: Trigger[] }
+  | { kind: "nodes"; nodes: NodeStatus[] }
   | { kind: "done"; affected: AgentId[] }
   | { kind: "error"; message: string };
 
@@ -304,6 +325,13 @@ function checkReply(reply: Record<string, unknown>) {
       break;
     case "surface":
       string(checkSurface(reply.surface).html, "surface.html");
+      break;
+    case "nodes":
+      array(reply.nodes, "reply.nodes").forEach((value) => {
+        const node = object(value, "node");
+        string(node.name, "node.name");
+        if (typeof node.connected !== "boolean") throw new ProtocolError("node.connected : booléen attendu");
+      });
       break;
     case "triggers":
       array(reply.triggers, "reply.triggers").forEach((value) => {

@@ -48,6 +48,7 @@ describe("messages du daemon", () => {
               engine: "claude",
               model: "claude-opus-5-5",
               profile: null,
+              node: null,
               workdir: "/tmp/a0",
               charter: null,
               state: "parked",
@@ -156,6 +157,7 @@ describe("messages du daemon", () => {
       secret: "s3cr3t",
       enabled: true,
       created_at: 1,
+      armed_at: 1,
       last_fired: null,
     };
     const frames = [
@@ -173,6 +175,25 @@ describe("messages du daemon", () => {
       parseServerMessage(
         JSON.stringify({ type: "reply", id: 8, reply: { kind: "triggers", triggers: [{ ...trigger, kind: "mqtt" }] } }),
       ),
+    ).toThrow(ProtocolError);
+  });
+
+  it("lisent l'état des nœuds", () => {
+    const frame = {
+      type: "reply",
+      id: 10,
+      reply: {
+        kind: "nodes",
+        nodes: [
+          { name: "pi", connected: true, error: null },
+          { name: "vps", connected: false, error: "ssh : connexion refusée" },
+        ],
+      },
+    };
+    expect(parseServerMessage(JSON.stringify(frame))).toEqual(frame);
+    expect(JSON.parse(encodeRequest(10, { command: "nodes" }))).toEqual({ id: 10, command: "nodes" });
+    expect(() =>
+      parseServerMessage(JSON.stringify({ type: "reply", id: 1, reply: { kind: "nodes", nodes: [{ name: "pi" }] } })),
     ).toThrow(ProtocolError);
   });
 

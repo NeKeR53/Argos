@@ -39,6 +39,8 @@ interface Props {
   triggers: Trigger[] | undefined;
   triggerRevision: number;
   hooksBase: string | null;
+  /** Transcription partielle du push-to-talk, montrée dans le fil de l'Assistant. */
+  dictation: string | null;
   connected: boolean;
   send: (command: Command) => boolean;
   isLiving: (agent: AgentId) => boolean;
@@ -81,6 +83,7 @@ export function ChatPanel(props: Props) {
         </div>
         <div className="chat-meta">
           <span>{engineLabel(agent)}</span>
+          {agent.node && <span title="Nœud où tourne sa session">nœud {agent.node}</span>}
           {/* Un Worker porte déjà son id court en titre. */}
           {agent.level !== "worker" && (
             <span className="mono" title={agent.id}>
@@ -188,7 +191,12 @@ export function ChatPanel(props: Props) {
           )}
 
           {/* Clés par agent : défilement et brouillon ne passent pas d'un agent à l'autre. */}
-          <Thread key={`thread-${agent.id}`} entries={thread} nameOf={nameOf} />
+          <Thread
+            key={`thread-${agent.id}`}
+            entries={thread}
+            nameOf={nameOf}
+            dictation={agent.level === "assistant" ? props.dictation : null}
+          />
 
           {addressable && <Composer key={`composer-${agent.id}`} agent={agent} connected={connected} send={send} />}
         </>
@@ -233,7 +241,16 @@ function SurfaceTabs(props: {
   );
 }
 
-function Thread({ entries, nameOf }: { entries: ThreadEntry[]; nameOf: (agent: AgentId) => string }) {
+function Thread({
+  entries,
+  nameOf,
+  dictation,
+}: {
+  entries: ThreadEntry[];
+  nameOf: (agent: AgentId) => string;
+  /** Ce que l'utilisateur est en train de dire (fil de l'Assistant seulement). */
+  dictation: string | null;
+}) {
   const list = useRef<HTMLDivElement>(null);
   // Suit le bas du fil tant que l'utilisateur n'est pas remonté le relire.
   const pinned = useRef(true);
@@ -241,9 +258,9 @@ function Thread({ entries, nameOf }: { entries: ThreadEntry[]; nameOf: (agent: A
   useLayoutEffect(() => {
     const element = list.current;
     if (element && pinned.current) element.scrollTop = element.scrollHeight;
-  }, [entries]);
+  }, [entries, dictation]);
 
-  if (entries.length === 0) {
+  if (entries.length === 0 && dictation === null) {
     return (
       <div className="thread thread-empty">
         <p>Aucun message depuis la connexion.</p>
@@ -265,6 +282,14 @@ function Thread({ entries, nameOf }: { entries: ThreadEntry[]; nameOf: (agent: A
       {entries.map((entry) => (
         <Entry key={entry.seq} entry={entry} nameOf={nameOf} />
       ))}
+      {dictation !== null && (
+        <div className="entry entry-input entry-dictation" aria-live="polite">
+          <div className="bubble">
+            <div className="input-tag">dictée en cours</div>
+            {dictation || "…"}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -293,7 +318,15 @@ function senderLabel(from: Origin | null, nameOf: (agent: AgentId) => string): s
 function Entry({ entry, nameOf }: { entry: ThreadEntry; nameOf: (agent: AgentId) => string }) {
   switch (entry.kind) {
     case "input":
-      return <InputEntry text={entry.text} from={entry.from} sent={entry.console} nameOf={nameOf} />;
+      return (
+        <InputEntry
+          text={entry.text}
+          from={entry.from}
+          sent={entry.console}
+          voice={entry.voice ?? false}
+          nameOf={nameOf}
+        />
+      );
     case "agent":
       return (
         <div className="entry entry-agent">
@@ -342,20 +375,23 @@ function InputEntry({
   text,
   from,
   sent,
+  voice,
   nameOf,
 }: {
   text: string;
   from: Origin | null;
   sent: ConsoleSend | null;
+  /** Demande faite à la voix. */
+  voice: boolean;
   nameOf: (agent: AgentId) => string;
 }) {
   const { category, tag, body } = classifyInput(text);
   const note = sent ? deliveryLabel[sent.delivery] : null;
-  const label = category ? tag : sent ? null : `reçu · ${senderLabel(from, nameOf)}`;
+  const label = category ? tag : voice ? "à la voix" : sent ? null : `reçu · ${senderLabel(from, nameOf)}`;
   return (
     <div
       className="entry entry-input"
-      data-category={category ?? (sent ? "user" : "free")}
+      data-category={category ?? (sent || voice ? "user" : "free")}
       data-tagged={category ? "" : undefined}
       data-delivery={sent?.delivery}
     >

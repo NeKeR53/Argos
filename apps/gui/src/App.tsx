@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { resolveHooksBase } from "./hooks";
 import "./App.css";
-import type { AgentId, AgentStatus, SurfaceMeta } from "./protocol";
+import type { AgentId, AgentStatus, NodeStatus, SurfaceMeta } from "./protocol";
 import {
   assistantOf,
   displayName,
@@ -17,6 +17,8 @@ import {
   type Notice,
 } from "./state";
 import { useDaemon } from "./useDaemon";
+import { simulateVoice, useVoiceView } from "./useVoiceView";
+import { voiceReason, voiceStatusLabel, type VoiceStatus } from "./voice";
 import { AgentTree } from "./components/AgentTree";
 import { ChatPanel } from "./components/ChatPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -30,9 +32,14 @@ const isMac = navigator.platform.toLowerCase().startsWith("mac");
 const PANIC_SHORTCUT = isMac ? "⌘⇧X" : "Ctrl+Maj+X";
 /** Liste vide stable : évite de relancer les effets des surfaces à chaque rendu. */
 const NO_SURFACES: SurfaceMeta[] = [];
+/** Cadence de relecture de l'état des nœuds (pas d'événement du daemon pour ça). */
+const NODES_REFRESH_MS = 15_000;
+/** Essai de la voix sans micro (`voice_simulate`) : app Tauri de dev seulement. */
+const VOICE_TRIAL = import.meta.env.DEV && isTauri();
 
 export default function App() {
   const { state, dispatch, send } = useDaemon();
+  useVoiceView(dispatch);
   const [hooksBase, setHooksBase] = useState<string | null>(null);
   useEffect(() => {
     void resolveHooksBase().then(setHooksBase);
@@ -42,6 +49,14 @@ export default function App() {
   const connected = state.connection.status === "connected";
   const agent = selectedAgent(state);
   const roots = treeOf(state);
+
+  // Le daemon ne signale pas les changements d'état des nœuds : on les relit.
+  useEffect(() => {
+    if (!connected) return;
+    send({ command: "nodes" });
+    const timer = setInterval(() => send({ command: "nodes" }), NODES_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [connected, send]);
 
   const panic = useCallback(() => {
     setPanicAsked(false);
@@ -74,7 +89,10 @@ export default function App() {
       <header className="topbar">
         <span className="brand">Argos</span>
         <ConnectionBadge connection={state.connection} />
+        {state.voice.status && <VoiceBadge status={state.voice.status} />}
+        <NodeDots nodes={state.nodes} />
         <span className="spacer" />
+        {VOICE_TRIAL && <VoiceTrial disabled={!connected} />}
         <button
           type="button"
           className="button panic"
@@ -132,6 +150,7 @@ export default function App() {
               triggers={state.triggers[agent.id]}
               triggerRevision={state.triggerRevisions[agent.id] ?? 0}
               hooksBase={hooksBase}
+              dictation={state.voice.dictation}
               connected={connected}
               send={send}
               isLiving={isLiving}
@@ -176,6 +195,60 @@ export default function App() {
         </ConfirmDialog>
       )}
     </div>
+  );
+}
+
+/** Une pastille par nœud déclaré (D32) ; rien s'il n'y en a pas. */
+function NodeDots({ nodes }: { nodes: NodeStatus[] | null }) {
+  if (!nodes || nodes.length === 0) return null;
+  return (
+    <span className="nodes" aria-label="Nœuds">
+      {nodes.map((node) => (
+        <span
+          key={node.name}
+          className="node"
+          data-connected={node.connected}
+          title={node.connected ? `${node.name} : joignable` : `${node.name} : injoignable${node.error ? ` (${node.error})` : ""}`}
+        >
+          <span className="node-dot" aria-hidden />
+          {node.name}
+        </span>
+      ))}
+    </span>
+  );
+}
+
+/** État de la voix ; s'il manque, la raison est dans l'infobulle (et dans un avis). */
+function VoiceBadge({ status }: { status: VoiceStatus }) {
+  const reason = voiceReason(status);
+  return (
+    <span className="voice-badge" data-status={status.status} title={reason ?? undefined}>
+      {voiceStatusLabel(status)}
+    </span>
+  );
+}
+
+/** Dev seulement : une phrase « dite » sans micro, pour essayer toute la boucle vocale. */
+function VoiceTrial({ disabled }: { disabled: boolean }) {
+  const [text, setText] = useState("Dis-moi bonjour en une phrase");
+  return (
+    <form
+      className="voice-trial"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (text.trim()) simulateVoice(text.trim());
+      }}
+    >
+      <input
+        value={text}
+        aria-label="Phrase à simuler"
+        onChange={(event) => setText(event.target.value)}
+        disabled={disabled}
+      />
+      <button type="submit" className="button" disabled={disabled} title="voice_simulate (dev)">
+        Simuler la voix
+      </button>
+    </form>
   );
 }
 
