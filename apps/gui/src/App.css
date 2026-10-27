@@ -746,6 +746,33 @@ textarea {
   margin-top: 16px;
 }
 
+/* --- Nœuds ---------------------------------------------------------------------- */
+
+.nodes {
+  display: inline-flex;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.node {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: default;
+}
+
+.node-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--danger);
+}
+
+.node[data-connected="true"] .node-dot {
+  background: var(--ok);
+}
+
 /* --- Voix ----------------------------------------------------------------------- */
 
 .voice-badge {

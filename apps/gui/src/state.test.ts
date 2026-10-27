@@ -19,6 +19,7 @@ function agent(id: string, level: AgentStatus["level"], parent: string | null, e
     engine: "claude",
     model: null,
     profile: null,
+    node: null,
     workdir: `/tmp/${id}`,
     charter: level === "agent" ? { name: id.toUpperCase(), scope: "essais" } : null,
     state: "parked",
@@ -521,5 +522,27 @@ describe("déclencheurs", () => {
       server({ type: "event", event: { type: "agent_updated", agent: { ...domotique, state: "retired" } } }),
     );
     expect(state.triggers.dom).toBeUndefined();
+  });
+});
+
+describe("nœuds", () => {
+  it("garde le dernier état des nœuds, et le nœud de chaque agent", () => {
+    const remote = agent("pi-agent", "agent", "a0", { node: "pi" });
+    const state = run(
+      server({ type: "reply", id: 1, reply: { kind: "tree", agents: [assistant, remote] } }),
+      server({
+        type: "reply",
+        id: 2,
+        reply: { kind: "nodes", nodes: [{ name: "pi", connected: false, error: "ssh : délai dépassé" }] },
+      }),
+      server({ type: "reply", id: 3, reply: { kind: "nodes", nodes: [{ name: "pi", connected: true, error: null }] } }),
+    );
+    expect(state.nodes).toEqual([{ name: "pi", connected: true, error: null }]);
+    expect(state.agents["pi-agent"].node).toBe("pi");
+    expect(state.agents.a0.node).toBeNull();
+  });
+
+  it("restent inconnus tant que le daemon n'a rien dit", () => {
+    expect(initialState.nodes).toBeNull();
   });
 });

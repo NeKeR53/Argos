@@ -53,6 +53,7 @@ function Branch({ node, depth, selected, alerts, onSelect }: BranchProps) {
           </span>
           <span className="tree-meta">
             {levelLabel[agent.level]} · {engineLabel(agent)}
+            {agent.node && <span title={`Nœud ${agent.node}`}> · @{agent.node}</span>}
           </span>
         </span>
         <AgentFlags agent={agent} />

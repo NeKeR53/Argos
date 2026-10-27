@@ -83,6 +83,7 @@ export function ChatPanel(props: Props) {
         </div>
         <div className="chat-meta">
           <span>{engineLabel(agent)}</span>
+          {agent.node && <span title="Nœud où tourne sa session">nœud {agent.node}</span>}
           {/* Un Worker porte déjà son id court en titre. */}
           {agent.level !== "worker" && (
             <span className="mono" title={agent.id}>

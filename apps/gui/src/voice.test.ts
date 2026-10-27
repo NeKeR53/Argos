@@ -68,6 +68,7 @@ describe("la voix dans la console", () => {
     engine: "claude" as const,
     model: null,
     profile: null,
+    node: null,
     workdir: "/tmp/a0",
     charter: null,
     state: "active" as const,

@@ -17,6 +17,7 @@ import {
   type ServerMessage,
   type SurfaceDoc,
   type SurfaceMeta,
+  type NodeStatus,
   type Trigger,
   type TurnOutcome,
   type Usage,
@@ -143,6 +144,8 @@ export interface AppState {
   triggerRevisions: Record<AgentId, number>;
   /** La voix vue de la console : état, dictée en cours, transcriptions envoyées. */
   voice: VoiceView;
+  /** Nœuds déclarés (D32), relus régulièrement ; `null` avant la première lecture. */
+  nodes: NodeStatus[] | null;
   /** Escalades encore affichées dans le bandeau. */
   escalations: Escalation[];
   /** Escalades arrivées depuis la dernière consultation de l'Assistant. */
@@ -195,6 +198,7 @@ export const initialState: AppState = {
   triggers: {},
   triggerRevisions: {},
   voice: { status: null, dictation: null, spoken: [] },
+  nodes: null,
   escalations: [],
   unseenEscalations: 0,
   pending: {},
@@ -295,6 +299,8 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
     case "triggers":
       if (command?.command !== "triggers") return next;
       return { ...next, triggers: { ...next.triggers, [command.agent]: reply.triggers } };
+    case "nodes":
+      return { ...next, nodes: reply.nodes };
     case "done":
       if (command?.command === "send") return deliver(next, command.agent, id, "delivered");
       // Un déclencheur actionné, suspendu ou supprimé : les listes qui le montrent sont relues.
@@ -732,5 +738,7 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `${command.enabled ? "Activation" : "Suspension"} du déclencheur ${command.trigger}`;
     case "delete_trigger":
       return `Suppression du déclencheur ${command.trigger}`;
+    case "nodes":
+      return "Lecture des nœuds";
   }
 }
