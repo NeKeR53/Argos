@@ -42,7 +42,12 @@ impl WhisperServer {
         config.check()?;
         let port = free_port()?;
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-        let mut command = Command::new(&config.whisper_server);
+        // La garde démarre toujours : un binaire absent se signale donc ici.
+        let program = locate(&config.whisper_server).map_err(|source| VoiceError::Spawn {
+            program: config.whisper_server.display().to_string(),
+            source,
+        })?;
+        let mut command = watched(std::process::id(), program.as_os_str());
         command
             .arg("--model")
             .arg(&config.whisper_model)
@@ -50,8 +55,7 @@ impl WhisperServer {
             .args(["--language", &config.language])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stderr(Stdio::piped());
         let mut child = command.spawn().map_err(|source| VoiceError::Spawn {
             program: config.whisper_server.display().to_string(),
             source,
@@ -126,15 +130,117 @@ impl WhisperServer {
 
     /// SIGTERM, puis SIGKILL si le process traîne.
     pub async fn shutdown(mut self) {
-        if let Some(pid) = self.child.id() {
-            // SAFETY : kill ne touche à aucune mémoire ; au pire le process est déjà sorti.
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
-        }
+        signal_group(&self.child, libc::SIGTERM);
         if timeout(GRACE, self.child.wait()).await.is_err() {
-            let _ = self.child.kill().await;
+            signal_group(&self.child, libc::SIGKILL);
+            let _ = self.child.wait().await;
         }
+    }
+}
+
+impl Drop for WhisperServer {
+    fn drop(&mut self) {
+        // Sans effet après `shutdown` : le groupe n'existe plus.
+        signal_group(&self.child, libc::SIGKILL);
+    }
+}
+
+/// Envoie un signal au groupe du serveur : la garde et `whisper-server`.
+fn signal_group(child: &Child, signal: i32) {
+    if let Some(pid) = child.id() {
+        // SAFETY : kill ne touche à aucune mémoire ; au pire le groupe a disparu.
+        unsafe {
+            libc::kill(-(pid as i32), signal);
+        }
+    }
+}
+
+/// Chemin du binaire : tel quel s'il contient un `/`, sinon cherché dans le `PATH`.
+fn locate(program: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let runnable = |path: &std::path::Path| {
+        path.metadata()
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    };
+    let found = if program.components().count() > 1 {
+        runnable(program).then(|| program.to_path_buf())
+    } else {
+        std::env::var_os("PATH").and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(program))
+                .find(|candidate| runnable(candidate))
+        })
+    };
+    found.ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
+}
+
+/// Lance `program` sous une garde `sh` qui le termine dès que `parent` disparaît, même
+/// tué par SIGKILL (macOS n'a pas d'équivalent à `PR_SET_PDEATHSIG`). Sans elle, une app
+/// tuée net laisserait `whisper-server` orphelin, avec le modèle en mémoire. Garde et
+/// serveur forment un groupe de process à part, arrêté d'un coup par [`signal_group`].
+/// La garde rend le statut du serveur ; les arguments s'ajoutent à la commande rendue.
+fn watched(parent: u32, program: &std::ffi::OsStr) -> Command {
+    const GUARD: &str = r#"parent=$1; shift
+"$@" &
+child=$!
+while kill -0 "$parent" 2>/dev/null && kill -0 "$child" 2>/dev/null; do sleep 1; done
+kill "$child" 2>/dev/null
+wait "$child""#;
+    let mut command = Command::new("/bin/sh");
+    command
+        .args(["-c", GUARD, "argos-whisper-guard"])
+        .arg(parent.to_string())
+        .arg(program)
+        .process_group(0);
+    command
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    /// Le groupe de process `pgid` existe-t-il encore ?
+    fn alive(pgid: i32) -> bool {
+        // SAFETY : signal 0, simple test d'existence.
+        unsafe { libc::kill(-pgid, 0) == 0 }
+    }
+
+    #[tokio::test]
+    async fn the_server_dies_with_its_parent_even_when_killed() {
+        // Un faux parent, qu'on tue net.
+        let mut parent = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let mut guarded = watched(parent.id(), std::ffi::OsStr::new("sleep"))
+            .arg("60")
+            .spawn()
+            .unwrap();
+        let pgid = guarded.id().unwrap() as i32;
+        sleep(Duration::from_millis(300)).await;
+        assert!(alive(pgid));
+
+        parent.kill().unwrap();
+        parent.wait().unwrap();
+        timeout(Duration::from_secs(5), guarded.wait())
+            .await
+            .expect("la garde n'a pas réagi à la mort du parent")
+            .unwrap();
+        sleep(Duration::from_millis(100)).await;
+        assert!(!alive(pgid), "le serveur a survécu à son parent");
+    }
+
+    #[tokio::test]
+    async fn the_guard_reports_the_server_exit() {
+        let mut guarded = watched(std::process::id(), std::ffi::OsStr::new("sh"))
+            .args(["-c", "exit 3"])
+            .spawn()
+            .unwrap();
+        let status = timeout(Duration::from_secs(5), guarded.wait())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(status.code(), Some(3));
     }
 }
 
