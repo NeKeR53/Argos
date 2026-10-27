@@ -18,6 +18,7 @@ import {
   type SurfaceDoc,
   type SurfaceMeta,
   type NodeStatus,
+  type ProfileInfo,
   type Trigger,
   type TurnOutcome,
   type Usage,
@@ -146,6 +147,8 @@ export interface AppState {
   voice: VoiceView;
   /** Nœuds déclarés (D32), relus régulièrement ; `null` avant la première lecture. */
   nodes: NodeStatus[] | null;
+  /** Profils de la politique de modèles, pour choisir le modèle d'un agent. */
+  profiles: ProfileInfo[] | null;
   /** Escalades encore affichées dans le bandeau. */
   escalations: Escalation[];
   /** Escalades arrivées depuis la dernière consultation de l'Assistant. */
@@ -199,6 +202,7 @@ export const initialState: AppState = {
   triggerRevisions: {},
   voice: { status: null, dictation: null, spoken: [] },
   nodes: null,
+  profiles: null,
   escalations: [],
   unseenEscalations: 0,
   pending: {},
@@ -301,6 +305,8 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
       return { ...next, triggers: { ...next.triggers, [command.agent]: reply.triggers } };
     case "nodes":
       return { ...next, nodes: reply.nodes };
+    case "models":
+      return { ...next, profiles: reply.profiles };
     case "done":
       if (command?.command === "send") return deliver(next, command.agent, id, "delivered");
       // Un déclencheur actionné, suspendu ou supprimé : les listes qui le montrent sont relues.
@@ -740,5 +746,9 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `Suppression du déclencheur ${command.trigger}`;
     case "nodes":
       return "Lecture des nœuds";
+    case "models":
+      return "Lecture des modèles";
+    case "set_model":
+      return `Changement de modèle (${command.model})`;
   }
 }

@@ -3,7 +3,17 @@
 // seule (D2) et n'a pas de surface.
 
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
-import type { AgentId, AgentStatus, Board, Command, Origin, SurfaceDoc, SurfaceMeta, Trigger } from "../protocol";
+import type {
+  AgentId,
+  AgentStatus,
+  Board,
+  Command,
+  Origin,
+  ProfileInfo,
+  SurfaceDoc,
+  SurfaceMeta,
+  Trigger,
+} from "../protocol";
 import {
   displayName,
   isAddressable,
@@ -17,6 +27,7 @@ import { engineLabel, formatCost, formatUsage, levelLabel, outcomeLabel } from "
 import { classifyInput } from "../inputs";
 import { AgentFlags } from "./AgentTree";
 import { BoardSection } from "./BoardSection";
+import { ModelPicker } from "./ModelPicker";
 import { StatusDot } from "./StatusDot";
 import { SurfaceView } from "./SurfaceView";
 import { TriggerPanel } from "./TriggerPanel";
@@ -43,6 +54,8 @@ interface Props {
   dictation: string | null;
   connected: boolean;
   send: (command: Command) => boolean;
+  /** Profils de la politique de modèles, pour choisir le modèle de l'agent. */
+  profiles: ProfileInfo[] | null;
   isLiving: (agent: AgentId) => boolean;
   /** Nom affichable d'un agent, pour dire qui a envoyé un message. */
   nameOf: (agent: AgentId) => string;
@@ -82,7 +95,11 @@ export function ChatPanel(props: Props) {
           <AgentFlags agent={agent} />
         </div>
         <div className="chat-meta">
-          <span>{engineLabel(agent)}</span>
+          {addressable ? (
+            <ModelPicker agent={agent} profiles={props.profiles} connected={connected} send={send} />
+          ) : (
+            <span>{engineLabel(agent)}</span>
+          )}
           {agent.node && <span title="Nœud où tourne sa session">nœud {agent.node}</span>}
           {/* Un Worker porte déjà son id court en titre. */}
           {agent.level !== "worker" && (

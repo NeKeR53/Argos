@@ -817,6 +817,47 @@ impl Supervisor {
         }
     }
 
+    /// Override de l'utilisateur (D21) : nouveau moteur et modèle pour un agent. Sa session
+    /// est parkée ; changer de moteur ouvre une session neuve, qui repart de sa mémoire.
+    /// Le profil devient celui qui contient ce modèle (pour les replis), sinon aucun.
+    pub async fn set_model(
+        &self,
+        id: &AgentId,
+        engine: EngineKind,
+        model: &str,
+    ) -> Result<AgentRecord> {
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(SupervisorError::Cap("modèle vide".into()));
+        }
+        let record = self.record(id)?;
+        if record.state == AgentState::Retired {
+            return Err(SupervisorError::Retired(id.clone()));
+        }
+        self.park(id).await?;
+        let profile = self
+            .policy()
+            .profile_of(record.profile.as_deref(), engine, model);
+        {
+            let registry = self.registry();
+            registry.set_engine_model(id, engine, Some(model))?;
+            registry.set_profile(id, profile.as_deref())?;
+            if engine != record.engine {
+                registry.clear_session(id)?;
+            }
+        }
+        self.memory_log(
+            id,
+            format!(
+                "modèle changé par l'utilisateur : {} {} → {engine} {model}",
+                record.engine,
+                record.model.as_deref().unwrap_or("par défaut")
+            ),
+        );
+        self.publish_status(id);
+        self.record(id)
+    }
+
     /// Signale qu'une surface a été créée, mise à jour ou supprimée.
     pub fn publish_surface(&self, surface: argos_core::SurfaceMeta, deleted: bool) {
         self.publish(DaemonEvent::SurfaceUpdated { surface, deleted });

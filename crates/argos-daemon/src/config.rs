@@ -19,7 +19,8 @@ const DEFAULT_CONFIG: &str = r#"# Configuration du daemon Argos.
 
 [assistant]
 # Moteur et modèle de l'Assistant, choisis par l'utilisateur (D21).
-# Pris en compte à la création de l'Assistant : le changer ensuite n'a pas encore d'effet.
+# Pris en compte à la création de l'Assistant ; ensuite, le modèle de chaque agent se
+# change dans la console (menu du modèle, dans son en-tête).
 engine = "claude"            # "claude" ou "codex"
 model = "claude-opus-5-5"
 

@@ -309,6 +309,16 @@ impl Registry {
         Ok(())
     }
 
+    /// Profil de la politique de modèles d'un agent ; `None` pour un modèle hors profil.
+    pub fn set_profile(&self, id: &AgentId, profile: Option<&str>) -> Result<()> {
+        self.require(id)?;
+        self.db.execute(
+            "UPDATE agents SET profile = ?2 WHERE id = ?1",
+            params![id.as_str(), profile],
+        )?;
+        Ok(())
+    }
+
     /// Oublie la session du moteur : le prochain réveil en ouvre une neuve (compaction).
     pub fn clear_session(&self, id: &AgentId) -> Result<()> {
         self.require(id)?;

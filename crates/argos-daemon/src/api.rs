@@ -211,6 +211,23 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         Command::Nodes => Reply::Nodes {
             nodes: supervisor.nodes().status(),
         },
+        Command::Models => Reply::Models {
+            profiles: supervisor.policy().profiles_info(),
+        },
+        Command::SetModel {
+            agent,
+            engine,
+            model,
+        } => {
+            addressable(supervisor, &agent)?;
+            supervisor
+                .set_model(&agent, engine, &model)
+                .await
+                .map_err(said)?;
+            Reply::Agent {
+                agent: supervisor.inspect(&agent).map_err(said)?,
+            }
+        }
         Command::SurfaceDelete { surface } => {
             let meta = supervisor
                 .registry()

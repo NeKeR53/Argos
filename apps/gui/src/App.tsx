@@ -56,6 +56,7 @@ export default function App() {
   useEffect(() => {
     if (!connected) return;
     send({ command: "nodes" });
+    send({ command: "models" });
     const timer = setInterval(() => send({ command: "nodes" }), NODES_REFRESH_MS);
     return () => clearInterval(timer);
   }, [connected, send]);
@@ -165,6 +166,7 @@ export default function App() {
               hooksBase={hooksBase}
               dictation={state.voice.dictation}
               connected={connected}
+              profiles={state.profiles}
               send={send}
               isLiving={isLiving}
               nameOf={(id) => (state.agents[id] ? displayName(state.agents[id]) : shortId(id))}

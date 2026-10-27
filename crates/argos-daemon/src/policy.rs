@@ -154,6 +154,49 @@ impl ModelPolicy {
             .join(" ; ")
     }
 
+    /// Les profils et leur chaîne, pour qu'on choisisse dans la console.
+    pub fn profiles_info(&self) -> Vec<argos_core::protocol::ProfileInfo> {
+        self.profiles
+            .iter()
+            .map(|(name, profile)| argos_core::protocol::ProfileInfo {
+                name: name.clone(),
+                description: profile.description.clone(),
+                models: profile
+                    .chain
+                    .iter()
+                    .map(|choice| argos_core::protocol::ModelRef {
+                        engine: choice.engine,
+                        model: choice.model.clone(),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Le profil dont la chaîne contient ce modèle, `preferred` d'abord : il donne les
+    /// replis d'un modèle choisi à la main.
+    pub fn profile_of(
+        &self,
+        preferred: Option<&str>,
+        engine: EngineKind,
+        model: &str,
+    ) -> Option<String> {
+        let holds = |name: &str| {
+            self.profiles.get(name).is_some_and(|profile| {
+                profile
+                    .chain
+                    .iter()
+                    .any(|choice| choice.engine == engine && choice.model == model)
+            })
+        };
+        if let Some(preferred) = preferred
+            && holds(preferred)
+        {
+            return Some(preferred.to_string());
+        }
+        self.profiles.keys().find(|name| holds(name)).cloned()
+    }
+
     pub fn names(&self) -> String {
         self.profiles.keys().cloned().collect::<Vec<_>>().join(", ")
     }

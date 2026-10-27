@@ -3,7 +3,7 @@
 mod common;
 
 use argos_core::protocol::{Command, DaemonEvent, Reply, Request, ServerMessage};
-use argos_core::{AgentId, PROTOCOL_VERSION};
+use argos_core::{AgentId, EngineKind, PROTOCOL_VERSION};
 use argos_daemon::api;
 use common::world::{World, until, world};
 use futures_util::{SinkExt, StreamExt};
@@ -336,4 +336,71 @@ async fn a_surface_talks_to_its_agent_through_the_console() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn the_user_changes_the_model_of_an_agent() {
+    let w = world();
+    let mut client = connect(&serve(&w).await).await;
+    let agent = w.agent.id.clone();
+
+    let Reply::Models { profiles } = ask(&mut client, 1, Command::Models).await else {
+        panic!("profils attendus");
+    };
+    assert!(profiles.iter().any(|profile| profile.name == "léger"));
+
+    // L'agent tourne : il est parké, puis reprend sur le nouveau modèle.
+    w.supervisor.send(&agent, "bonjour").await.unwrap();
+    assert!(w.supervisor.inspect(&agent).unwrap().running);
+    let session = w.supervisor.record(&agent).unwrap().session_id;
+    let reply = ask(
+        &mut client,
+        2,
+        Command::SetModel {
+            agent: agent.clone(),
+            engine: EngineKind::Claude,
+            model: "claude-haiku-5-5".into(),
+        },
+    )
+    .await;
+    let Reply::Agent { agent: status } = reply else {
+        panic!("{reply:?}");
+    };
+    assert!(!status.running);
+    assert_eq!(status.record.model.as_deref(), Some("claude-haiku-5-5"));
+    // Le modèle est dans la chaîne de « léger » : ses replis s'appliquent.
+    assert_eq!(status.record.profile.as_deref(), Some("léger"));
+    // Même moteur : la conversation continue.
+    assert_eq!(status.record.session_id, session);
+
+    // Changer de moteur ouvre une session neuve ; un modèle hors profil n'a pas de profil.
+    let Reply::Agent { agent: status } = ask(
+        &mut client,
+        3,
+        Command::SetModel {
+            agent: agent.clone(),
+            engine: EngineKind::Codex,
+            model: "gpt-autre".into(),
+        },
+    )
+    .await
+    else {
+        panic!("agent attendu");
+    };
+    assert_eq!(status.record.engine, EngineKind::Codex);
+    assert_eq!(status.record.session_id, None);
+    assert_eq!(status.record.profile, None);
+
+    // Jamais sur un Worker (D2).
+    let refused = ask(
+        &mut client,
+        4,
+        Command::SetModel {
+            agent: w.worker.id.clone(),
+            engine: EngineKind::Claude,
+            model: "claude-haiku-5-5".into(),
+        },
+    )
+    .await;
+    assert!(matches!(refused, Reply::Error { .. }), "{refused:?}");
 }

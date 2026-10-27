@@ -193,7 +193,18 @@ export type Command =
   | { command: "set_trigger"; trigger: string; enabled: boolean }
   | { command: "delete_trigger"; trigger: string }
   /** Les nœuds déclarés et l'état de leur connexion (D32). */
-  | { command: "nodes" };
+  | { command: "nodes" }
+  /** Les profils de la politique de modèles et leurs modèles. */
+  | { command: "models" }
+  /** Override de l'utilisateur : nouveau moteur et modèle d'un agent (session parkée). */
+  | { command: "set_model"; agent: AgentId; engine: EngineKind; model: string };
+
+/** Un profil de la politique de modèles (`ProfileInfo`) : sa chaîne, premier choix d'abord. */
+export interface ProfileInfo {
+  name: string;
+  description: string;
+  models: { engine: EngineKind; model: string }[];
+}
 
 /** Un nœud déclaré dans la configuration du hub (`NodeStatus`). */
 export interface NodeStatus {
@@ -215,6 +226,7 @@ export type Reply =
   | { kind: "surface"; surface: SurfaceDoc }
   | { kind: "triggers"; triggers: Trigger[] }
   | { kind: "nodes"; nodes: NodeStatus[] }
+  | { kind: "models"; profiles: ProfileInfo[] }
   | { kind: "done"; affected: AgentId[] }
   | { kind: "error"; message: string };
 
@@ -342,6 +354,20 @@ function checkReply(reply: Record<string, unknown>) {
           throw new ProtocolError(`source de déclencheur inconnue : ${String(trigger.kind)}`);
         }
         if (typeof trigger.enabled !== "boolean") throw new ProtocolError("trigger.enabled : booléen attendu");
+      });
+      break;
+    case "models":
+      array(reply.profiles, "reply.profiles").forEach((value) => {
+        const profile = object(value, "profile");
+        string(profile.name, "profile.name");
+        string(profile.description, "profile.description");
+        array(profile.models, "profile.models").forEach((choice) => {
+          const model = object(choice, "model");
+          string(model.model, "model.model");
+          if (model.engine !== "claude" && model.engine !== "codex") {
+            throw new ProtocolError(`moteur inconnu : ${String(model.engine)}`);
+          }
+        });
       });
       break;
     case "done":

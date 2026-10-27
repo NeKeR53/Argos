@@ -1215,3 +1215,15 @@ textarea {
   color: var(--danger, #d64545);
   margin: 0.25rem 0;
 }
+
+/* Choix du modèle d'un agent */
+.model-picker {
+  font: inherit;
+  font-size: 0.85em;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  border-radius: 6px;
+  padding: 0.1rem 0.35rem;
+  max-width: 16rem;
+}

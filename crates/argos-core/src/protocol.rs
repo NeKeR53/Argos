@@ -2,7 +2,9 @@
 //! JSON sur une trame texte. Le client envoie des [`Request`] ; le daemon répond par
 //! [`ServerMessage::Reply`] (même `id`) et pousse en continu des [`ServerMessage::Event`].
 
-use crate::{AgentId, AgentRecord, Board, SurfaceDoc, SurfaceMeta, Trigger, TurnOutcome, Usage};
+use crate::{
+    AgentId, AgentRecord, Board, EngineKind, SurfaceDoc, SurfaceMeta, Trigger, TurnOutcome, Usage,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -91,6 +93,15 @@ pub enum Command {
     },
     /// Les nœuds déclarés et l'état de leur connexion (D32).
     Nodes,
+    /// Les profils de la politique de modèles et leurs modèles, pour choisir.
+    Models,
+    /// Change le moteur et le modèle d'un agent (override de l'utilisateur, D21). Sa
+    /// session en cours est parkée ; il reprend sur le nouveau modèle au prochain message.
+    SetModel {
+        agent: AgentId,
+        engine: EngineKind,
+        model: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,6 +144,9 @@ pub enum Reply {
     Nodes {
         nodes: Vec<NodeStatus>,
     },
+    Models {
+        profiles: Vec<ProfileInfo>,
+    },
     /// Commande exécutée ; `affected` liste les agents touchés (stop, retrait…).
     Done {
         affected: Vec<AgentId>,
@@ -140,6 +154,20 @@ pub enum Reply {
     Error {
         message: String,
     },
+}
+
+/// Un profil de la politique de modèles (D22) : sa chaîne, premier choix d'abord.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProfileInfo {
+    pub name: String,
+    pub description: String,
+    pub models: Vec<ModelRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelRef {
+    pub engine: EngineKind,
+    pub model: String,
 }
 
 /// Un nœud déclaré dans la configuration du hub.
