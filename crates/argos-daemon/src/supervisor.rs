@@ -25,6 +25,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, watch};
 
+mod functions;
+use functions::FunctionCall;
+
 /// Délai laissé à un process pour sortir après un parking ou un kill.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Remplissage du contexte qui déclenche la compaction contrôlée (D24).
@@ -97,6 +100,8 @@ struct Inner {
     last_input: Mutex<HashMap<AgentId, String>>,
     /// Instants des derniers messages latéraux, par paire d'Agents (D40).
     lateral: Mutex<HashMap<(AgentId, AgentId), VecDeque<Instant>>>,
+    /// Appels HTTP déterministes en cours ; le stop les annule même sans session LLM.
+    function_calls: Mutex<HashMap<u64, FunctionCall>>,
     memory: Memory,
     events: broadcast::Sender<DaemonEvent>,
     generations: AtomicU64,
@@ -123,6 +128,7 @@ impl Supervisor {
                 compacting: Mutex::default(),
                 last_input: Mutex::default(),
                 lateral: Mutex::default(),
+                function_calls: Mutex::default(),
                 memory: Memory::new(settings.home.join("memory")),
                 events,
                 generations: AtomicU64::new(0),
@@ -218,6 +224,13 @@ impl Supervisor {
         Ok(record)
     }
 
+    /// Renomme un Agent dans le registre et signale son nouveau nom.
+    pub fn rename_agent(&self, id: &AgentId, name: &str) -> Result<AgentRecord> {
+        let record = self.registry().rename_agent(id, name)?;
+        self.publish_status(id);
+        Ok(record)
+    }
+
     /// Dossier où ranger le répertoire de travail d'un nouvel Agent.
     pub fn agents_dir(&self) -> PathBuf {
         self.inner.settings.home.join("agents")
@@ -305,6 +318,7 @@ impl Supervisor {
         let mut targets = vec![id.clone()];
         targets.extend(self.registry().descendants(id)?);
         locked(&self.inner.halted).extend(targets.iter().cloned());
+        self.cancel_functions(&targets);
         let mut stopped = vec![];
         for target in &targets {
             if self.kill(target).await {
@@ -321,7 +335,13 @@ impl Supervisor {
     /// Retrait définitif de l'agent et de son sous-arbre, process arrêtés d'abord.
     pub async fn retire(&self, id: &AgentId) -> Result<Vec<AgentId>> {
         self.stop(id).await?;
-        let retired = self.registry().retire(id)?;
+        let retired = {
+            // Un appel arrivé entre la fin du stop et le retrait est annulé aussi.
+            let _halted = locked(&self.inner.halted);
+            let retired = self.registry().retire(id)?;
+            self.cancel_functions(&retired);
+            retired
+        };
         for id in &retired {
             self.publish_status(id);
         }
@@ -338,6 +358,13 @@ impl Supervisor {
 
     /// Arrêt du daemon : parke toutes les sessions en cours.
     pub async fn shutdown(&self) {
+        let all: Vec<_> = self
+            .tree()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|a| a.record.id)
+            .collect();
+        self.cancel_functions(&all);
         let ids: Vec<AgentId> = locked(&self.inner.running).keys().cloned().collect();
         futures_util::future::join_all(ids.iter().map(|id| self.park(id))).await;
     }

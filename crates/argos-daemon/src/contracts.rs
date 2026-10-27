@@ -30,11 +30,42 @@ pub fn contract(record: &AgentRecord, policy: &ModelPolicy) -> String {
     } else {
         String::new()
     };
+    let functions = match record.level {
+        Level::Assistant => FUNCTION_CALLS.to_string(),
+        Level::Agent => format!("{FUNCTION_CALLS}{FUNCTION_PUBLISH}"),
+        Level::Worker => String::new(),
+    };
     format!(
-        "{COMMON}\n{body}{surfaces}\nTon répertoire de travail : {}.\n",
+        "{COMMON}\n{body}{surfaces}{functions}\nTon répertoire de travail : {}.\n",
         record.workdir.display()
     )
 }
+
+const FUNCTION_CALLS: &str = "\n## Fonctions publiées\n\
+Pour une action répétitive déjà publiée par un Agent, découvre sa signature avec \
+function_list (agent = son nom ou id), puis appelle function_call avec agent, function et \
+arguments (objet JSON). Le daemon l'exécute directement sur le nœud du propriétaire, \
+même parké, sans mission, Worker ni tour LLM. C'est une exception explicite au passage \
+par une mission : seule l'action publiée est autorisée, pas le contrôle d'un pair. \
+Une erreur est renvoyée : ne réessaie pas aveuglément une action dont l'effet est incertain.\n";
+
+const FUNCTION_PUBLISH: &str = "\n## Publier tes fonctions\n\
+Tu peux créer des fonctions HTTP déterministes avec function_publish, les remplacer \
+sous le même nom et les retirer avec function_delete. Tu en es seul propriétaire. \
+Publie seulement les actions autorisées dans ton périmètre : cette publication les \
+rend utilisables par l'Assistant, les autres Agents et tes surfaces sans te réveiller.\n\
+Donne name, description, parameters (schéma JSON objet, properties scalaires string, \
+boolean, integer ou number, enum facultatif, required, additionalProperties:false), et \
+request (method, url, headers facultatifs, body JSON facultatif, timeout_ms de 100 à \
+30000). Les arguments se substituent par {{nom}} : une valeur JSON entière conserve \
+son type. Le serveur de l'URL reste fixe ; seuls chemin et query peuvent recevoir des \
+arguments encodés. Les secrets passent seulement dans les en-têtes via {{env:NOM}}, \
+résolus dans l'environnement du daemon sur ton nœud ; jamais en clair dans le HTML, \
+les paramètres ou les rapports. Escalade une configuration manquante à l'utilisateur.\n\
+Tes surfaces appellent await argos.call('nom', {parametre: valeur}) et reçoivent le \
+résultat JSON, ou une Promise rejetée. Affiche attente, résultat et erreur dans l'UI. \
+Une surface ne peut appeler que tes fonctions, jamais celles d'un autre Agent. \
+argos.send/emit restent destinés aux demandes qui nécessitent ta réflexion.\n";
 
 const COMMON: &str = "# Argos\n\
 Tu fais partie d'Argos, un assistant personnel organisé en trois niveaux : l'Assistant \
@@ -228,6 +259,9 @@ mod tests {
             "un Worker n'a pas de surface"
         );
         assert!(agent.contains("trigger_create") && !worker.contains("trigger_create"));
+        assert!(assistant.contains("function_call") && !assistant.contains("function_publish"));
+        assert!(agent.contains("function_publish") && agent.contains("argos.call"));
+        assert!(!worker.contains("function_call") && !worker.contains("function_publish"));
         assert!(worker.contains("report_to_agent"));
         assert!(!worker.contains("spawn_worker"));
     }

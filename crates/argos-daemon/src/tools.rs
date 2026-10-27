@@ -29,6 +29,7 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
         tools.extend(memory_tools());
         tools.extend(surface_tools());
         tools.extend(trigger_tools());
+        tools.extend(function_tools(level));
     }
     let profiles: Vec<&String> = policy.profiles.keys().collect();
     for tool in &mut tools {
@@ -40,6 +41,51 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
                 policy.default_profile
             ));
         }
+    }
+    tools
+}
+
+fn function_tools(level: Level) -> Vec<Tool> {
+    let mut tools = vec![
+        tool(
+            "function_list",
+            "Découvre les fonctions publiées (nom, description, paramètres), sans réveiller leur Agent. Sans agent : les tiennes pour un Agent, toutes pour l'Assistant.",
+            &[("agent", "Nom ou id de l'Agent propriétaire (facultatif).")],
+            &[],
+        ),
+        Tool {
+            name: "function_call",
+            description: "Exécute une fonction HTTP publiée par un Agent, sur son nœud, sans tour LLM. N'utilise que les fonctions et arguments découverts par function_list.",
+            schema: json!({"type":"object", "properties": {
+                "agent": {"type":"string", "description":"Nom ou id de l'Agent propriétaire."},
+                "function": {"type":"string", "description":"Nom de la fonction publiée."},
+                "arguments": {"type":"object", "description":"Arguments conformes au schéma publié."}
+            }, "required":["agent","function","arguments"], "additionalProperties":false}),
+        },
+    ];
+    if level == Level::Agent {
+        tools.push(Tool {
+            name: "function_publish",
+            description: "Publie ou remplace une de tes fonctions HTTP, callable par l'Assistant, les Agents et tes surfaces (argos.call). Serveur HTTP(S) fixe, chemin/query avec {{paramètre}} encodé, méthode GET/POST/PUT/PATCH/DELETE ; paramètres scalaires typés ; corps JSON avec {{paramètre}} (valeur entière = type conservé) et en-têtes avec {{env:NOM}} pour les secrets du daemon sur ton nœud. Aucun secret en clair ni serveur variable. Ne publie que les actions autorisées dans ton périmètre.",
+            schema: json!({"type":"object", "properties": {
+                "name":{"type":"string","pattern":"^[a-z][a-z0-9_]{0,63}$"},
+                "description":{"type":"string"},
+                "parameters":{"type":"object","description":"Schéma JSON : type object, properties de type string/boolean/integer/number, enum facultatif, required, additionalProperties:false. Aucun autre mot-clé de validation."},
+                "request":{"type":"object","properties":{
+                    "method":{"type":"string","enum":["GET","POST","PUT","PATCH","DELETE"]},
+                    "url":{"type":"string"},
+                    "headers":{"type":"object","additionalProperties":{"type":"string"}},
+                    "body":{},
+                    "timeout_ms":{"type":"integer","minimum":100,"maximum":30000}
+                },"required":["method","url"],"additionalProperties":false}
+            }, "required":["name","description","parameters","request"],"additionalProperties":false}),
+        });
+        tools.push(tool(
+            "function_delete",
+            "Retire une de tes fonctions publiées. Les prochains appels seront refusés.",
+            &[("function", "Nom de ta fonction.")],
+            &["function"],
+        ));
     }
     tools
 }
@@ -194,6 +240,15 @@ fn level_tools(level: Level) -> Vec<Tool> {
                     ),
                 ],
                 &["name", "scope"],
+            ),
+            tool(
+                "rename_agent",
+                "Renomme l'un de tes Agents. Son nouveau nom doit être unique parmi tes Agents ; son identité, son périmètre et sa session sont conservés.",
+                &[
+                    ("agent", AGENT_REF),
+                    ("name", "Nouveau nom court et parlant."),
+                ],
+                &["agent", "name"],
             ),
             tool(
                 "list_nodes",
@@ -459,10 +514,85 @@ pub async fn call(
         _ => "worker",
     };
     match (caller.level, name) {
+        (Level::Agent, "function_publish") => {
+            let definition = argos_core::PublishedFunction {
+                agent: caller.id.clone(),
+                name: text(args, "name")?.into(),
+                description: text(args, "description")?.into(),
+                parameters: args.get("parameters").ok_or("parameters manquant")?.clone(),
+                request: serde_json::from_value(
+                    args.get("request").ok_or("request manquant")?.clone(),
+                )
+                .map_err(|_| "définition request invalide".to_string())?,
+            };
+            supervisor
+                .registry()
+                .publish_function(&definition)
+                .map_err(said)?;
+            journal(
+                supervisor,
+                &caller.id,
+                &format!("fonction {} publiée", definition.name),
+            );
+            Ok(format!("Fonction {} publiée.", definition.name))
+        }
+        (Level::Agent, "function_delete") => {
+            let name = text(args, "function")?;
+            supervisor
+                .registry()
+                .delete_function(&caller.id, name)
+                .map_err(said)?;
+            journal(supervisor, &caller.id, &format!("fonction {name} retirée"));
+            Ok(format!("Fonction {name} retirée."))
+        }
+        (Level::Assistant | Level::Agent, "function_list") => {
+            let fresh = supervisor.record(&caller.id).map_err(said)?;
+            if fresh.state == AgentState::Retired {
+                return Err("tu es retiré".into());
+            }
+            let owners = match optional(args, "agent") {
+                Some(reference) => vec![function_owner(supervisor, reference)?],
+                None if caller.level == Level::Agent => vec![fresh],
+                None => supervisor
+                    .registry()
+                    .tree()
+                    .map_err(said)?
+                    .into_iter()
+                    .filter(|a| a.level == Level::Agent)
+                    .collect(),
+            };
+            let mut functions = vec![];
+            for owner in owners {
+                functions.extend(supervisor.registry().functions(&owner.id).map_err(said)?);
+            }
+            Ok(json!(functions).to_string())
+        }
+        (Level::Assistant | Level::Agent, "function_call") => {
+            let owner = function_owner(supervisor, text(args, "agent")?)?;
+            let result = supervisor
+                .call_function(
+                    &caller.id,
+                    &owner.id,
+                    text(args, "function")?,
+                    args.get("arguments").ok_or("arguments manquant")?.clone(),
+                )
+                .await?;
+            Ok(result.to_string())
+        }
         (Level::Assistant, "list_agents") | (Level::Agent, "list_workers") => {
             listed(supervisor.children(&caller.id).map_err(said)?)
         }
         (Level::Assistant, "create_agent") => create_agent(supervisor, caller, args),
+        (Level::Assistant, "rename_agent") => {
+            let target = child(supervisor, caller, text(args, "agent")?)?;
+            let renamed = supervisor
+                .rename_agent(&target.id, text(args, "name")?)
+                .map_err(said)?;
+            let fact = format!("{} renommé en {}", label(&target), label(&renamed));
+            journal(supervisor, &caller.id, &fact);
+            journal(supervisor, &target.id, &fact);
+            Ok(format!("{fact}."))
+        }
         (Level::Assistant, "list_nodes") => {
             let nodes = supervisor.nodes().status();
             if nodes.is_empty() {
@@ -1155,6 +1285,19 @@ async fn lateral(
     Ok(format!("Transmis à {}.", label(&peer)))
 }
 
+/// Propriétaire d'une fonction publiée, y compris soi-même.
+fn function_owner(supervisor: &Supervisor, reference: &str) -> Result<AgentRecord, String> {
+    let found = match supervisor.record(&AgentId::new(reference)) {
+        Ok(record) => Some(record),
+        Err(_) => supervisor.registry().agent_named(reference).map_err(said)?,
+    };
+    let owner = found.ok_or_else(|| format!("aucun Agent « {reference} »"))?;
+    if owner.level != Level::Agent || owner.state == AgentState::Retired {
+        return Err(format!("« {reference} » n'est pas un Agent vivant"));
+    }
+    Ok(owner)
+}
+
 /// Un autre Agent vivant, désigné par son nom ou son id.
 fn peer(
     supervisor: &Supervisor,
@@ -1332,6 +1475,8 @@ mod tests {
                 .collect()
         };
         assert!(names(Level::Assistant).contains(&"create_agent"));
+        assert!(names(Level::Assistant).contains(&"rename_agent"));
+        assert!(!names(Level::Agent).contains(&"rename_agent"));
         assert!(names(Level::Assistant).contains(&"assign_mission"));
         assert!(!names(Level::Assistant).contains(&"spawn_worker"));
         assert!(names(Level::Agent).contains(&"spawn_worker"));
@@ -1353,6 +1498,8 @@ mod tests {
         };
         let create = find(Level::Assistant, "create_agent");
         assert_eq!(create.schema["required"], json!(["name", "scope"]));
+        let rename = find(Level::Assistant, "rename_agent");
+        assert_eq!(rename.schema["required"], json!(["agent", "name"]));
         assert_eq!(
             create.schema["properties"]["profile"]["enum"],
             json!(["code", "léger", "standard"])

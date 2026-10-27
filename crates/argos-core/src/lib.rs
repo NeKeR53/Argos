@@ -1,6 +1,9 @@
 //! Types partagés entre le daemon et la GUI. Vocabulaire : docs/GLOSSARY.md.
 
+pub mod function;
 pub mod protocol;
+
+pub use function::{FunctionInfo, FunctionRequest, PublishedFunction};
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

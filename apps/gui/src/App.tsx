@@ -34,7 +34,7 @@ const NODES_REFRESH_MS = 15_000;
 const VOICE_TRIAL = import.meta.env.DEV && isTauri();
 
 export default function App() {
-  const { state, dispatch, send } = useDaemon();
+  const { state, dispatch, send, request } = useDaemon();
   useVoiceView(dispatch);
   const [hooksBase, setHooksBase] = useState<string | null>(null);
   useEffect(() => {
@@ -168,6 +168,7 @@ export default function App() {
               connected={connected}
               profiles={state.profiles}
               send={send}
+              request={request}
               isLiving={isLiving}
               nameOf={(id) => (state.agents[id] ? displayName(state.agents[id]) : shortId(id))}
               onRetire={setRetiring}

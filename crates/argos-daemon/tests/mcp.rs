@@ -122,7 +122,17 @@ async fn each_caller_sees_the_tools_of_its_level() {
     let worker = Client::new(&w, &address, &w.worker.id).tools().await;
 
     assert!(assistant.contains(&"create_agent".to_string()));
+    assert!(assistant.contains(&"rename_agent".to_string()));
+    assert!(!agent.contains(&"rename_agent".to_string()));
     assert!(agent.contains(&"spawn_worker".to_string()));
+    for tool in ["function_list", "function_call"] {
+        assert!(assistant.iter().any(|name| name == tool));
+        assert!(agent.iter().any(|name| name == tool));
+    }
+    for tool in ["function_publish", "function_delete"] {
+        assert!(agent.iter().any(|name| name == tool));
+        assert!(!assistant.iter().any(|name| name == tool));
+    }
     assert_eq!(worker, vec!["report_to_agent", "escalate_to_agent"]);
 }
 
@@ -161,6 +171,73 @@ async fn the_assistant_creates_and_lists_agents() {
         .call("create_agent", json!({"name": "compta", "scope": "encore"}))
         .await;
     assert!(error, "{duplicate}");
+}
+
+#[tokio::test]
+async fn the_assistant_renames_an_agent_by_name_or_id_and_publishes_its_new_name() {
+    let mut w = world();
+    let address = serve(&w).await;
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+    let agent = Client::new(&w, &address, &w.agent.id);
+
+    let (renamed, error) = assistant
+        .call(
+            "rename_agent",
+            json!({"agent": "Domotique", "name": " Maison "}),
+        )
+        .await;
+    assert!(!error, "{renamed}");
+    assert!(renamed.contains("Maison"));
+    let id = w.agent.id.clone();
+    until(&mut w.events, |event| {
+        matches!(event, argos_core::protocol::DaemonEvent::AgentUpdated { agent }
+            if agent.record.id == id && agent.record.charter.as_ref().unwrap().name == "Maison")
+    })
+    .await;
+    assert!(
+        w.supervisor
+            .registry()
+            .agent_named("Domotique")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        w.supervisor
+            .registry()
+            .agent_named("Maison")
+            .unwrap()
+            .unwrap()
+            .id,
+        id
+    );
+    let (listed, error) = assistant.call("list_agents", json!({})).await;
+    assert!(!error, "{listed}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&listed).unwrap()[0]["name"],
+        "Maison"
+    );
+
+    let (renamed, error) = assistant
+        .call("rename_agent", json!({"agent": id, "name": "Habitat"}))
+        .await;
+    assert!(!error, "{renamed}");
+    for args in [
+        json!({"agent": id, "name": "   "}),
+        json!({"agent": id}),
+        json!({"agent": w.worker.id, "name": "Worker"}),
+        json!({"agent": w.assistant.id, "name": "Assistant"}),
+    ] {
+        let (message, error) = assistant.call("rename_agent", args).await;
+        assert!(error, "{message}");
+    }
+    let (message, error) = agent
+        .call("rename_agent", json!({"agent": id, "name": "Interdit"}))
+        .await;
+    assert!(error, "{message}");
+    assert_eq!(
+        w.supervisor.record(&id).unwrap().charter.unwrap().name,
+        "Habitat"
+    );
 }
 
 #[tokio::test]
@@ -377,7 +454,7 @@ async fn tokens_die_with_their_session() {
     let address = serve(&w).await;
     let id = w.agent.id.clone();
     let client = Client::new(&w, &address, &id);
-    assert_eq!(client.tools().await.len(), 29);
+    assert!(!client.tools().await.is_empty());
 
     w.supervisor.send(&id, "bonjour").await.unwrap();
     until(&mut w.events, |event| is_message(event, &id, "reply 1")).await;

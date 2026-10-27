@@ -181,6 +181,18 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
                 .map_err(said)?;
             done(vec![meta.agent])
         }
+        Command::SurfaceCall {
+            surface,
+            function,
+            arguments,
+        } => {
+            let meta = supervisor.registry().surface_meta(&surface).map_err(said)?;
+            Reply::FunctionResult {
+                result: supervisor
+                    .call_function(&meta.agent, &meta.agent, &function, arguments)
+                    .await?,
+            }
+        }
         Command::Triggers { agent } => Reply::Triggers {
             triggers: supervisor.registry().triggers_of(&agent).map_err(said)?,
         },

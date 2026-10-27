@@ -307,6 +307,9 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
       return { ...next, nodes: reply.nodes };
     case "models":
       return { ...next, profiles: reply.profiles };
+    case "function_result":
+      // Le résultat revient à la surface appelante, sans alimenter le chat de l'agent.
+      return next;
     case "done":
       if (command?.command === "send") return deliver(next, command.agent, id, "delivered");
       // Un déclencheur actionné, suspendu ou supprimé : les listes qui le montrent sont relues.
@@ -734,6 +737,8 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `Envoi depuis la surface ${command.surface}`;
     case "surface_emit":
       return `Événement « ${command.name} » de la surface ${command.surface}`;
+    case "surface_call":
+      return `Fonction « ${command.function} » de la surface ${command.surface}`;
     case "surface_delete":
       return `Suppression de la surface ${command.surface}`;
     case "triggers":

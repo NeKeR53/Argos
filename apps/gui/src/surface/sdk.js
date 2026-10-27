@@ -3,14 +3,15 @@
 //   argos.surface            { id, title, kind, version } de cette surface
 //   argos.send(text)         texte remis à l'agent (préfixé par le daemon)
 //   argos.emit(name, data)   événement structuré remis à l'agent
+//   argos.call(name, args)   Promise du résultat d'une fonction, sans réveiller l'agent
 //   argos.on(type, fn)       'data' (données du cockpit), 'message' (messages de l'agent),
 //                            'busy' (tour en cours) ; rend une fonction de désabonnement
 //   argos.chat(element)      composant chat standard dans `element`
 // La surface tourne dans un iframe bac à sable sans réseau (D28) ; ni formulaire soumis,
 // ni popup, ni accès à la console. Tout passe par
 // `postMessage` avec la console, qui vérifie l'émetteur. Format des messages :
-//   surface → console  { argos: 1, type: "ready" | "send" | "emit", … }
-//   console → surface  { argos: 1, type: "feed", items: [...], busy? }
+//   surface → console  { argos: 1, type: "ready" | "send" | "emit" | "call", … }
+//   console → surface  { argos: 1, type: "feed" | "call_result", … }
 // `argosMarkdown` (markdown.js) est défini juste avant ce script.
 
 (function () {
@@ -21,6 +22,8 @@
   // Tout ce que la console a remis depuis le chargement : un abonné tardif le reçoit aussi.
   var history = [];
   var busy = false;
+  var nextCallId = 1;
+  var pending = new Map();
 
   function post(message) {
     message.argos = 1;
@@ -57,6 +60,16 @@
   window.addEventListener("message", function (event) {
     if (event.source !== window.parent) return;
     var message = event.data;
+    if (message && message.argos === 1 && message.type === "call_result") {
+      var entry = pending.get(message.id);
+      if (!entry) return;
+      if (typeof message.error !== "string" && !Object.prototype.hasOwnProperty.call(message, "result")) return;
+      pending.delete(message.id);
+      clearTimeout(entry.timer);
+      if (typeof message.error === "string") entry.reject(new Error(message.error));
+      else entry.resolve(message.result);
+      return;
+    }
     if (!message || message.argos !== 1 || message.type !== "feed" || !Array.isArray(message.items)) return;
     message.items.forEach(receive);
     if (typeof message.busy === "boolean") receive({ type: "busy", busy: message.busy });
@@ -93,6 +106,44 @@
     var data = payload === undefined ? null : JSON.parse(JSON.stringify(payload));
     post({ type: "emit", name: String(name), payload: data });
   }
+
+  function callFunction(name, args) {
+    return new Promise(function (resolve, reject) {
+      if (typeof name !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(name)) {
+        reject(new Error("argos.call : nom de fonction invalide"));
+        return;
+      }
+      if (pending.size >= 32) {
+        reject(new Error("argos.call : trop d'appels en cours"));
+        return;
+      }
+      var data;
+      try {
+        var encoded = JSON.stringify(args === undefined ? {} : args);
+        if (typeof encoded !== "string" || new TextEncoder().encode(encoded).byteLength > 64 * 1024) throw new Error();
+        data = JSON.parse(encoded);
+        if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error();
+      } catch (_) {
+        reject(new Error("argos.call : objet JSON attendu (64 Kio au plus)"));
+        return;
+      }
+      var id = nextCallId++;
+      var timer = setTimeout(function () {
+        pending.delete(id);
+        reject(new Error("argos.call : délai dépassé ; résultat de l'action incertain"));
+      }, 36000);
+      pending.set(id, { resolve: resolve, reject: reject, timer: timer });
+      post({ type: "call", id: id, name: name, arguments: data });
+    });
+  }
+
+  window.addEventListener("pagehide", function () {
+    pending.forEach(function (entry) {
+      clearTimeout(entry.timer);
+      entry.reject(new Error("argos.call : surface fermée ; résultat de l'action incertain"));
+    });
+    pending.clear();
+  });
 
   var STYLE =
     ".argos-chat{display:flex;flex-direction:column;height:100%;min-height:240px;font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;color:#1c1c1a;background:#f6f6f4;border:1px solid #e2e2de;border-radius:8px;overflow:hidden}" +
@@ -215,6 +266,7 @@
     }),
     send: send,
     emit: emit,
+    call: callFunction,
     on: function (type, fn) {
       if (type === "sent") throw new Error("argos.on : type inconnu « sent » (data, message, busy)");
       return on(type, fn);

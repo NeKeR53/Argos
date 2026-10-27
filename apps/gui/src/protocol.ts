@@ -183,6 +183,8 @@ export type Command =
   | { command: "surface_send"; surface: string; text: string }
   /** Événement structuré émis par une surface (`argos.emit`) : remis à son agent. */
   | { command: "surface_emit"; surface: string; name: string; payload: Json }
+  /** Appel direct d'une fonction publiée par le propriétaire de la surface. */
+  | { command: "surface_call"; surface: string; function: string; arguments: Json }
   /** L'utilisateur ferme définitivement une surface. */
   | { command: "surface_delete"; surface: string }
   /** Les déclencheurs dont un agent est propriétaire ou cible (D29). */
@@ -224,6 +226,7 @@ export type Reply =
   | { kind: "board"; board: Board }
   | { kind: "surfaces"; surfaces: SurfaceMeta[] }
   | { kind: "surface"; surface: SurfaceDoc }
+  | { kind: "function_result"; result: Json }
   | { kind: "triggers"; triggers: Trigger[] }
   | { kind: "nodes"; nodes: NodeStatus[] }
   | { kind: "models"; profiles: ProfileInfo[] }
@@ -337,6 +340,9 @@ function checkReply(reply: Record<string, unknown>) {
       break;
     case "surface":
       string(checkSurface(reply.surface).html, "surface.html");
+      break;
+    case "function_result":
+      if (!("result" in reply)) throw new ProtocolError("function_result sans result");
       break;
     case "nodes":
       array(reply.nodes, "reply.nodes").forEach((value) => {

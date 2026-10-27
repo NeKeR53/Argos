@@ -17,6 +17,17 @@ describe("requêtes", () => {
 });
 
 describe("messages du daemon", () => {
+  it("lit le résultat d'une fonction et encode son appel depuis une surface", () => {
+    const frame = { type: "reply", id: 8, reply: { kind: "function_result", result: { state: true } } };
+    expect(parseServerMessage(JSON.stringify(frame))).toEqual(frame);
+    expect(parseServerMessage(JSON.stringify({ ...frame, reply: { kind: "function_result", result: null } }))).toEqual({
+      ...frame, reply: { kind: "function_result", result: null },
+    });
+    expect(() => parseServerMessage(JSON.stringify({ ...frame, reply: { kind: "function_result" } }))).toThrow(ProtocolError);
+    expect(JSON.parse(encodeRequest(8, {
+      command: "surface_call", surface: "s-1", function: "set_light", arguments: { name: "salon", state: true },
+    }))).toEqual({ id: 8, command: "surface_call", surface: "s-1", function: "set_light", arguments: { name: "salon", state: true } });
+  });
   it("sont étiquetés", () => {
     const reply = { type: "reply", id: 7, reply: { kind: "error", message: "agent inconnu" } };
     expect(parseServerMessage(JSON.stringify(reply))).toEqual(reply);

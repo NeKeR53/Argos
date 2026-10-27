@@ -3,7 +3,7 @@
 // branche sur le réducteur.
 
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { encodeRequest, parseServerMessage, ProtocolError, type Command, type ServerMessage } from "./protocol";
+import { encodeRequest, parseServerMessage, ProtocolError, type Command, type Reply, type ServerMessage } from "./protocol";
 import type { Connection } from "./state";
 
 /** Réponse du daemon à une poignée de main (commande Tauri `probe_daemon`). */
@@ -54,6 +54,7 @@ export class DaemonConnection {
   private stopped = false;
   /** 0 est réservé aux réponses du daemon à une requête illisible. */
   private nextId = 1;
+  private awaiting = new Map<number, { resolve: (reply: Reply) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
   constructor(
     private readonly endpoint: Endpoint,
@@ -68,6 +69,7 @@ export class DaemonConnection {
   /** Ferme la connexion pour de bon (démontage). */
   stop() {
     this.stopped = true;
+    this.rejectAwaiting("Connexion fermée ; résultat de l'action incertain.");
     if (this.timer) clearTimeout(this.timer);
     this.socket?.close();
     this.socket = null;
@@ -80,6 +82,38 @@ export class DaemonConnection {
     this.handlers.onRequest(id, command);
     this.socket.send(encodeRequest(id, command));
     return id;
+  }
+
+  /** Attend la réponse à une commande, sans rejouer une action après une déconnexion. */
+  request(command: Command): Promise<Reply> {
+    if (this.socket?.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Daemon hors connexion."));
+    const id = this.nextId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.awaiting.delete(id);
+        const message = "Délai dépassé ; résultat de l'action incertain.";
+        this.handlers.onMessage({ type: "reply", id, reply: { kind: "error", message } });
+        reject(new Error(message));
+      }, 35_000);
+      this.awaiting.set(id, { resolve, reject, timer });
+      try {
+        this.send(command);
+      } catch {
+        clearTimeout(timer);
+        this.awaiting.delete(id);
+        const message = "Envoi impossible ; résultat de l'action incertain.";
+        this.handlers.onMessage({ type: "reply", id, reply: { kind: "error", message } });
+        reject(new Error(message));
+      }
+    });
+  }
+
+  private rejectAwaiting(message: string) {
+    for (const pending of this.awaiting.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(message));
+    }
+    this.awaiting.clear();
   }
 
   private async connect() {
@@ -105,9 +139,20 @@ export class DaemonConnection {
       this.send({ command: "tree" });
     };
     socket.onmessage = (frame) => {
+      if (this.stopped || this.socket !== socket) return;
       if (typeof frame.data !== "string") return;
       try {
-        this.handlers.onMessage(parseServerMessage(frame.data));
+        const message = parseServerMessage(frame.data);
+        this.handlers.onMessage(message);
+        if (message.type === "reply") {
+          const pending = this.awaiting.get(message.id);
+          if (pending) {
+            clearTimeout(pending.timer);
+            this.awaiting.delete(message.id);
+            if (message.reply.kind === "error") pending.reject(new Error(message.reply.message));
+            else pending.resolve(message.reply);
+          }
+        }
       } catch (error) {
         if (!(error instanceof ProtocolError)) throw error;
         console.warn("message du daemon ignoré :", error.message);
@@ -116,6 +161,7 @@ export class DaemonConnection {
     socket.onclose = () => {
       if (this.stopped || this.socket !== socket) return;
       this.socket = null;
+      this.rejectAwaiting("Connexion perdue ; résultat de l'action incertain.");
       if (opened) {
         this.retry("connexion perdue");
       } else {

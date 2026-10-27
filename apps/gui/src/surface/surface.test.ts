@@ -144,4 +144,19 @@ describe("pont des surfaces", () => {
       payload: { b: [1, "2"] },
     });
   });
+
+  it("valide les appels directs sans accepter de cible externe", () => {
+    expect(from({ argos: 1, type: "call", id: 2, name: "set_light", arguments: { name: "salon", state: true }, agent: "autre" })).toEqual({
+      type: "call", id: 2, name: "set_light", arguments: { name: "salon", state: true },
+    });
+    for (const invalid of [
+      { id: 0 }, { id: -1 }, { id: 1.2 }, { id: Number.MAX_SAFE_INTEGER + 1 },
+      { name: "Autre" }, { name: "autre.set_light" }, { name: "a".repeat(65) },
+      { arguments: null }, { arguments: [] }, { arguments: "salon" },
+      { arguments: { value: "é".repeat(MAX_PAYLOAD / 2) } },
+      { arguments: { value: 1n } },
+    ]) {
+      expect(from({ argos: 1, type: "call", id: 1, name: "set_light", arguments: {}, ...invalid })).toBeNull();
+    }
+  });
 });

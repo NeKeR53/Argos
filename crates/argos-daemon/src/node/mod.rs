@@ -23,12 +23,12 @@ pub use link::Nodes;
 
 use crate::engine::{Access, EngineEvent};
 use crate::memory::{MemoryOp, MemoryOutput};
-use argos_core::{AgentId, EngineKind};
+use argos_core::{AgentId, EngineKind, FunctionRequest};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Version du protocole entre hub et nœud.
-pub const NODE_PROTOCOL: u32 = 3;
+pub const NODE_PROTOCOL: u32 = 4;
 
 /// Ce qu'il faut au nœud pour lancer une session ; il complète le reste lui-même
 /// (binaires, `CODEX_HOME`, adresse de son mandataire MCP).
@@ -73,6 +73,16 @@ pub enum ToNode {
         agent: AgentId,
         op: MemoryOp,
     },
+    /// Fonction publiée : exécutée ici, même si son Agent est parké.
+    Function {
+        call: u64,
+        agent: AgentId,
+        request: FunctionRequest,
+        arguments: serde_json::Value,
+    },
+    CancelFunction {
+        call: u64,
+    },
     /// Réponse du hub à une requête MCP relayée ; `body` vide quand il n'y a rien à rendre.
     McpReply {
         call: u64,
@@ -105,6 +115,10 @@ pub enum FromNode {
     MemoryReply {
         call: u64,
         result: Result<MemoryOutput, String>,
+    },
+    FunctionReply {
+        call: u64,
+        result: Result<serde_json::Value, String>,
     },
     /// Copie complète de la mémoire d'un agent, pour le miroir du hub : après chaque
     /// écriture, et pour toutes les mémoires à chaque connexion.

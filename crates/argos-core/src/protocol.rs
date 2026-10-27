@@ -71,6 +71,12 @@ pub enum Command {
         name: String,
         payload: Value,
     },
+    /// Appel déterministe d'une fonction publiée par le propriétaire de la surface.
+    SurfaceCall {
+        surface: String,
+        function: String,
+        arguments: Value,
+    },
     /// L'utilisateur ferme définitivement une surface.
     SurfaceDelete {
         surface: String,
@@ -137,6 +143,9 @@ pub enum Reply {
     },
     Surface {
         surface: SurfaceDoc,
+    },
+    FunctionResult {
+        result: Value,
     },
     Triggers {
         triggers: Vec<Trigger>,

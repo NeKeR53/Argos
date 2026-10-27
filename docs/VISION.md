@@ -38,7 +38,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
   - **Plan de contrôle, déterministe, appliqué par le daemon** (aucun LLM) : stop, kill, park, resume, move, retire, inspect, réordonner le board. Un stop tue le sous-arbre de process.
   - **Plan cognitif, livré à l'agent** : assigner une mission, replanifier.
   - Reprioriser = déterministe par défaut (réordonne le board, option : parker la tâche courante de priorité inférieure).
-- **D15 — Verbes Assistant → Agent** : créer, retirer, assigner une mission, inspecter, réprioriser, parker/réveiller, stopper/annuler, déplacer de nœud, ouvrir un canal. **Agent → Worker** : spawn, assigner la tâche, inspecter, réprioriser, pause, kill.
+- **D15 — Verbes Assistant → Agent** : créer, renommer, retirer, assigner une mission, inspecter, réprioriser, parker/réveiller, stopper/annuler, déplacer de nœud, ouvrir un canal. **Agent → Worker** : spawn, assigner la tâche, inspecter, réprioriser, pause, kill.
 - **D16 — Panic stop** global dans l'overlay (bouton + raccourci), arrêt dur de tout l'arbre.
 
 ## 6. Tâches et registre
@@ -98,6 +98,14 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
   - **Asynchrone**, comme les comptes rendus : la réponse arrive plus tard comme un message ; personne n'attend.
   - **Visible** : chaque message porte son expéditeur, le dialogue est noté au journal des deux Agents et apparaît dans la console.
   - **Garde-fou déterministe** contre les échanges sans fin : un nombre limité de messages par paire d'Agents sur une fenêtre de temps.
+
+## 13 ter. Fonctions publiées
+
+- **D41 — Fonctions créées par les Agents, exécutées sans LLM** (décidé le 2026-10-27). Un Agent publie des actions déterministes de son domaine, par exemple `set_light(name, state)`. Le daemon en conserve la définition et la signature ; l'Assistant et les autres Agents les découvrent et les appellent directement, sans mission, Worker ni réveil du propriétaire. Seul le propriétaire les crée, remplace ou retire ; les Workers ne les publient ni ne les appellent.
+  - **Première version : requêtes HTTP déclaratives**, paramètres scalaires typés, corps JSON, substitutions dans le chemin/query et les données, serveur fixe, secrets d'environnement dans les en-têtes. Pas de code arbitraire. L'exécution se fait sur le nœud du propriétaire, même parké ; un nœud absent fait échouer l'appel sans repli sur le hub.
+  - **Surfaces** : `await argos.call(name, arguments)` appelle uniquement une fonction du propriétaire de cette surface via le bridge, puis rend le résultat JSON ou une erreur. Le HTML n'a ni réseau ni identifiants de service. `send` et `emit` gardent leur sens cognitif.
+  - **Contrôle** : validation des arguments, délais et tailles bornés, appels journalisés sans arguments ni secrets. Stop/retrait/panic stop annulent les appels en cours, sans pouvoir annuler un effet déjà produit au service distant. Aucune relance automatique d'une action.
+  - **Exception explicite à D13/D40** : appeler un service publié autorise seulement l'action exposée ; cela ne donne aucun contrôle sur le board, la mémoire ou les Workers du propriétaire. Les dialogues latéraux restent des questions et informations.
 
 ## 14. Phases
 

@@ -33,6 +33,7 @@ use tokio_tungstenite::tungstenite::handshake::server::{
 const PARK_GRACE: Duration = Duration::from_secs(10);
 /// Une requête MCP sans réponse du hub au bout de ce délai est abandonnée.
 const MCP_TIMEOUT: Duration = Duration::from_secs(600);
+const MAX_FUNCTIONS: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct RunnerSettings {
@@ -157,6 +158,7 @@ impl Runner {
         });
 
         let sessions: Sessions = Arc::default();
+        let mut functions: HashMap<u64, tokio::task::JoinHandle<()>> = HashMap::new();
         loop {
             let frame = tokio::select! {
                 frame = source.next() => frame,
@@ -168,12 +170,15 @@ impl Runner {
                 Some(Ok(_)) => continue,
             };
             match serde_json::from_str::<ToNode>(text.as_str()) {
-                Ok(order) => self.order(order, &sessions, &outbox),
+                Ok(order) => self.order(order, &sessions, &outbox, &mut functions),
                 Err(error) => eprintln!("nœud : message du hub illisible : {error}"),
             }
         }
 
         writer.abort();
+        for function in functions.into_values() {
+            function.abort();
+        }
         {
             let mut hub = locked(&self.inner.hub);
             if hub.as_ref().is_some_and(|hub| hub.epoch == epoch) {
@@ -193,7 +198,13 @@ impl Runner {
         }
     }
 
-    fn order(&self, order: ToNode, sessions: &Sessions, outbox: &Outbox) {
+    fn order(
+        &self,
+        order: ToNode,
+        sessions: &Sessions,
+        outbox: &Outbox,
+        functions: &mut HashMap<u64, tokio::task::JoinHandle<()>>,
+    ) {
         let control = |session: u64| locked(sessions).get(&session).cloned();
         let gone = |session: u64| {
             // Session inconnue (déjà finie) : le hub doit le savoir pour la solder.
@@ -235,6 +246,32 @@ impl Runner {
             },
             ToNode::Memory { call, agent, op } => {
                 tokio::spawn(self.clone().memory(call, agent, op, outbox.clone()));
+            }
+            ToNode::Function {
+                call,
+                agent: _,
+                request,
+                arguments,
+            } => {
+                functions.retain(|_, task| !task.is_finished());
+                if functions.len() >= MAX_FUNCTIONS || functions.contains_key(&call) {
+                    let _ = outbox.send(FromNode::FunctionReply {
+                        call,
+                        result: Err("trop de fonctions en cours sur ce nœud".into()),
+                    });
+                    return;
+                }
+                let outbox = outbox.clone();
+                let task = tokio::spawn(async move {
+                    let result = crate::functions::execute(&request, &arguments).await;
+                    let _ = outbox.send(FromNode::FunctionReply { call, result });
+                });
+                functions.insert(call, task);
+            }
+            ToNode::CancelFunction { call } => {
+                if let Some(task) = functions.remove(&call) {
+                    task.abort();
+                }
             }
             ToNode::McpReply { call, status, body } => {
                 if let Some(waiting) = locked(&self.inner.pending).remove(&call) {

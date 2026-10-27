@@ -262,7 +262,19 @@ pub fn run() {
         .setup(move |app| {
             // L'orbe tient lieu d'icône : pas d'icône dans le Dock (D38).
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                if let Some(console) = app.get_webview_window(shell::MAIN_WINDOW) {
+                    // SAFETY: Tauri fournit le NSWindow vivant, sur le thread principal du setup.
+                    let window =
+                        unsafe { &*console.ns_window()?.cast::<objc2_app_kit::NSWindow>() };
+                    // Une app accessoire doit autoriser explicitement le plein écran de sa console.
+                    window.setCollectionBehavior(
+                        window.collectionBehavior()
+                            | objc2_app_kit::NSWindowCollectionBehavior::FullScreenPrimary,
+                    );
+                }
+            }
             orb::restore(app.handle());
             let errors = shell::register_shortcuts(app.handle(), &gui);
             for error in &errors {

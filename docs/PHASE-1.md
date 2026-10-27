@@ -1,5 +1,7 @@
 # Phase 1 — Noyau local
 
+Après les tranches initiales : les fonctions publiées (D41) permettent aux Agents et à leurs surfaces d'exécuter des actions HTTP sans tour LLM. API, exemples et limites dans [FUNCTIONS.md](FUNCTIONS.md).
+
 Objectif : sur le Mac seul, sans voix, parler à l'Assistant en texte ; il crée un Agent, l'Agent lance des Workers, l'arbre est visible dans la console, le stop fonctionne. Décisions de référence : [VISION.md](VISION.md).
 
 ## Arborescence cible
@@ -105,7 +107,7 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
   - Claude : `--mcp-config` en JSON, plus `--allowedTools mcp__argos`, sinon le mode `-p` refuse l'outil.
   - Codex : la config du `CODEX_HOME` isolé est réécrite à chaque session avec `[mcp_servers.argos]` et `default_tools_approval_mode = "approve"`. Sans ce réglage, `approvalPolicy: never` fait refuser chaque appel faute d'approbation (constaté sur le vrai Codex).
 - **Outils** (`argos_daemon::tools`) :
-  - Assistant : `list_agents`, `create_agent`, `send_to_agent`, `inspect_agent`, `interrupt_agent`, `park_agent`, `stop_agent`, `retire_agent`.
+  - Assistant : `list_agents`, `create_agent`, `rename_agent`, `send_to_agent`, `inspect_agent`, `interrupt_agent`, `park_agent`, `stop_agent`, `retire_agent`. Le renommage conserve l'identité, le périmètre et la session ; le nouveau nom doit être non vide et unique parmi les Agents vivants.
   - Agent : `spawn_worker`, `list_workers`, `send_to_worker`, `inspect_worker`, `interrupt_worker`, `park_worker`, `stop_worker`, `retire_worker`, `report_to_assistant`, `escalate_to_user`.
   - Worker : `report_to_agent`, `escalate_to_agent`.
 - **Autorité (D13)** vérifiée à chaque appel : la cible doit être un enfant direct et non retiré. Un Agent se désigne par son id ou son nom, un Worker par son id. Une erreur d'outil revient à l'agent comme résultat lisible (`isError`), pas comme erreur de protocole.

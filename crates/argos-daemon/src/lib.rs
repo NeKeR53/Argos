@@ -5,6 +5,7 @@ pub mod config;
 pub mod contracts;
 pub mod engine;
 pub mod events;
+pub mod functions;
 pub mod mcp;
 pub mod memory;
 pub mod node;

@@ -2,7 +2,7 @@
 // `buildSrcdoc`, pont `postMessage` vers le daemon. La page est rechargée à chaque version.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Command, SurfaceDoc, SurfaceMeta } from "../protocol";
+import type { Command, Reply, SurfaceDoc, SurfaceMeta } from "../protocol";
 import type { FeedItem } from "../state";
 import { feedMessage, readBridgeMessage } from "../surface/bridge";
 import { buildSrcdoc, SURFACE_SANDBOX } from "../surface/srcdoc";
@@ -17,12 +17,14 @@ interface Props {
   busy: boolean;
   connected: boolean;
   send: (command: Command) => boolean;
+  request: (command: Command) => Promise<Reply>;
 }
 
-export function SurfaceView({ meta, doc, feed, busy, connected, send }: Props) {
+export function SurfaceView({ meta, doc, feed, busy, connected, send, request }: Props) {
   const frame = useRef<HTMLIFrameElement>(null);
   // Dernière ligne du flux remise à la page chargée ; -1 tant que le SDK n'est pas prêt.
   const delivered = useRef(-1);
+  const generation = useRef(0);
   const latest = useRef({ feed, busy });
   latest.current = { feed, busy };
   const [deleting, setDeleting] = useState(false);
@@ -55,6 +57,7 @@ export function SurfaceView({ meta, doc, feed, busy, connected, send }: Props) {
         case "ready":
           // Page (re)chargée : elle repart de zéro et reçoit tout le flux.
           delivered.current = 0;
+          generation.current += 1;
           flush(true);
           break;
         case "send":
@@ -63,12 +66,35 @@ export function SurfaceView({ meta, doc, feed, busy, connected, send }: Props) {
         case "emit":
           send({ command: "surface_emit", surface: meta.id, name: message.name, payload: message.payload });
           break;
+        case "call": {
+          const target = frame.current?.contentWindow;
+          const started = generation.current;
+          const respond = (reply: { result?: unknown; error?: string }) => {
+            // Une réponse d'une ancienne page ne doit pas atteindre le SDK rechargé.
+            if (target && frame.current?.contentWindow === target && generation.current === started) {
+              target.postMessage({ argos: 1, type: "call_result", id: message.id, ...reply }, "*");
+            }
+          };
+          void request({
+            command: "surface_call",
+            surface: meta.id,
+            function: message.name,
+            arguments: message.arguments,
+          }).then((reply) => {
+            if (reply.kind === "function_result") respond({ result: reply.result });
+            else respond({ error: reply.kind === "error" ? reply.message : "Réponse de fonction inattendue." });
+          }, (error: unknown) => respond({ error: error instanceof Error ? error.message : "Appel de fonction impossible." }));
+          break;
+        }
       }
     };
     window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
+    return () => {
+      generation.current += 1;
+      window.removeEventListener("message", onMessage);
+    };
     // `flush` ne lit que des refs : inutile de le suivre.
-  }, [meta.id, send]);
+  }, [meta.id, send, request]);
 
   // Nouvelle page : rien ne lui est remis avant que son SDK annonce `ready`.
   useEffect(() => {

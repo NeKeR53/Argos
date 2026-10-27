@@ -19,6 +19,7 @@ Vocabulaire canonique du projet. Le code, les docs et les prompts des agents uti
 - **Escalade** — un agent remonte au niveau supérieur un besoin qu'il ne peut pas traiter seul (jusqu'à l'utilisateur pour un Agent).
 - **Dialogue latéral** — échange direct entre deux Agents (D40) : questions et informations, jamais des ordres. Adressé par nom, acheminé par le daemon quel que soit le nœud.
 - **Pair** — un autre Agent, interlocuteur possible d'un dialogue latéral.
+- **Fonction publiée** — action HTTP déterministe créée et maintenue par un Agent, persistée par le daemon. L'Assistant, les Agents et les surfaces de son propriétaire peuvent l'appeler sans réveiller sa session. La signature publique contient son nom, sa description et ses paramètres ; la requête et les secrets restent côté daemon.
 - **Expéditeur** — origine d'un message reçu par un agent : l'utilisateur, un autre agent, ou Argos lui-même.
 
 ## Contrôle

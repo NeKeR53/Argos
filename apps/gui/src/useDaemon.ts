@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { DaemonConnection, endpointFromEnvironment } from "./connection";
-import type { Command, ServerMessage } from "./protocol";
+import type { Command, Reply, ServerMessage } from "./protocol";
 import { initialState, reduce, type Action, type AppState } from "./state";
 
 export interface Daemon {
@@ -10,6 +10,7 @@ export interface Daemon {
   dispatch: (action: Action) => void;
   /** Envoie une commande ; `false` si la connexion n'est pas ouverte. */
   send: (command: Command) => boolean;
+  request: (command: Command) => Promise<Reply>;
 }
 
 /**
@@ -55,6 +56,10 @@ export function useDaemon(onMessage?: (message: ServerMessage) => void): Daemon 
     (command: Command) => connection.current?.send(command) != null,
     [],
   );
+  const request = useCallback(
+    (command: Command) => connection.current?.request(command) ?? Promise.reject(new Error("Daemon hors connexion.")),
+    [],
+  );
 
-  return { state, dispatch, send };
+  return { state, dispatch, send, request };
 }

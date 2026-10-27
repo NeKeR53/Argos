@@ -16,6 +16,7 @@ export type FromSurface =
   /** Le SDK est chargé : la console lui remet le flux complet. */
   | { type: "ready" }
   | { type: "send"; text: string }
+  | { type: "call"; id: number; name: string; arguments: { [key: string]: Json } }
   | { type: "emit"; name: string; payload: Json };
 
 /** Ce que la console remet à une surface. */
@@ -54,6 +55,14 @@ export function readBridgeMessage(
       const payload = jsonOf(message.payload);
       return payload === undefined ? null : { type: "emit", name, payload };
     }
+    case "call": {
+      const { id, name } = message;
+      if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) return null;
+      if (typeof name !== "string" || !/^[a-z][a-z0-9_]{0,63}$/.test(name)) return null;
+      const args = jsonOf(message.arguments);
+      if (typeof args !== "object" || args === null || Array.isArray(args)) return null;
+      return { type: "call", id, name, arguments: args };
+    }
     default:
       return null;
   }
@@ -63,7 +72,7 @@ export function readBridgeMessage(
 function jsonOf(value: unknown): Json | undefined {
   try {
     const text = JSON.stringify(value === undefined ? null : value);
-    if (text === undefined || text.length > MAX_PAYLOAD) return undefined;
+    if (text === undefined || new TextEncoder().encode(text).byteLength > MAX_PAYLOAD) return undefined;
     return JSON.parse(text) as Json;
   } catch {
     return undefined;

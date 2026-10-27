@@ -10,6 +10,7 @@ import type {
   Command,
   Origin,
   ProfileInfo,
+  Reply,
   SurfaceDoc,
   SurfaceMeta,
   Trigger,
@@ -54,6 +55,7 @@ interface Props {
   dictation: string | null;
   connected: boolean;
   send: (command: Command) => boolean;
+  request: (command: Command) => Promise<Reply>;
   /** Profils de la politique de modèles, pour choisir le modèle de l'agent. */
   profiles: ProfileInfo[] | null;
   isLiving: (agent: AgentId) => boolean;
@@ -176,6 +178,7 @@ export function ChatPanel(props: Props) {
           busy={agent.busy}
           connected={connected}
           send={send}
+          request={props.request}
         />
       ) : (
         <>

@@ -3,6 +3,7 @@
 //! D20) et ne décide rien d'autre.
 
 mod board;
+mod functions;
 mod surfaces;
 mod triggers;
 
@@ -46,6 +47,8 @@ pub enum RegistryError {
     TriggerNotFound(String),
     #[error("déclencheur : {0}")]
     Trigger(String),
+    #[error("fonction : {0}")]
+    Function(String),
 }
 
 pub type Result<T> = std::result::Result<T, RegistryError>;
@@ -79,7 +82,7 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 7] = [
+const MIGRATIONS: [&str; 8] = [
     AGENTS_SCHEMA,
     board::SCHEMA,
     PROFILE_COLUMN,
@@ -87,6 +90,7 @@ const MIGRATIONS: [&str; 7] = [
     triggers::SCHEMA,
     triggers::ARMED_COLUMN,
     NODE_COLUMN,
+    functions::SCHEMA,
 ];
 
 /// v3 : profil de la politique de modèles (T8).
@@ -246,6 +250,36 @@ impl Registry {
             "WHERE level = 'agent' AND state != 'retired' AND lower(name) = lower(?1)",
             [name.trim()],
         )
+    }
+
+    /// Renomme un Agent vivant, en conservant son identité et sa session.
+    pub fn rename_agent(&self, id: &AgentId, name: &str) -> Result<AgentRecord> {
+        let mut record = self.require(id)?;
+        if record.level != Level::Agent || record.state == AgentState::Retired {
+            return Err(RegistryError::Hierarchy(
+                "seul un Agent non retiré peut être renommé".into(),
+            ));
+        }
+        let charter = record.charter.as_mut().ok_or_else(|| {
+            RegistryError::InvalidCharter("un Agent a forcément une charte".into())
+        })?;
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(RegistryError::InvalidCharter(
+                "le nom est obligatoire".into(),
+            ));
+        }
+        if let Some(other) = self.agent_named(name)?
+            && other.id != *id
+        {
+            return Err(RegistryError::DuplicateName(name.into()));
+        }
+        self.db.execute(
+            "UPDATE agents SET name = ?2 WHERE id = ?1",
+            params![id.as_str(), name],
+        )?;
+        charter.name = name.into();
+        Ok(record)
     }
 
     /// Enfants non retirés, du plus ancien au plus récent.
@@ -674,6 +708,42 @@ mod tests {
     }
 
     #[test]
+    fn renaming_validates_the_target_and_keeps_living_names_unique() {
+        let (registry, assistant) = registry();
+        let domotique = agent(&registry, &assistant, "Domotique");
+        let compta = agent(&registry, &assistant, "Compta");
+        let worker = worker(&registry, &domotique);
+
+        assert!(matches!(
+            registry.rename_agent(&domotique.id, " compta "),
+            Err(RegistryError::DuplicateName(_))
+        ));
+        assert!(matches!(
+            registry.rename_agent(&domotique.id, " \n "),
+            Err(RegistryError::InvalidCharter(_))
+        ));
+        assert_eq!(
+            registry.get(&domotique.id).unwrap(),
+            Some(domotique.clone())
+        );
+        let renamed = registry.rename_agent(&domotique.id, " DOMOTIQUE ").unwrap();
+        assert_eq!(renamed.charter.as_ref().unwrap().name, "DOMOTIQUE");
+
+        registry.retire(&compta.id).unwrap();
+        assert!(registry.rename_agent(&domotique.id, "Compta").is_ok());
+        for id in [&assistant.id, &worker.id, &compta.id] {
+            assert!(matches!(
+                registry.rename_agent(id, "Autre"),
+                Err(RegistryError::Hierarchy(_))
+            ));
+        }
+        assert!(matches!(
+            registry.rename_agent(&AgentId::new("inconnu"), "Autre"),
+            Err(RegistryError::NotFound(_))
+        ));
+    }
+
+    #[test]
     fn retiring_an_agent_retires_its_workers_but_not_the_assistant() {
         let (registry, assistant) = registry();
         let domotique = agent(&registry, &assistant, "Domotique");
@@ -770,7 +840,12 @@ mod tests {
                 .unwrap();
             let domotique = agent(&registry, &assistant, "Domotique");
             registry.set_session(&domotique.id, "session-1").unwrap();
-            (assistant, domotique)
+            let renamed = registry.rename_agent(&domotique.id, "Maison").unwrap();
+            let mut expected = domotique;
+            expected.session_id = Some("session-1".into());
+            expected.charter.as_mut().unwrap().name = "Maison".into();
+            assert_eq!(renamed, expected);
+            (assistant, renamed)
         };
 
         let reopened = Registry::open(&path).unwrap();

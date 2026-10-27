@@ -10,8 +10,8 @@ use super::{FromNode, NODE_PROTOCOL, RemoteSpec, ToNode};
 use crate::engine::{Command, EngineError, EngineEvent, Session};
 use crate::memory::{MemoryOp, MemoryOutput};
 use crate::supervisor::Supervisor;
-use argos_core::AgentId;
 use argos_core::protocol::NodeStatus;
+use argos_core::{AgentId, FunctionRequest};
 use futures_util::{SinkExt, StreamExt};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -25,6 +25,8 @@ use tokio_tungstenite::tungstenite::Message;
 const SPAWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Délai laissé au nœud pour une opération sur une mémoire.
 const MEMORY_TIMEOUT: Duration = Duration::from_secs(30);
+const FUNCTION_TIMEOUT: Duration = Duration::from_secs(35);
+const MAX_FUNCTIONS: usize = 32;
 /// Attente entre deux tentatives de connexion, doublée à chaque échec.
 const RETRY_FIRST: Duration = Duration::from_millis(500);
 const RETRY_MAX: Duration = Duration::from_secs(30);
@@ -59,6 +61,26 @@ struct LinkState {
     spawning: HashMap<u64, oneshot::Sender<Result<String, String>>>,
     /// Opérations sur la mémoire en attente de la réponse du nœud.
     memory: HashMap<u64, oneshot::Sender<Result<MemoryOutput, String>>>,
+    functions: HashMap<u64, oneshot::Sender<Result<serde_json::Value, String>>>,
+}
+
+/// Un appel abandonné ne doit laisser ni attente au hub, ni requête sur le nœud.
+struct FunctionCall {
+    link: Arc<Link>,
+    outbox: mpsc::UnboundedSender<ToNode>,
+    call: u64,
+}
+
+impl Drop for FunctionCall {
+    fn drop(&mut self) {
+        if locked(&self.link.state)
+            .functions
+            .remove(&self.call)
+            .is_some()
+        {
+            let _ = self.outbox.send(ToNode::CancelFunction { call: self.call });
+        }
+    }
 }
 
 impl Nodes {
@@ -140,6 +162,52 @@ impl Nodes {
         }
         locked(&link.state).memory.remove(&call);
         Err(unreachable(node, None).to_string())
+    }
+
+    /// Appelle une fonction sur le nœud de son propriétaire, sans lancer sa session.
+    pub async fn function(
+        &self,
+        node: &str,
+        owner: &AgentId,
+        request: FunctionRequest,
+        arguments: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let link = self
+            .links
+            .get(node)
+            .ok_or_else(|| format!("nœud inconnu : {node}"))?;
+        let call = link.sessions_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let (reply_tx, reply) = oneshot::channel();
+        let outbox = {
+            let mut state = locked(&link.state);
+            let outbox = state
+                .outbox
+                .clone()
+                .ok_or_else(|| unreachable(node, state.error.as_deref()).to_string())?;
+            if state.functions.len() >= MAX_FUNCTIONS {
+                return Err("trop de fonctions en cours sur ce nœud".into());
+            }
+            state.functions.insert(call, reply_tx);
+            outbox
+        };
+        let _pending = FunctionCall {
+            link: Arc::clone(link),
+            outbox: outbox.clone(),
+            call,
+        };
+        outbox
+            .send(ToNode::Function {
+                call,
+                agent: owner.clone(),
+                request,
+                arguments,
+            })
+            .map_err(|_| unreachable(node, None).to_string())?;
+        match tokio::time::timeout(FUNCTION_TIMEOUT, reply).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(unreachable(node, None).to_string()),
+            Err(_) => Err("la fonction distante n'a pas répondu à temps".into()),
+        }
     }
 
     /// Lance une session sur un nœud. Erreur si le nœud est inconnu, injoignable ou
@@ -335,6 +403,11 @@ impl Link {
                     let _ = waiting.send(result);
                 }
             }
+            FromNode::FunctionReply { call, result } => {
+                if let Some(waiting) = locked(&self.state).functions.remove(&call) {
+                    let _ = waiting.send(result);
+                }
+            }
             FromNode::MemorySnapshot { agent, files } => {
                 if let Err(error) = supervisor.memory().mirror(&agent, &files) {
                     eprintln!(
@@ -390,6 +463,7 @@ impl Link {
             state.outbox = None;
             // Réponses perdues : les appelants voient le nœud injoignable.
             state.memory.clear();
+            state.functions.clear();
             (
                 std::mem::take(&mut state.sessions),
                 std::mem::take(&mut state.spawning),
@@ -422,4 +496,111 @@ where
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().expect("verrou empoisonné")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn connected() -> (Nodes, Arc<Link>, mpsc::UnboundedReceiver<ToNode>) {
+        let (outbox, queued) = mpsc::unbounded_channel();
+        let link = Arc::new(Link {
+            name: "pi".into(),
+            config: toml::from_str("url = 'ws://127.0.0.1:1'\ntoken = 'test'").unwrap(),
+            sessions_seq: AtomicU64::new(0),
+            state: Mutex::new(LinkState {
+                outbox: Some(outbox),
+                ..LinkState::default()
+            }),
+        });
+        let nodes = Nodes {
+            links: Arc::new(BTreeMap::from([("pi".into(), link.clone())])),
+        };
+        (nodes, link, queued)
+    }
+
+    fn request() -> FunctionRequest {
+        serde_json::from_value(json!({"method":"GET", "url":"http://127.0.0.1/"})).unwrap()
+    }
+
+    #[tokio::test]
+    async fn functions_return_results_without_creating_a_session() {
+        let (nodes, link, mut queued) = connected();
+        let task = tokio::spawn(async move {
+            nodes
+                .function("pi", &AgentId::new("owner"), request(), json!({}))
+                .await
+        });
+        let Some(ToNode::Function { call, agent, .. }) = queued.recv().await else {
+            panic!("fonction attendue")
+        };
+        assert_eq!(agent, AgentId::new("owner"));
+        let reply = locked(&link.state).functions.remove(&call).unwrap();
+        reply.send(Ok(json!({"on": true}))).unwrap();
+        assert_eq!(task.await.unwrap().unwrap(), json!({"on": true}));
+        assert!(locked(&link.state).sessions.is_empty());
+        assert!(
+            queued.try_recv().is_err(),
+            "pas d'annulation après la réponse"
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_a_call_cancels_it_and_releases_the_pending_slot() {
+        let (nodes, link, mut queued) = connected();
+        let task = tokio::spawn(async move {
+            nodes
+                .function("pi", &AgentId::new("owner"), request(), json!({}))
+                .await
+        });
+        let Some(ToNode::Function { call, .. }) = queued.recv().await else {
+            panic!("fonction attendue")
+        };
+        task.abort();
+        let _ = task.await;
+        assert!(
+            matches!(queued.recv().await, Some(ToNode::CancelFunction { call: cancelled }) if cancelled == call)
+        );
+        assert!(locked(&link.state).functions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn losing_the_node_fails_pending_functions() {
+        let (nodes, link, mut queued) = connected();
+        let task = tokio::spawn(async move {
+            nodes
+                .function("pi", &AgentId::new("owner"), request(), json!({}))
+                .await
+        });
+        assert!(matches!(queued.recv().await, Some(ToNode::Function { .. })));
+        link.disconnected();
+        assert!(task.await.unwrap().unwrap_err().contains("injoignable"));
+        assert!(locked(&link.state).functions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn function_concurrency_is_bounded_and_cancelled_slots_are_released() {
+        let (nodes, link, mut queued) = connected();
+        let mut tasks = Vec::new();
+        for _ in 0..MAX_FUNCTIONS {
+            let nodes = nodes.clone();
+            tasks.push(tokio::spawn(async move {
+                nodes
+                    .function("pi", &AgentId::new("owner"), request(), json!({}))
+                    .await
+            }));
+            assert!(matches!(queued.recv().await, Some(ToNode::Function { .. })));
+        }
+        let error = nodes
+            .function("pi", &AgentId::new("owner"), request(), json!({}))
+            .await
+            .unwrap_err();
+        assert!(error.contains("trop de fonctions"));
+        for task in tasks {
+            task.abort();
+            let _ = task.await;
+        }
+        assert!(locked(&link.state).functions.is_empty());
+    }
 }

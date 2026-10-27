@@ -25,5 +25,8 @@ toml = "1"
 # Réécrit un réglage de `config.toml` sans perdre ses commentaires.
 toml_edit = "0.25"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSWindow"] }
+
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-global-shortcut = "2"
