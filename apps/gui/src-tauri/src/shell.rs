@@ -1,9 +1,9 @@
 //! Coquille de l'app (D37–D38) : orbe et console, raccourcis globaux, points d'accroche
 //! de la voix, et garde des navigations des webviews (surfaces comprises, D28).
 //!
-//! Points d'accroche pour la voix (la crate `argos-voice` s'y branchera) :
-//! - événement [`EVENT_PUSH_TO_TALK`] `{ "pressed": bool }`, émis à l'appui et au
-//!   relâchement du raccourci push-to-talk ; écoutable en Rust (`app.listen`) comme en JS ;
+//! Points d'accroche de la voix (branchée dans `voice.rs`) :
+//! - événement [`EVENT_PUSH_TO_TALK`] `{ "pressed": bool }`, émis une fois à l'appui et
+//!   une fois au relâchement du raccourci push-to-talk ; écoutable en Rust comme en JS ;
 //! - [`set_voice_state`] (et la commande `set_voice_state { state, level }`) : pose l'état
 //!   vocal de l'orbe, émis en [`EVENT_VOICE_STATE`] `{ "state": "listening" | "speaking" |
 //!   null, "level": 0..1 }`. `null` rend la main à l'état de l'Assistant (repos ou réflexion).
@@ -41,8 +41,8 @@ pub struct VoiceState {
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
-struct PushToTalk {
-    pressed: bool,
+pub struct PushToTalk {
+    pub pressed: bool,
 }
 
 /// Pose l'état vocal de l'orbe ; le niveau est borné à 0..1.
@@ -93,8 +93,9 @@ pub fn register_shortcuts<R: Runtime>(app: &AppHandle<R>, config: &GuiConfig) ->
         }
     };
     add("push-to-talk", &config.push_to_talk, |app, state| {
-        let pressed = state == ShortcutState::Pressed;
-        let _ = app.emit(EVENT_PUSH_TO_TALK, PushToTalk { pressed });
+        // Micro ouvert à l'appui, transcription au relâchement ; l'événement
+        // `push-to-talk` part de là, une fois par appui.
+        crate::voice::push_to_talk(app, state == ShortcutState::Pressed);
     });
     add("console", &config.console, |app, state| {
         if state == ShortcutState::Pressed {

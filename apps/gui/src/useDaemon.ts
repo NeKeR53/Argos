@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { DaemonConnection, endpointFromEnvironment } from "./connection";
-import type { Command } from "./protocol";
+import type { Command, ServerMessage } from "./protocol";
 import { initialState, reduce, type Action, type AppState } from "./state";
 
 export interface Daemon {
@@ -12,9 +12,15 @@ export interface Daemon {
   send: (command: Command) => boolean;
 }
 
-export function useDaemon(): Daemon {
+/**
+ * `onMessage` voit passer chaque message du daemon, après le réducteur : pour les effets
+ * qui n'ont pas leur place dans l'état (la voix lit les réponses de l'Assistant).
+ */
+export function useDaemon(onMessage?: (message: ServerMessage) => void): Daemon {
   const [state, dispatch] = useReducer(reduce, initialState);
   const connection = useRef<DaemonConnection | null>(null);
+  const observer = useRef(onMessage);
+  observer.current = onMessage;
 
   useEffect(() => {
     const endpoint = endpointFromEnvironment();
@@ -30,7 +36,10 @@ export function useDaemon(): Daemon {
       return;
     }
     const live = new DaemonConnection(endpoint, {
-      onMessage: (message) => dispatch({ type: "server", message }),
+      onMessage: (message) => {
+        dispatch({ type: "server", message });
+        observer.current?.(message);
+      },
       onConnection: (connection) => dispatch({ type: "connection", connection }),
       onRequest: (id, command) => dispatch({ type: "requested", id, command }),
     });

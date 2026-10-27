@@ -477,6 +477,7 @@ describe("déclencheurs", () => {
     secret: null,
     enabled: true,
     created_at: 1,
+    armed_at: 1,
     last_fired: null,
     ...extra,
   });

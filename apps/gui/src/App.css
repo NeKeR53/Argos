@@ -746,6 +746,56 @@ textarea {
   margin-top: 16px;
 }
 
+/* --- Voix ----------------------------------------------------------------------- */
+
+.voice-badge {
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--text-muted);
+}
+
+.voice-badge[data-status="ready"] {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+  color: var(--ok);
+}
+
+.voice-badge[data-status="failed"] {
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  color: var(--warn);
+}
+
+.voice-badge[data-status="disabled"],
+.voice-badge[data-status="failed"] {
+  cursor: help;
+}
+
+.voice-trial {
+  display: flex;
+  gap: 6px;
+}
+
+.voice-trial input {
+  width: 220px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font: inherit;
+  font-size: 12px;
+  color: inherit;
+}
+
+.entry-dictation .bubble {
+  border: 1px dashed var(--accent);
+  background: transparent;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
 /* --- Texte en streaming --------------------------------------------------------- */
 
 .caret {

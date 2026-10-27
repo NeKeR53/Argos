@@ -104,11 +104,13 @@ name = "argos-gui"
 version = "0.1.0"
 dependencies = [
  "argos-core",
+ "argos-voice",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",
+ "tokio",
  "toml 1.1.8+spec-1.1.0",
 ]
 

@@ -42,6 +42,9 @@ pub struct GuiConfig {
     pub console: String,
     /// Arrêt dur de tout l'arbre : deux appuis en moins de 2 s.
     pub panic: String,
+    /// Lire aussi à voix haute les réponses aux demandes tapées (par défaut, seules les
+    /// réponses aux demandes faites à la voix sont lues).
+    pub speak_typed_replies: bool,
 }
 
 impl Default for GuiConfig {
@@ -50,8 +53,15 @@ impl Default for GuiConfig {
             push_to_talk: "Alt+Space".into(),
             console: "CmdOrCtrl+Shift+A".into(),
             panic: "CmdOrCtrl+Shift+X".into(),
+            speak_typed_replies: false,
         }
     }
+}
+
+/// Texte de `config.toml`, s'il existe (le voisin de `[gui]` qu'est `[voice]` est lu
+/// par le moteur vocal).
+pub fn config_text_in(home: &Path) -> Option<String> {
+    std::fs::read_to_string(home.join("config.toml")).ok()
 }
 
 fn parse_config(config: Option<&str>) -> Result<ConfigFile, String> {

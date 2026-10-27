@@ -150,6 +150,11 @@ export interface Trigger {
   secret: string | null;
   enabled: boolean;
   created_at: number;
+  /**
+   * Dernière (ré)activation : un périodique compte ses échéances à partir d'ici ou de son
+   * dernier déclenchement, le plus récent des deux.
+   */
+  armed_at: number;
   last_fired: number | null;
 }
 

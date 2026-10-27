@@ -156,6 +156,7 @@ describe("messages du daemon", () => {
       secret: "s3cr3t",
       enabled: true,
       created_at: 1,
+      armed_at: 1,
       last_fired: null,
     };
     const frames = [

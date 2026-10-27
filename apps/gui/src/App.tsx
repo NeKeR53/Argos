@@ -17,6 +17,8 @@ import {
   type Notice,
 } from "./state";
 import { useDaemon } from "./useDaemon";
+import { simulateVoice, useVoiceView } from "./useVoiceView";
+import { voiceReason, voiceStatusLabel, type VoiceStatus } from "./voice";
 import { AgentTree } from "./components/AgentTree";
 import { ChatPanel } from "./components/ChatPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -30,9 +32,12 @@ const isMac = navigator.platform.toLowerCase().startsWith("mac");
 const PANIC_SHORTCUT = isMac ? "⌘⇧X" : "Ctrl+Maj+X";
 /** Liste vide stable : évite de relancer les effets des surfaces à chaque rendu. */
 const NO_SURFACES: SurfaceMeta[] = [];
+/** Essai de la voix sans micro (`voice_simulate`) : app Tauri de dev seulement. */
+const VOICE_TRIAL = import.meta.env.DEV && isTauri();
 
 export default function App() {
   const { state, dispatch, send } = useDaemon();
+  useVoiceView(dispatch);
   const [hooksBase, setHooksBase] = useState<string | null>(null);
   useEffect(() => {
     void resolveHooksBase().then(setHooksBase);
@@ -74,7 +79,9 @@ export default function App() {
       <header className="topbar">
         <span className="brand">Argos</span>
         <ConnectionBadge connection={state.connection} />
+        {state.voice.status && <VoiceBadge status={state.voice.status} />}
         <span className="spacer" />
+        {VOICE_TRIAL && <VoiceTrial disabled={!connected} />}
         <button
           type="button"
           className="button panic"
@@ -132,6 +139,7 @@ export default function App() {
               triggers={state.triggers[agent.id]}
               triggerRevision={state.triggerRevisions[agent.id] ?? 0}
               hooksBase={hooksBase}
+              dictation={state.voice.dictation}
               connected={connected}
               send={send}
               isLiving={isLiving}
@@ -176,6 +184,40 @@ export default function App() {
         </ConfirmDialog>
       )}
     </div>
+  );
+}
+
+/** État de la voix ; s'il manque, la raison est dans l'infobulle (et dans un avis). */
+function VoiceBadge({ status }: { status: VoiceStatus }) {
+  const reason = voiceReason(status);
+  return (
+    <span className="voice-badge" data-status={status.status} title={reason ?? undefined}>
+      {voiceStatusLabel(status)}
+    </span>
+  );
+}
+
+/** Dev seulement : une phrase « dite » sans micro, pour essayer toute la boucle vocale. */
+function VoiceTrial({ disabled }: { disabled: boolean }) {
+  const [text, setText] = useState("Dis-moi bonjour en une phrase");
+  return (
+    <form
+      className="voice-trial"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (text.trim()) simulateVoice(text.trim());
+      }}
+    >
+      <input
+        value={text}
+        aria-label="Phrase à simuler"
+        onChange={(event) => setText(event.target.value)}
+        disabled={disabled}
+      />
+      <button type="submit" className="button" disabled={disabled} title="voice_simulate (dev)">
+        Simuler la voix
+      </button>
+    </form>
   );
 }
 
