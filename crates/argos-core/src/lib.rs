@@ -168,6 +168,11 @@ pub struct AgentRecord {
     /// Profil de la politique de modèles dont viennent moteur et modèle (D22) ; il
     /// donne la chaîne de repli. Absent pour l'Assistant, choisi par l'utilisateur.
     pub profile: Option<String>,
+    /// Nœud où tourne sa session (D32) ; `None` pour le nœud du hub. Un Worker tourne sur
+    /// le nœud de son Agent.
+    #[serde(default)]
+    pub node: Option<String>,
+    /// Sur un autre nœud, un chemin relatif part du dossier de données de ce nœud.
     pub workdir: PathBuf,
     /// Présente pour les Agents seulement.
     pub charter: Option<Charter>,

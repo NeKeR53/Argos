@@ -9,6 +9,7 @@ Objectif (D29–D31) : des agents stimulés par des événements, même au repos
   - Seuls l'Assistant et les Agents en créent et en reçoivent. Retirer un agent supprime ses déclencheurs.
 - **Moteur d'événements** (`argos_daemon::events`), lancé par le daemon. Une passe par seconde :
   - déclenche les périodiques échus ; la référence est le dernier déclenchement, donc après une absence un déclencheur ne part qu'une fois, sans rafale de rattrapage ;
+  - réactiver un déclencheur suspendu le **réarme** (`armed_at`, schéma v6) : il attend sa prochaine échéance au lieu de partir aussitôt. Ce bug a été trouvé pendant la vérification de la console ;
   - ouvre et ferme les surveillances de dossiers selon la base (crate `notify`, FSEvents sur macOS) : un fichier créé ou déposé déclenche, et un même fichier n'est signalé qu'une fois sur 3 s.
 - **Webhook** : `POST /hooks/<déclencheur>/<secret>` sur le serveur HTTP du daemon (celui du MCP). Le corps de l'appel, 20 000 caractères au plus, accompagne la consigne. Un déclencheur inconnu, suspendu ou appelé avec un mauvais secret reçoit 404. Cela couvre Home Assistant, dont les automatisations savent appeler un webhook.
 - **Livraison** : la consigne est remise à la cible au nom d'Argos, préfixée `[Déclencheur « nom » (tr-…, source)]`, avec le contenu de l'événement (chemin du fichier, corps du webhook…). Un agent parké est réveillé (D31). La remise se fait dans sa propre tâche, pour qu'un réveil lent ne retarde pas les autres déclencheurs.
@@ -28,4 +29,6 @@ Objectif (D29–D31) : des agents stimulés par des événements, même au repos
 - **Connecteur email (IMAP / Gmail)** : demande de stocker un accès à ta boîte mail. C'est une décision de sécurité qui te revient : où vit le secret (trousseau macOS, fichier 0600), quel compte, lecture seule.
 - **Script personnalisé** (D30, la soupape) : exécuter un script écrit par un agent demande un vrai bac à sable (`sandbox-exec` sur macOS, bubblewrap sous Linux) ; à décider avec l'isolation de la phase 4.
 - **MQTT** : en attendant, le webhook couvre Home Assistant.
-- **Console** : liste des déclencheurs d'un agent, interrupteurs, activation. L'API est prête, l'affichage reste à faire.
+- **Déclencheurs déportés** : un déclencheur tourne sur le hub, même pour un Agent placé sur un autre nœud (voir docs/PHASE-4.md).
+
+La **console** est faite (phase 3 de la GUI) : un panneau liste les déclencheurs d'un agent avec leur prochaine échéance, et permet d'actionner, suspendre et supprimer.

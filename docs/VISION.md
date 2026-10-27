@@ -55,7 +55,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 
 ## 8. Mémoire
 
-- **D23 — Mémoire persistante pour l'Assistant et les Agents** (pas les Workers), en fichiers Markdown sur le nœud de l'agent : index, journal, notes de domaine, registre des enfants. Deux étages : notes libres écrites par l'agent + état structuré écrit par le daemon.
+- **D23 — Mémoire persistante pour l'Assistant et les Agents** (pas les Workers), en fichiers Markdown sur le nœud de l'agent : index, journal, notes de domaine, registre des enfants. Deux étages : notes libres écrites par l'agent + état structuré écrit par le daemon. *Écart provisoire (phase 4) : la mémoire d'un agent placé sur un autre nœud reste sur le hub ; à trancher, voir docs/PHASE-4.md.*
 - **D24 — Discipline de contexte** : la session charge un digest + les notes pertinentes à la demande ; avant la saturation, l'agent résume dans sa mémoire puis purge.
 - **D25 — Git local par dossier mémoire** comme journal d'annulation (jamais utilisé pour la synchro). Sync par SSH via le mesh vers le hub, miroir sur le Mac ouvrable dans Obsidian **en consultation seule**.
 
@@ -73,7 +73,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 
 ## 11. Multi-nœud
 
-- **D32 — Étoile sur SSH** : chaque daemon écoute en local, les nœuds distants sont atteints par tunnel SSH. Le **hub est sur le VPS** et héberge l'Assistant ; le Mac est un client (GUI + voix). Les daemons distants restent autonomes quand le hub est absent et mettent les escalades en file.
+- **D32 — Étoile sur SSH** : chaque daemon écoute en local, les nœuds distants sont atteints par tunnel SSH. Le **hub est sur le VPS** et héberge l'Assistant ; le Mac est un client (GUI + voix). Les daemons distants restent autonomes quand le hub est absent et mettent les escalades en file. *Pas encore : aujourd'hui un nœud sans hub parke ses sessions (docs/PHASE-4.md).*
 - **D33 — Ajout de nœud = privilège humain.** Depuis la console : détection OS/arch, push du binaire cross-compilé, installation en service (systemd/launchd), enregistrement. L'Assistant place des agents uniquement sur des nœuds enregistrés.
 
 ## 12. Sécurité

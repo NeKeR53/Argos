@@ -436,6 +436,7 @@ mod tests {
         registry
             .create(NewAgent {
                 profile: None,
+                node: None,
                 parent: assistant.id.clone(),
                 level: Level::Agent,
                 engine: EngineKind::Claude,
@@ -453,6 +454,7 @@ mod tests {
         registry
             .create(NewAgent {
                 profile: None,
+                node: None,
                 parent: agent.id.clone(),
                 level: Level::Worker,
                 engine: EngineKind::Codex,

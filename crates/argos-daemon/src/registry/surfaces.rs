@@ -178,6 +178,7 @@ mod tests {
                 engine: EngineKind::Claude,
                 model: None,
                 profile: None,
+                node: None,
                 workdir: "/p".into(),
                 charter: Some(Charter {
                     name: "Lecteur".into(),
@@ -192,6 +193,7 @@ mod tests {
                 engine: EngineKind::Claude,
                 model: None,
                 profile: None,
+                node: None,
                 workdir: "/p".into(),
                 charter: None,
             })

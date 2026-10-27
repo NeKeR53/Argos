@@ -12,6 +12,7 @@ use crate::engine::{
     prepare_codex_home,
 };
 use crate::memory::Memory;
+use crate::node::{Nodes, RemoteSpec};
 use crate::policy::ModelPolicy;
 use crate::registry::{NewAgent, Registry, RegistryError};
 use argos_core::protocol::{AgentStatus, DaemonEvent, Origin};
@@ -45,6 +46,8 @@ pub struct SupervisorSettings {
     pub mcp_url: Option<String>,
     /// Politique de modèles : profils, replis, plafonds (D22).
     pub policy: ModelPolicy,
+    /// Les autres nœuds, où tournent les agents qui y sont placés (D32).
+    pub nodes: Nodes,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -159,6 +162,10 @@ impl Supervisor {
 
     pub fn policy(&self) -> &ModelPolicy {
         &self.inner.settings.policy
+    }
+
+    pub fn nodes(&self) -> &Nodes {
+        &self.inner.settings.nodes
     }
 
     /// Flux de tous les événements des agents.
@@ -342,9 +349,19 @@ impl Supervisor {
             }
         }
         self.check_parallel_cap(&record)?;
-        let spawned = match self.spec_for(&record) {
-            Ok(spec) => Session::spawn(spec).await.map_err(SupervisorError::from),
-            Err(error) => Err(error),
+        let spawned = match &record.node {
+            None => match self.spec_for(&record) {
+                Ok(spec) => Session::spawn(spec).await.map_err(SupervisorError::from),
+                Err(error) => Err(error),
+            },
+            Some(node) => match self.remote_spec_for(&record) {
+                Ok(spec) => self
+                    .nodes()
+                    .spawn(node, spec)
+                    .await
+                    .map_err(SupervisorError::from),
+                Err(error) => Err(error),
+            },
         };
         let (control, events) = match spawned {
             Ok(session) => session.split(),
@@ -480,7 +497,32 @@ impl Supervisor {
             prepare_codex_home(&home, &settings.user_codex_home)?;
             spec.codex_home = Some(home);
         }
-        // Le contrat du niveau d'abord, puis la mémoire pour ceux qui en ont une.
+        spec.instructions = Some(self.instructions(record)?);
+        Ok(spec)
+    }
+
+    /// La demande de session d'un agent placé sur un autre nœud. Le nœud complète ce
+    /// qui lui est propre ; la mémoire reste sur le hub, servie par les outils MCP.
+    fn remote_spec_for(&self, record: &AgentRecord) -> Result<RemoteSpec> {
+        Ok(RemoteSpec {
+            agent: record.id.clone(),
+            engine: record.engine,
+            cwd: record.workdir.clone(),
+            model: record.model.clone(),
+            instructions: Some(self.instructions(record)?),
+            resume: record.session_id.clone(),
+            read_only: record.level != Level::Worker,
+            mcp_token: self
+                .inner
+                .settings
+                .mcp_url
+                .as_ref()
+                .map(|_| self.mcp_token(&record.id)),
+        })
+    }
+
+    /// Le contrat du niveau d'abord, puis la mémoire pour ceux qui en ont une.
+    fn instructions(&self, record: &AgentRecord) -> Result<String> {
         let mut instructions = contracts::contract(record, self.policy());
         if record.level.has_memory() {
             let memory = &self.inner.memory;
@@ -489,8 +531,7 @@ impl Supervisor {
             instructions.push('\n');
             instructions.push_str(&memory.digest(&record.id)?);
         }
-        spec.instructions = Some(instructions);
-        Ok(spec)
+        Ok(instructions)
     }
 
     /// L'état structuré d'un agent, réécrit dans sa mémoire à chaque réveil (D23).
@@ -508,9 +549,10 @@ impl Supervisor {
         }
         let _ = writeln!(
             state,
-            "- Moteur : {} ({})\n- Répertoire de travail : {}",
+            "- Moteur : {} ({})\n- Nœud : {}\n- Répertoire de travail : {}",
             record.engine,
             record.model.as_deref().unwrap_or("modèle par défaut"),
+            record.node.as_deref().unwrap_or("le hub"),
             record.workdir.display()
         );
         let children = registry.children(&record.id)?;

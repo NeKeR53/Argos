@@ -41,6 +41,7 @@ pub fn world_with(policy: ModelPolicy) -> World {
     let agent = registry
         .create(NewAgent {
             profile: None,
+            node: None,
             parent: assistant.id.clone(),
             level: Level::Agent,
             engine: EngineKind::Claude,
@@ -55,6 +56,7 @@ pub fn world_with(policy: ModelPolicy) -> World {
     let worker = registry
         .create(NewAgent {
             profile: None,
+            node: None,
             parent: agent.id.clone(),
             level: Level::Worker,
             engine: EngineKind::Codex,
@@ -72,6 +74,7 @@ pub fn world_with(policy: ModelPolicy) -> World {
         ]),
         mcp_url: None,
         policy,
+        nodes: Default::default(),
     };
     let supervisor = Supervisor::new(registry, settings);
     let events = supervisor.subscribe();

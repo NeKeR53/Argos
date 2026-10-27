@@ -66,8 +66,10 @@ impl SessionSpec {
     }
 }
 
-/// Événement normalisé, identique quel que soit le moteur.
-#[derive(Debug, Clone, PartialEq)]
+/// Événement normalisé, identique quel que soit le moteur. Sérialisable : un nœud
+/// distant le relaie tel quel au hub (`node`).
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum EngineEvent {
     /// Fragment du message en cours de génération (pour parler avant la fin, D37). Le
     /// message complet suit toujours avec `AgentMessage`.
@@ -108,13 +110,16 @@ pub enum EngineError {
     Closed,
 }
 
-enum Command {
+pub(crate) enum Command {
     Send(String),
     Interrupt,
     Park,
+    /// Arrêt dur d'une session distante ; une session locale tue son groupe de process
+    /// directement.
+    Kill,
 }
 
-type Events = mpsc::UnboundedSender<EngineEvent>;
+pub(crate) type Events = mpsc::UnboundedSender<EngineEvent>;
 
 /// Une session vivante. Le process appartient à une tâche de fond ; ce handle lui
 /// transmet les commandes et reçoit ses événements, jusqu'à `Exited`. [`Session::split`]
@@ -128,7 +133,8 @@ pub struct Session {
 #[derive(Clone)]
 pub struct SessionControl {
     session_id: String,
-    pgid: i32,
+    /// Groupe de process local ; `None` pour une session sur un autre nœud.
+    pgid: Option<i32>,
     exited: Arc<AtomicBool>,
     commands: mpsc::UnboundedSender<Command>,
 }
@@ -175,8 +181,9 @@ impl Session {
         self.events.next_event().await
     }
 
-    /// Démarre la tâche qui possède le process. `driver` rend l'événement de fin.
-    fn launch<F, Fut>(session_id: String, pgid: i32, driver: F) -> Session
+    /// Démarre la tâche qui possède le process (ou son relais, pour une session
+    /// distante). `driver` rend l'événement de fin.
+    pub(crate) fn launch<F, Fut>(session_id: String, pgid: Option<i32>, driver: F) -> Session
     where
         F: FnOnce(mpsc::UnboundedReceiver<Command>, Events) -> Fut,
         Fut: Future<Output = EngineEvent> + Send + 'static,
@@ -225,8 +232,14 @@ impl SessionControl {
 
     /// Arrêt dur du process et de tout ce qu'il a lancé (plan de contrôle, D14).
     pub fn kill(&self) {
-        if !self.exited.load(Ordering::SeqCst) {
-            process::kill_group(self.pgid);
+        if self.exited.load(Ordering::SeqCst) {
+            return;
+        }
+        match self.pgid {
+            Some(pgid) => process::kill_group(pgid),
+            None => {
+                let _ = self.command(Command::Kill);
+            }
         }
     }
 

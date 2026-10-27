@@ -2,6 +2,7 @@
 //! protégée par un jeton : elle pilote des agents qui exécutent des commandes.
 
 use crate::events;
+use crate::node::token_in;
 use crate::supervisor::Supervisor;
 use argos_core::protocol::{Command, Origin, Reply, Request, ServerMessage};
 use argos_core::{AgentId, Level, PROTOCOL_VERSION};
@@ -102,12 +103,6 @@ async fn connection(stream: TcpStream, supervisor: Supervisor, token: String) {
         }
     }
     writer.abort();
-}
-
-fn token_in(query: Option<&str>) -> Option<&str> {
-    query?
-        .split('&')
-        .find_map(|pair| pair.strip_prefix("token="))
 }
 
 async fn handle(supervisor: &Supervisor, command: Command) -> Reply {
@@ -213,6 +208,9 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
                 .map_err(said)?;
             done(vec![trigger.target])
         }
+        Command::Nodes => Reply::Nodes {
+            nodes: supervisor.nodes().status(),
+        },
         Command::SurfaceDelete { surface } => {
             let meta = supervisor
                 .registry()

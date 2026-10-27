@@ -89,6 +89,8 @@ pub enum Command {
     DeleteTrigger {
         trigger: String,
     },
+    /// Les nœuds déclarés et l'état de leur connexion (D32).
+    Nodes,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -128,6 +130,9 @@ pub enum Reply {
     Triggers {
         triggers: Vec<Trigger>,
     },
+    Nodes {
+        nodes: Vec<NodeStatus>,
+    },
     /// Commande exécutée ; `affected` liste les agents touchés (stop, retrait…).
     Done {
         affected: Vec<AgentId>,
@@ -135,6 +140,15 @@ pub enum Reply {
     Error {
         message: String,
     },
+}
+
+/// Un nœud déclaré dans la configuration du hub.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeStatus {
+    pub name: String,
+    pub connected: bool,
+    /// Dernière erreur de connexion, tant que le nœud est injoignable.
+    pub error: Option<String>,
 }
 
 /// Un agent du registre, avec son état d'exécution.

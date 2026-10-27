@@ -68,6 +68,7 @@ async fn calls_argos_tools(engine: EngineKind, model: &str) {
     registry
         .create(NewAgent {
             profile: None,
+            node: None,
             parent: assistant.id.clone(),
             level: Level::Agent,
             engine,
@@ -90,6 +91,7 @@ async fn calls_argos_tools(engine: EngineKind, model: &str) {
             programs: HashMap::new(),
             mcp_url: Some(mcp_url),
             policy: argos_daemon::policy::ModelPolicy::default(),
+            nodes: Default::default(),
         },
     );
     tokio::spawn(argos_daemon::mcp::serve(listener, supervisor.clone()));

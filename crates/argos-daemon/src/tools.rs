@@ -184,11 +184,21 @@ fn level_tools(level: Level) -> Vec<Tool> {
                     ),
                     ("profile", "Profil de modèle."),
                     (
+                        "node",
+                        "Nœud où il tourne (voir list_nodes). Par défaut, le hub. Place-le sur le nœud de ce dont il s'occupe.",
+                    ),
+                    (
                         "workdir",
-                        "Répertoire de travail. Par défaut, un dossier dédié.",
+                        "Répertoire de travail, sur son nœud. Par défaut, un dossier dédié.",
                     ),
                 ],
                 &["name", "scope"],
+            ),
+            tool(
+                "list_nodes",
+                "Liste les nœuds (machines) où tu peux placer un Agent, et s'ils sont joignables. Seul l'utilisateur en ajoute.",
+                &[],
+                &[],
             ),
             tool(
                 "assign_mission",
@@ -452,6 +462,13 @@ pub async fn call(
             listed(supervisor.children(&caller.id).map_err(said)?)
         }
         (Level::Assistant, "create_agent") => create_agent(supervisor, caller, args),
+        (Level::Assistant, "list_nodes") => {
+            let nodes = supervisor.nodes().status();
+            if nodes.is_empty() {
+                return Ok("Aucun autre nœud : tout tourne sur le hub.".into());
+            }
+            Ok(json!(nodes).to_string())
+        }
         (Level::Assistant, "assign_mission") => assign_mission(supervisor, caller, args).await,
         (Level::Assistant, "prioritize_mission") => {
             let mission = own_mission(supervisor, caller, text(args, "mission")?)?;
@@ -761,13 +778,24 @@ fn create_agent(
     let (profile, choice) = supervisor
         .policy()
         .resolve(optional(args, "profile"), Level::Agent)?;
-    let workdir = match optional(args, "workdir") {
-        Some(dir) => dir.into(),
-        None => supervisor.agents_dir().join(format!(
-            "{}-{}",
-            slug(name),
-            &uuid::Uuid::new_v4().simple().to_string()[..4]
-        )),
+    let node = optional(args, "node").map(String::from);
+    if let Some(node) = &node
+        && !supervisor.nodes().is_known(node)
+    {
+        return Err(format!(
+            "nœud inconnu : {node}. Les nœuds se déclarent par l'utilisateur ; voir list_nodes."
+        ));
+    }
+    let dir = format!(
+        "{}-{}",
+        slug(name),
+        &uuid::Uuid::new_v4().simple().to_string()[..4]
+    );
+    let workdir = match (optional(args, "workdir"), &node) {
+        (Some(dir), _) => dir.into(),
+        (None, None) => supervisor.agents_dir().join(dir),
+        // Sur un autre nœud : relatif à son dossier de données.
+        (None, Some(_)) => std::path::Path::new("agents").join(dir),
     };
     let agent = supervisor
         .create(NewAgent {
@@ -776,6 +804,7 @@ fn create_agent(
             engine: choice.engine,
             model: Some(choice.model),
             profile: Some(profile),
+            node,
             workdir,
             charter: Some(Charter {
                 name: name.into(),
@@ -789,8 +818,9 @@ fn create_agent(
         &format!("{} créé : {}", label(&agent), text(args, "scope")?),
     );
     Ok(format!(
-        "Agent « {name} » créé ({}), au repos jusqu'à sa première mission. Répertoire : {}.",
+        "Agent « {name} » créé ({}), au repos jusqu'à sa première mission. Nœud : {}. Répertoire : {}.",
         agent.id,
+        agent.node.as_deref().unwrap_or("le hub"),
         agent.workdir.display()
     ))
 }
@@ -960,6 +990,7 @@ async fn spawn_worker(
             engine: choice.engine,
             model: Some(choice.model),
             profile: Some(profile),
+            node: None,
             workdir: caller.workdir.clone(),
             charter: None,
         })
@@ -1227,6 +1258,7 @@ fn summary(status: &AgentStatus) -> Value {
         "scope": record.charter.as_ref().map(|charter| &charter.scope),
         "engine": record.engine,
         "model": record.model,
+        "node": record.node,
         "state": record.state,
         "running": status.running,
         "busy": status.busy,

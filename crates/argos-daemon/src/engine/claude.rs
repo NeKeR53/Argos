@@ -23,7 +23,7 @@ pub(super) async fn spawn(spec: SessionSpec) -> Result<Session, EngineError> {
     let pgid = process.pgid;
     Ok(Session::launch(
         session_id,
-        pgid,
+        Some(pgid),
         move |commands, events| drive(process, commands, events),
     ))
 }
@@ -112,7 +112,7 @@ async fn drive(
                 let message = match command {
                     Some(Command::Send(text)) => user_message(&text),
                     Some(Command::Interrupt) => state.interrupt_request(),
-                    Some(Command::Park) | None => break,
+                    Some(Command::Park | Command::Kill) | None => break,
                 };
                 // Une écriture ratée signifie que le process est mort : la fin de stdout suit.
                 let _ = process::write_json(&mut process.stdin, &message).await;
