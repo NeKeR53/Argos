@@ -313,7 +313,7 @@ impl Runner {
         spec.model = remote.model;
         spec.instructions = remote.instructions;
         spec.resume = remote.resume;
-        spec.read_only = remote.read_only;
+        spec.access = remote.access;
         spec.program = settings.programs.get(&remote.engine).cloned();
         if let Some(token) = remote.mcp_token {
             spec.mcp_servers = vec![McpServer {

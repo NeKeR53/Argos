@@ -51,7 +51,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 ## 7. Modèles
 
 - **D21 — Cascade de choix** : l'utilisateur fixe moteur + modèle de l'Assistant ; l'Assistant choisit pour les Agents, l'Agent pour ses Workers. Override utilisateur toujours prioritaire.
-- **D22 — Politique de modèles** : profils sémantiques éditables (ex. `code` → Claude Code + Opus 5.5 ; `léger` → Codex + `gpt-6-luna`), chaîne de repli quand un quota est épuisé (détecté par le daemon, notification courte), plafonds globaux. L'agent choisit un profil, pas un modèle en dur.
+- **D22 — Politique de modèles** : profils sémantiques éditables (ex. `code` → Claude Code + Opus 5.5 ; `léger` → Claude Haiku 5.5, puis Codex `gpt-6-luna`), chaîne de repli quand un quota est épuisé (détecté par le daemon, notification courte), plafonds globaux. L'agent choisit un profil, pas un modèle en dur. **Le moins cher qui suffit** : `léger` est le profil par défaut, pour les Agents qui orchestrent comme pour les Workers qui lisent, trient ou résument ; `standard` est réservé au jugement fin et aux textes soignés (décision de l'utilisateur, 2026-10-27).
 
 ## 8. Mémoire
 
@@ -79,6 +79,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 ## 12. Sécurité
 
 - **D34 — Garde-fous déterministes** plutôt que validation action par action : répertoire borné, profil de capacités, allow/deny-list de commandes, chemins protégés, politique réseau, plafonds de dépense.
+  - **Droits des Workers** (décision de l'utilisateur, 2026-10-27) : par défaut ils ont **les droits de l'utilisateur**, sans approbation (commandes, réseau, installations, fichiers hors de leur répertoire), sinon ils ne servent à rien. Réglable : `[workers] access = "full" | "workspace"`. L'Assistant et les Agents restent sans commande ni écriture. Les garde-fous restants passent par le contrat : ce qui demande l'utilisateur en personne (connexion à un compte, mot de passe) est escaladé avec la commande à lancer, et l'irréversible hors tâche est demandé d'abord (D35).
 - **D35 — Les actions irréversibles ou hors scope sont escaladées**, pas exécutées.
 - **D36 — Isolation configurable par nœud** (overridable par agent) : conteneur par défaut sur les serveurs, répertoire borné en local.
 

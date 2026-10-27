@@ -412,7 +412,7 @@ async fn a_worker_gets_the_engine_and_model_of_its_profile() {
         .record
         .clone();
     assert_eq!(worker.profile.as_deref(), Some("léger"));
-    assert_eq!(worker.model.as_deref(), Some("gpt-6-luna"));
+    assert_eq!(worker.model.as_deref(), Some("claude-haiku-5-5"));
 
     let task = add_task(&agent, &w, "autre").await;
     let (refusal, error) = agent

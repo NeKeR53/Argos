@@ -1,5 +1,6 @@
 //! Configuration du daemon (`$ARGOS_HOME/config.toml`) et jeton d'accès à l'API.
 
+use crate::engine::Access;
 use crate::node::transport::NodeConfig;
 use crate::policy::{DEFAULT_MODELS, ModelPolicy};
 use argos_core::EngineKind;
@@ -29,6 +30,12 @@ listen = "127.0.0.1:7878"
 [mcp]
 # Adresse du serveur MCP par lequel les agents pilotent leurs enfants. Locale seulement.
 listen = "127.0.0.1:7879"
+
+[workers]
+# Droits des Workers : "full" (ceux de l'utilisateur : commandes, réseau, installations,
+# sans approbation) ou "workspace" (écrire dans leur répertoire, sans réseau).
+# L'Assistant et les Agents n'exécutent jamais rien eux-mêmes.
+access = "full"
 
 # Autres nœuds (D32, D33) : le hub s'y connecte, l'Assistant peut y placer des Agents.
 # Sur le nœud, lancer `argos-daemon node` (voir son node.toml) ; son jeton est dans
@@ -63,6 +70,23 @@ pub struct Config {
     /// Les autres nœuds, par nom.
     #[serde(default)]
     pub nodes: BTreeMap<String, NodeConfig>,
+    #[serde(default)]
+    pub workers: WorkersConfig,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WorkersConfig {
+    /// `full` : les droits de l'utilisateur (installer, réseau…) ; `workspace` : écrire
+    /// dans leur répertoire seulement.
+    pub access: Access,
+}
+
+impl Default for WorkersConfig {
+    fn default() -> Self {
+        Self {
+            access: Access::Full,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -169,6 +193,7 @@ mod tests {
         assert_eq!(config.assistant.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(config.api.listen, "127.0.0.1:7878".parse().unwrap());
         assert!(config.nodes.is_empty());
+        assert_eq!(config.workers.access, Access::Full);
 
         fs::write(
             &path,

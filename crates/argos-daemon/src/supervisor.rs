@@ -8,7 +8,7 @@
 
 use crate::contracts;
 use crate::engine::{
-    EngineError, EngineEvent, EventStream, McpServer, Session, SessionControl, SessionSpec,
+    Access, EngineError, EngineEvent, EventStream, McpServer, Session, SessionControl, SessionSpec,
     prepare_codex_home,
 };
 use crate::memory::{Memory, MemoryOp, MemoryOutput};
@@ -48,6 +48,9 @@ pub struct SupervisorSettings {
     pub policy: ModelPolicy,
     /// Les autres nœuds, où tournent les agents qui y sont placés (D32).
     pub nodes: Nodes,
+    /// Droits des Workers sur la machine (`[workers] access`). L'Assistant et les Agents
+    /// orchestrent : ils ne touchent jamais à rien eux-mêmes.
+    pub worker_access: Access,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -487,7 +490,7 @@ impl Supervisor {
         spec.model = record.model.clone();
         spec.resume = record.session_id.clone();
         // L'Assistant et les Agents orchestrent : seuls les Workers modifient (D17, D18).
-        spec.read_only = record.level != Level::Worker;
+        spec.access = self.access_of(record);
         spec.program = settings.programs.get(&record.engine).cloned();
         if let Some(base) = &settings.mcp_url {
             spec.mcp_servers = vec![McpServer {
@@ -515,7 +518,7 @@ impl Supervisor {
             model: record.model.clone(),
             instructions: Some(instructions),
             resume: record.session_id.clone(),
-            read_only: record.level != Level::Worker,
+            access: self.access_of(record),
             mcp_token: self
                 .inner
                 .settings
@@ -525,9 +528,20 @@ impl Supervisor {
         })
     }
 
+    /// L'Assistant et les Agents orchestrent : seuls les Workers modifient (D17, D18).
+    fn access_of(&self, record: &AgentRecord) -> Access {
+        match record.level {
+            Level::Worker => self.inner.settings.worker_access,
+            _ => Access::ReadOnly,
+        }
+    }
+
     /// Le contrat du niveau d'abord, puis la mémoire pour ceux qui en ont une.
     async fn instructions(&self, record: &AgentRecord) -> Result<String> {
         let mut instructions = contracts::contract(record, self.policy());
+        if record.level == Level::Worker {
+            instructions.push_str(contracts::worker_access(self.access_of(record)));
+        }
         if record.level.has_memory() {
             let state = self.render_state(record)?;
             let memory = |op| self.memory_op(record, op);

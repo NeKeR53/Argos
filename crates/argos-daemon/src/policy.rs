@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 /// d'un fichier qui n'a pas de section `[models]`.
 pub const DEFAULT_MODELS: &str = r#"
 [models]
-# Profil pris quand l'agent n'en précise pas.
-default_profile = "standard"
+# Profil pris quand l'agent n'en précise pas : le moins cher.
+default_profile = "léger"
 
 # Chaque profil est une chaîne : le premier choix, puis les replis quand son quota est
 # épuisé. Les agents choisissent un profil, jamais un modèle en dur.
@@ -24,17 +24,17 @@ chain = [
 ]
 
 [models.profiles.standard]
-description = "Travail courant : recherche, synthèse, rédaction, coordination."
+description = "Jugement ou rédaction soignée : analyse croisée de plusieurs sources, texte destiné à quelqu'un, décision nuancée."
 chain = [
   { engine = "claude", model = "claude-sonnet-5-5" },
   { engine = "codex", model = "gpt-6.1-sol" },
 ]
 
 [models.profiles."léger"]
-description = "Tâches mécaniques : conversion de fichiers, renommages, extraction, vérifications simples."
+description = "Par défaut : lire, trier, résumer, extraire, vérifier, convertir, suivre une procédure claire."
 chain = [
-  { engine = "codex", model = "gpt-6-luna" },
   { engine = "claude", model = "claude-haiku-5-5" },
+  { engine = "codex", model = "gpt-6-luna" },
 ]
 
 [models.caps]
@@ -171,7 +171,7 @@ mod tests {
     fn the_default_policy_is_valid() {
         let policy = ModelPolicy::default();
         policy.check().unwrap();
-        assert_eq!(policy.default_profile, "standard");
+        assert_eq!(policy.default_profile, "léger");
         let (name, choice) = policy.resolve(Some("code"), Level::Worker).unwrap();
         assert_eq!(name, "code");
         assert_eq!(
@@ -183,7 +183,7 @@ mod tests {
         );
         assert_eq!(
             policy.resolve(Some("léger"), Level::Agent).unwrap().1.model,
-            "gpt-6-luna"
+            "claude-haiku-5-5"
         );
         assert_eq!(policy.max_parallel("claude-opus-5-5"), Some(4));
     }
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn without_a_profile_the_default_one_is_taken() {
         let policy = ModelPolicy::default();
-        assert_eq!(policy.resolve(None, Level::Agent).unwrap().0, "standard");
+        assert_eq!(policy.resolve(None, Level::Agent).unwrap().0, "léger");
         assert!(policy.resolve(Some("inconnu"), Level::Agent).is_err());
     }
 

@@ -3,8 +3,8 @@
 
 use super::process::{self, Spawned};
 use super::{
-    Command, EngineError, EngineEvent, Events, McpServer, Session, SessionSpec, TurnOutcome, Usage,
-    forward,
+    Access, Command, EngineError, EngineEvent, Events, McpServer, Session, SessionSpec,
+    TurnOutcome, Usage, forward,
 };
 use serde_json::{Value, json};
 use std::collections::HashSet;
@@ -81,11 +81,13 @@ pub(super) async fn spawn(spec: SessionSpec) -> Result<Session, EngineError> {
         "cwd": spec.cwd.to_string_lossy(),
         "model": spec.model,
         "developerInstructions": spec.instructions,
-        // Provisoire, en attendant les garde-fous (D34) : jamais de demande
-        // d'approbation, écriture limitée au répertoire de travail, et aucune écriture
-        // pour une session qui orchestre.
+        // Jamais de demande d'approbation : personne n'est là pour répondre.
         "approvalPolicy": "never",
-        "sandbox": if spec.read_only { "read-only" } else { "workspace-write" },
+        "sandbox": match spec.access {
+            Access::ReadOnly => "read-only",
+            Access::Workspace => "workspace-write",
+            Access::Full => "danger-full-access",
+        },
     });
     let method = match &spec.resume {
         Some(thread_id) => {

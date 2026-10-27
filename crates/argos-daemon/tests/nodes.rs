@@ -122,6 +122,7 @@ async fn hub(nodes: BTreeMap<String, NodeConfig>) -> Hub {
             mcp_url: Some(format!("http://{}", mcp.local_addr().unwrap())),
             policy: ModelPolicy::default(),
             nodes: nodes.clone(),
+            worker_access: argos_daemon::engine::Access::Full,
         },
     );
     tokio::spawn(argos_daemon::mcp::serve(mcp, supervisor.clone()));
@@ -276,14 +277,10 @@ async fn a_worker_follows_its_agent_to_its_node() {
         |event| matches!(event, DaemonEvent::TurnCompleted { agent, .. } if *agent == worker_id),
     )
     .await;
-    // Le Worker (Codex) tourne dans le dossier de son Agent, avec un CODEX_HOME du nœud.
-    assert!(
-        node.home
-            .path()
-            .join("codex")
-            .join(worker_id.as_str())
-            .exists()
-    );
+    // Le Worker tourne dans le dossier de son Agent sur le nœud (l'Agent n'a pas tourné),
+    // avec les droits complets des Workers.
+    let args = std::fs::read_to_string(node.home.path().join("agents/mail/.fake-args")).unwrap();
+    assert!(args.contains("bypassPermissions"), "{args}");
 }
 
 #[tokio::test]

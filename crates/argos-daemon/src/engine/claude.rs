@@ -3,7 +3,8 @@
 
 use super::process::{self, Spawned};
 use super::{
-    Command, EngineError, EngineEvent, Events, Session, SessionSpec, TurnOutcome, Usage, forward,
+    Access, Command, EngineError, EngineEvent, Events, Session, SessionSpec, TurnOutcome, Usage,
+    forward,
 };
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -46,12 +47,15 @@ fn arguments(spec: &SessionSpec, session_id: &str) -> Vec<String> {
         // La mémoire est celle d'Argos (D23) : pas de mémoire automatique concurrente.
         "--settings",
         r#"{"autoMemoryEnabled": false}"#,
-        // Provisoire, en attendant les garde-fous (D34).
-        "--permission-mode",
-        "acceptEdits",
     ]
     .map(String::from)
     .into();
+    // Sans terminal, une action non autorisée d'avance est refusée.
+    let mode = match spec.access {
+        Access::Full => "bypassPermissions",
+        Access::ReadOnly | Access::Workspace => "acceptEdits",
+    };
+    args.extend(["--permission-mode".into(), mode.into()]);
     match &spec.resume {
         Some(id) => args.extend(["--resume".into(), id.clone()]),
         None => args.extend(["--session-id".into(), session_id.into()]),
@@ -62,7 +66,7 @@ fn arguments(spec: &SessionSpec, session_id: &str) -> Vec<String> {
     if let Some(instructions) = &spec.instructions {
         args.extend(["--append-system-prompt".into(), instructions.clone()]);
     }
-    if spec.read_only {
+    if spec.access == Access::ReadOnly {
         // Lecture et outils d'Argos seulement : le travail passe par les Workers.
         args.extend(
             [
@@ -348,12 +352,26 @@ mod tests {
     fn a_read_only_session_cannot_run_commands_or_write_files() {
         let mut spec = SessionSpec::new(EngineKind::Claude, "/tmp");
         assert!(!arguments(&spec, "id").contains(&"--disallowedTools".to_string()));
-        spec.read_only = true;
+        spec.access = Access::ReadOnly;
         let args = arguments(&spec, "id");
         let start = args.iter().position(|a| a == "--disallowedTools").unwrap();
         for tool in ["Bash", "Edit", "Write"] {
             assert!(args[start + 1..].contains(&tool.to_string()), "{tool}");
         }
+    }
+
+    #[test]
+    fn only_full_access_runs_without_permission_checks() {
+        let mode = |access| {
+            let mut spec = SessionSpec::new(EngineKind::Claude, "/tmp");
+            spec.access = access;
+            let args = arguments(&spec, "id");
+            let at = args.iter().position(|a| a == "--permission-mode").unwrap();
+            args[at + 1].clone()
+        };
+        assert_eq!(mode(Access::Full), "bypassPermissions");
+        assert_eq!(mode(Access::Workspace), "acceptEdits");
+        assert_eq!(mode(Access::ReadOnly), "acceptEdits");
     }
 
     #[test]

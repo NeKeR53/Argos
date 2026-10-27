@@ -32,9 +32,23 @@ pub struct SessionSpec {
     pub codex_home: Option<PathBuf>,
     /// Serveurs MCP donnés à l'agent (celui d'Argos, avec le jeton de la session).
     pub mcp_servers: Vec<McpServer>,
-    /// L'agent ne modifie rien lui-même (ni commande, ni écriture de fichier) : il
-    /// orchestre et délègue. C'est le cas de l'Assistant et des Agents.
-    pub read_only: bool,
+    /// Ce que l'agent peut faire sur la machine.
+    pub access: Access,
+}
+
+/// Droits d'une session sur la machine où elle tourne.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Access {
+    /// Ni commande ni écriture : l'agent orchestre et délègue (Assistant, Agents).
+    ReadOnly,
+    /// Écritures dans son répertoire ; Codex dans son bac à sable, sans réseau, et
+    /// Claude sans commande shell.
+    #[default]
+    Workspace,
+    /// Les droits de l'utilisateur : commandes, réseau, installations, fichiers hors du
+    /// répertoire. Sans aucune demande d'approbation.
+    Full,
 }
 
 /// Un serveur MCP HTTP.
@@ -55,7 +69,7 @@ impl SessionSpec {
             program: None,
             codex_home: None,
             mcp_servers: vec![],
-            read_only: false,
+            access: Access::default(),
         }
     }
 

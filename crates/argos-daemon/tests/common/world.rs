@@ -75,6 +75,7 @@ pub fn world_with(policy: ModelPolicy) -> World {
         mcp_url: None,
         policy,
         nodes: Default::default(),
+        worker_access: Default::default(),
     };
     let supervisor = Supervisor::new(registry, settings);
     let events = supervisor.subscribe();

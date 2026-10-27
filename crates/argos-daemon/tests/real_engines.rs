@@ -92,6 +92,7 @@ async fn calls_argos_tools(engine: EngineKind, model: &str) {
             mcp_url: Some(mcp_url),
             policy: argos_daemon::policy::ModelPolicy::default(),
             nodes: Default::default(),
+            worker_access: Default::default(),
         },
     );
     tokio::spawn(argos_daemon::mcp::serve(listener, supervisor.clone()));

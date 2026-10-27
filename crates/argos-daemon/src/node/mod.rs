@@ -21,14 +21,14 @@ pub mod transport;
 
 pub use link::Nodes;
 
-use crate::engine::EngineEvent;
+use crate::engine::{Access, EngineEvent};
 use crate::memory::{MemoryOp, MemoryOutput};
 use argos_core::{AgentId, EngineKind};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Version du protocole entre hub et nœud.
-pub const NODE_PROTOCOL: u32 = 2;
+pub const NODE_PROTOCOL: u32 = 3;
 
 /// Ce qu'il faut au nœud pour lancer une session ; il complète le reste lui-même
 /// (binaires, `CODEX_HOME`, adresse de son mandataire MCP).
@@ -41,7 +41,7 @@ pub struct RemoteSpec {
     pub model: Option<String>,
     pub instructions: Option<String>,
     pub resume: Option<String>,
-    pub read_only: bool,
+    pub access: Access,
     /// Jeton MCP de la session ; sans lui, l'agent tourne sans les outils d'Argos.
     pub mcp_token: Option<String>,
 }
