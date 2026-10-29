@@ -10,7 +10,18 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-pub(super) async fn spawn(spec: SessionSpec) -> Result<Session, EngineError> {
+pub(super) async fn spawn(mut spec: SessionSpec) -> Result<Session, EngineError> {
+    // Claude charge CLAUDE.md nativement, mais pas AGENTS.md. Le lire ici couvre aussi
+    // les nœuds distants, après résolution de leur répertoire de travail.
+    let path = spec.cwd.join("AGENTS.md");
+    match std::fs::read_to_string(&path) {
+        Ok(content) => {
+            let instructions = spec.instructions.get_or_insert_default();
+            instructions.push_str(&format!("\n## Consignes du workspace ({})\n{}\nAvant de modifier un sous-dossier, lis aussi ses éventuels AGENTS.md.\n", path.display(), content));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
     // Argos choisit l'identifiant : la session est connue avant même le premier tour.
     let session_id = spec
         .resume
@@ -81,8 +92,8 @@ fn arguments(spec: &SessionSpec, session_id: &str) -> Vec<String> {
             .map(String::from),
         );
     }
-    if !spec.mcp_servers.is_empty() {
-        let servers: serde_json::Map<String, Value> = spec
+    if !spec.mcp_servers.is_empty() || !spec.capabilities.mcp.is_empty() {
+        let mut servers: serde_json::Map<String, Value> = spec
             .mcp_servers
             .iter()
             .map(|server| {
@@ -92,13 +103,28 @@ fn arguments(spec: &SessionSpec, session_id: &str) -> Vec<String> {
                 )
             })
             .collect();
+        for server in &spec.capabilities.mcp {
+            use crate::capabilities::Transport;
+            let entry = match &server.transport {
+                Transport::Http { url } => json!({"type":"http", "url":url}),
+                Transport::Stdio { command, args } => {
+                    json!({"type":"stdio", "command":command, "args":args})
+                }
+            };
+            servers.insert(server.name.clone(), entry);
+        }
         args.extend([
             "--mcp-config".into(),
             json!({"mcpServers": servers}).to_string(),
         ]);
         // En mode -p, un outil non autorisé est refusé : ceux d'Argos le sont d'office.
-        for server in &spec.mcp_servers {
-            args.extend(["--allowedTools".into(), format!("mcp__{}", server.name)]);
+        for name in spec
+            .mcp_servers
+            .iter()
+            .map(|s| &s.name)
+            .chain(spec.capabilities.mcp.iter().map(|s| &s.name))
+        {
+            args.extend(["--allowedTools".into(), format!("mcp__{}", name)]);
         }
     }
     args
@@ -161,6 +187,7 @@ impl State {
         };
         match message["type"].as_str() {
             Some("assistant") => assistant_events(&message),
+            Some("user") => tool_results(&message),
             Some("result") => vec![self.turn_completed(&message)],
             Some("stream_event") => {
                 let event = &message["event"];
@@ -231,10 +258,37 @@ fn assistant_events(message: &Value) -> Vec<EngineEvent> {
                 .as_str()
                 .filter(|text| !text.is_empty())
                 .map(|text| EngineEvent::AgentMessage { text: text.into() }),
-            "tool_use" => block["name"]
-                .as_str()
-                .map(|name| EngineEvent::ToolActivity { name: name.into() }),
+            "tool_use" => Some(EngineEvent::ToolDetail {
+                id: block["id"].as_str()?.into(),
+                name: block["name"].as_str()?.into(),
+                input: block
+                    .get("input")
+                    .filter(|v| !v.is_null())
+                    .map(super::codex::tool_text),
+                output: None,
+                finished: false,
+            }),
             _ => None,
+        })
+        .collect()
+}
+
+fn tool_results(message: &Value) -> Vec<EngineEvent> {
+    message["message"]["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|block| {
+            if block["type"] != "tool_result" {
+                return None;
+            }
+            Some(EngineEvent::ToolDetail {
+                id: block["tool_use_id"].as_str()?.into(),
+                name: String::new(),
+                input: None,
+                output: block.get("content").map(super::codex::tool_text),
+                finished: true,
+            })
         })
         .collect()
 }
@@ -243,6 +297,21 @@ fn assistant_events(message: &Value) -> Vec<EngineEvent> {
 mod tests {
     use super::*;
     use argos_core::EngineKind;
+
+    #[test]
+    fn tool_results_preserve_tool_id_and_output() {
+        let result = serde_json::json!({"message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"/tmp"}]}});
+        assert_eq!(
+            tool_results(&result),
+            vec![EngineEvent::ToolDetail {
+                id: "t1".into(),
+                name: String::new(),
+                input: None,
+                output: Some("/tmp".into()),
+                finished: true
+            }]
+        );
+    }
 
     // Lignes de la forme observée avec claude 2.1.310 (docs/PHASE-1.md).
     const ASSISTANT_TEXT: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"42"}],"model":"claude-haiku-5-5","stop_reason":null},"parent_tool_use_id":null,"session_id":"a6ade44e"}"#;

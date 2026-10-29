@@ -77,6 +77,30 @@ async fn claude_answers_several_turns_in_one_process() {
 }
 
 #[tokio::test]
+async fn claude_inherits_workspace_instructions_on_each_start() {
+    let mut fake = Fake::new(EngineKind::Claude);
+    fake.spec.instructions = Some("Contrat Argos.".into());
+    let path = fake.dir.path().join("AGENTS.md");
+    for content in ["Consigne du projet A.", "Consigne révisée du projet A."] {
+        std::fs::write(&path, content).unwrap();
+        let mut session = Session::spawn(fake.spec.clone()).await.unwrap();
+        session.send("bonjour").unwrap();
+        turn(&mut session).await;
+        let args = fake.received().join("\n");
+        assert!(args.contains("Contrat Argos."));
+        assert!(args.contains(content));
+        session.park().unwrap();
+        exit_code(&mut session).await;
+    }
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir(&path).unwrap();
+    assert!(
+        Session::spawn(fake.spec).await.is_err(),
+        "une consigne illisible ne doit pas être ignorée"
+    );
+}
+
+#[tokio::test]
 async fn claude_runs_isolated_with_a_known_session_id() {
     let mut fake = Fake::new(EngineKind::Claude);
     fake.spec.model = Some("haiku".into());
@@ -135,8 +159,12 @@ async fn claude_reports_tool_activity_and_usage() {
 
     assert_eq!(
         next(&mut session).await,
-        EngineEvent::ToolActivity {
-            name: "Bash".into()
+        EngineEvent::ToolDetail {
+            id: "t1".into(),
+            name: "Bash".into(),
+            input: Some("{}".into()),
+            output: None,
+            finished: false
         }
     );
     assert_eq!(next(&mut session).await, message("reply 1"));
@@ -300,8 +328,12 @@ async fn codex_reports_failures_and_tool_activity() {
     assert_eq!(
         events,
         vec![
-            EngineEvent::ToolActivity {
-                name: "shell".into()
+            EngineEvent::ToolDetail {
+                id: "c".into(),
+                name: "shell".into(),
+                input: Some("ls".into()),
+                output: None,
+                finished: false
             },
             message("reply 1")
         ]

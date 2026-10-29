@@ -47,6 +47,12 @@ badge de la console).
   place » : retour à la place par défaut (en bas au milieu de l'écran principal).
 - La position est gardée dans `$ARGOS_HOME/gui-state.json`, et ramenée dans un écran si
   l'écran a changé.
+- Sur macOS : bouton **Globe** dans la console → **Globe animé dans le Dock**, ou clic
+  droit sur l'orbe → **Placer dans le Dock**. Le globe animé remplace la pastille flottante
+  et suit le repos, la réflexion, l'écoute et la parole, avec un badge pour les escalades
+  et le panic stop. L'animation native reste active même quand la console est fermée.
+  Un clic sur le globe du Dock ouvre la console ; **Globe → Globe flottant** rétablit
+  la pastille à sa position gardée. Le choix est mémorisé dans `gui-state.json`.
 - Démo sans daemon ni voix, dans un navigateur : `orb.html?demo=all` (ou `demo=listening`,
   `demo=speaking&t=1.2`…), servie par `npm run dev`.
 
@@ -74,3 +80,29 @@ badge de la console).
   C'est lui qui doit avoir le droit dans Réglages Système → Confidentialité et sécurité →
   Micro. Sans ce droit, le premier appui échoue au bout de 5 s avec une erreur claire dans
   les avis de la console.
+
+## Synthèse vocale locale Kokoro
+
+Argos peut utiliser Kokoro-ONNX en français, sans service distant. Installer Python 3.12,
+créer un environnement virtuel, puis installer `kokoro-onnx==0.6.1` et
+`sounddevice==0.5.6`. Télécharger une fois les fichiers du modèle :
+
+- [kokoro-v1.0.onnx](https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/kokoro-v1.0.onnx)
+- [voices-v1.0.bin](https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.1/voices-v1.0.bin)
+
+Dans `[voice]` du `config.toml`, ajouter les chemins locaux (adapter à la machine) :
+
+```toml
+tts_backend = "kokoro"
+kokoro_python = "/chemin/vers/venv/bin/python"
+kokoro_model = "/chemin/vers/kokoro-v1.0.onnx"
+kokoro_voices = "/chemin/vers/voices-v1.0.bin"
+kokoro_voice = "ff_siwis"
+```
+
+Sous Windows, le Python de l'environnement est `venv/Scripts/python.exe` ; utiliser des
+chemins absolus avec `/` dans TOML. Les dépendances, le modèle, les voix et le serveur
+Whisper doivent être installés sur la machine Windows. Cette configuration de la synthèse
+vocale ne constitue pas à elle seule une validation de l'application sur Windows.
+L'ancienne synthèse macOS reste disponible avec `tts_backend = "say"`. Redémarrer l'app
+après modification. Le modèle est chargé à chaque phrase ; cela peut ajouter un délai.

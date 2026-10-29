@@ -232,7 +232,7 @@ pub struct Mission {
     pub created_at: u64,
 }
 
-/// Unité de travail du board d'un Agent, exécutée par un Worker.
+/// Unité de travail du board, exécutée par l'Agent ou un Worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,

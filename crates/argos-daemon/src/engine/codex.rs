@@ -33,10 +33,14 @@ pub fn prepare_codex_home(dir: &Path, user_codex_home: &Path) -> io::Result<()> 
 
 /// Réécrit la config du `CODEX_HOME` isolé : seulement les serveurs MCP de la session
 /// (leur URL porte un jeton qui change à chaque session).
-fn write_config(home: &Path, servers: &[McpServer]) -> io::Result<()> {
+fn write_config(
+    home: &Path,
+    servers: &[McpServer],
+    external: &[crate::capabilities::ExternalMcp],
+) -> io::Result<()> {
     let mut table = toml::Table::new();
-    if !servers.is_empty() {
-        let servers: toml::Table = servers
+    if !servers.is_empty() || !external.is_empty() {
+        let mut servers: toml::Table = servers
             .iter()
             .map(|server| {
                 let mut entry = toml::Table::new();
@@ -47,6 +51,24 @@ fn write_config(home: &Path, servers: &[McpServer]) -> io::Result<()> {
                 (server.name.clone(), entry.into())
             })
             .collect();
+        for server in external {
+            use crate::capabilities::Transport;
+            let mut entry = toml::Table::new();
+            match &server.transport {
+                Transport::Http { url } => {
+                    entry.insert("url".into(), url.clone().into());
+                }
+                Transport::Stdio { command, args } => {
+                    entry.insert("command".into(), command.clone().into());
+                    entry.insert(
+                        "args".into(),
+                        toml::Value::Array(args.iter().cloned().map(Into::into).collect()),
+                    );
+                }
+            }
+            entry.insert("default_tools_approval_mode".into(), "approve".into());
+            servers.insert(server.name.clone(), entry.into());
+        }
         table.insert("mcp_servers".into(), servers.into());
     }
     fs::create_dir_all(home)?;
@@ -58,7 +80,7 @@ pub(super) async fn spawn(spec: SessionSpec) -> Result<Session, EngineError> {
         .codex_home
         .as_ref()
         .ok_or_else(|| EngineError::Config("une session Codex exige un CODEX_HOME isolé".into()))?;
-    write_config(home, &spec.mcp_servers)?;
+    write_config(home, &spec.mcp_servers, &spec.capabilities.mcp)?;
     let mut command = tokio::process::Command::new(spec.program());
     command
         .arg("app-server")
@@ -255,9 +277,10 @@ impl State {
                 self.current_turn = params["turn"]["id"].as_str().map(String::from);
                 vec![]
             }
-            "item/started" => tool_name(&params["item"])
-                .map(|name| vec![EngineEvent::ToolActivity { name }])
-                .unwrap_or_default(),
+            "item/started" => tool_detail(&params["item"], false).into_iter().collect(),
+            "item/completed" if tool_name(&params["item"]).is_some() => {
+                tool_detail(&params["item"], true).into_iter().collect()
+            }
             "item/agentMessage/delta" => params["delta"]
                 .as_str()
                 .filter(|text| !text.is_empty())
@@ -334,6 +357,47 @@ impl State {
     }
 }
 
+fn tool_detail(item: &Value, finished: bool) -> Option<EngineEvent> {
+    let name = tool_name(item)?;
+    let id = item["id"].as_str()?.to_owned();
+    let input = item
+        .get("command")
+        .or_else(|| item.get("arguments"))
+        .or_else(|| item.get("query"))
+        .or_else(|| item.get("changes"))
+        .filter(|v| !v.is_null())
+        .map(tool_text);
+    let output = item
+        .get("aggregatedOutput")
+        .or_else(|| item.get("result"))
+        .or_else(|| item.get("error"))
+        .filter(|v| !v.is_null())
+        .map(tool_text);
+    Some(EngineEvent::ToolDetail {
+        id,
+        name,
+        input,
+        output,
+        finished,
+    })
+}
+
+pub(super) fn tool_text(value: &Value) -> String {
+    let text = value
+        .as_str()
+        .map(String::from)
+        .unwrap_or_else(|| serde_json::to_string_pretty(value).unwrap_or_default());
+    const MAX: usize = 32_768;
+    if text.len() <= MAX {
+        return text;
+    }
+    let mut end = MAX;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n… (sortie tronquée)", &text[..end])
+}
+
 fn tool_name(item: &Value) -> Option<String> {
     match item["type"].as_str()? {
         "commandExecution" => Some("shell".into()),
@@ -352,6 +416,21 @@ fn tool_name(item: &Value) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tool_detail_tracks_command_and_output() {
+        let item = serde_json::json!({"id":"c1","type":"commandExecution","command":"pwd","aggregatedOutput":"/tmp"});
+        assert_eq!(
+            tool_detail(&item, true),
+            Some(EngineEvent::ToolDetail {
+                id: "c1".into(),
+                name: "shell".into(),
+                input: Some("pwd".into()),
+                output: Some("/tmp".into()),
+                finished: true
+            })
+        );
+    }
 
     // Messages de la forme observée avec codex-cli 0.164.0 (docs/PHASE-1.md).
     const TURN_STARTED: &str = r#"{"method":"turn/started","params":{"threadId":"t1","turn":{"id":"turn-1","status":"inProgress"}}}"#;
@@ -530,7 +609,7 @@ mod tests {
             name: "argos".into(),
             url: "http://127.0.0.1:7879/mcp/jeton".into(),
         };
-        write_config(home.path(), &[server]).unwrap();
+        write_config(home.path(), &[server], &[]).unwrap();
         let config: toml::Table = fs::read_to_string(home.path().join("config.toml"))
             .unwrap()
             .parse()
@@ -544,7 +623,7 @@ mod tests {
             Some("approve")
         );
 
-        write_config(home.path(), &[]).unwrap();
+        write_config(home.path(), &[], &[]).unwrap();
         assert_eq!(
             fs::read_to_string(home.path().join("config.toml")).unwrap(),
             ""

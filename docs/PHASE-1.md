@@ -217,3 +217,17 @@ T5 à T9 sont largement parallélisables une fois T4 posé (T9 dès T3).
   - 5 tests de bout en bout (pairs, question avec expéditeur et journaux, réponse, refus, garde-fou), 3 tests front, 1 test de protocole ;
   - recette réelle `agents_ask_each_other_what_belongs_to_their_domain`, passée deux fois le 2026-10-26 : l'Agent Mail connaît un code dans sa mémoire ; l'Agent Notes le lui demande par `ask_agent`, Mail répond par `tell_agent`, puis Notes fait écrire `portail.txt` par un Worker.
 - **Pas fait** : l'acheminement entre nœuds (phase 4, mesh SSH), et la vérification visuelle de l'étiquette d'expéditeur dans la console.
+
+## Ajustement du 2026-10-28 — workspaces et délégation à coût utile
+
+La console propose « Workspace · Modifier… » dans l’en-tête d’un Agent (`set_workspace` dans l’API). Le rattachement réutilise `workdir`, sans migration : chemin absolu sur le nœud, dossier local existant, aucune tâche en cours ni Worker vivant. Il parke une session inactive, efface son session-id et conserve la mémoire. À la création, `create_agent(workdir)` reste disponible ; `spawn_worker` reprend déjà ce dossier.
+
+Codex charge nativement le `AGENTS.md` du projet ; l’adaptateur Claude le lit sur la machine d’exécution et l’ajoute aux consignes à chaque démarrage. Les consignes illisibles font échouer le démarrage. Les Agents ont désormais les mêmes droits que leurs Workers (`[workers] access`), tandis que l’Assistant reste en lecture seule. Le contrat demande l’exécution directe par défaut, avec délégation uniquement si elle économise temps **et** tokens, frais de coordination compris. Cette estimation relève de l’Agent (D5), sans heuristique de coût imposée par le daemon.
+
+L’Assistant dispose aussi de `configure_agent` : nom/id de l’Agent, puis les champs facultatifs `name`, `workdir`, `profile` ou `engine`/`model`. Les champs absents sont conservés ; les modifications du registre sont atomiques, les références et droits hiérarchiques vérifiés, et les valeurs vides ou combinaisons ambiguës refusées. `list_agents` et `inspect_agent` exposent aussi le workspace et le profil. L’Assistant rattache directement un dossier connu du contexte avant d’assigner la mission ; il demande un chemin si celui-ci est inconnu ou ambigu. Le changement de modèle depuis cet outil attend la fin du tour. `rename_agent` reste disponible pour les sessions existantes.
+
+### Capacités des Agents et Workers
+
+L'Assistant peut lire `agent_capabilities` puis remplacer la sélection avec `set_agent_capabilities` : chemins absolus vers des fichiers `SKILL.md` sur le nœud de l'Agent, et serveurs MCP HTTP ou stdio (nom, URL ou commande et arguments). Le serveur Argos reste réservé et ajouté séparément. La configuration est persistée dans le registre et transmise aux prochaines sessions de l'Agent et de ses Workers, y compris sur un nœud distant. Les fichiers de skill sont lus au démarrage sur le nœud ; un fichier absent fait échouer le démarrage. Une modification exige que le tour soit terminé et les Workers retirés, puis met la session de l'Agent en pause. Les MCP utilisant des en-têtes ou des variables d'environnement propres au serveur ne sont pas encore configurables par cet outil.
+
+La fiche « Détails » affiche la sélection de l'Agent ou celle héritée par le Worker. Cette liste décrit la configuration transmise, pas l'état de connexion des serveurs ni les skills éventuellement découverts par le moteur dans le workspace. Les nœuds distants doivent utiliser la même version du protocole que le hub.

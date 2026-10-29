@@ -41,7 +41,9 @@ const CAPTION_MS = 2500;
 const RESIZE_MS = 240;
 
 /** Le menu (clic droit) remplace la pastille le temps d'un choix. */
-const MENU_SIZE = { width: 210, height: 36 };
+const MENU_SIZE = { width: 330, height: 36 };
+
+const isMac = navigator.platform.toLowerCase().startsWith("mac");
 
 const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
@@ -178,6 +180,12 @@ export function Orb() {
   // La fenêtre suit la pastille : elle grandit tout de suite, et ne rétrécit qu'une fois
   // la transition finie, pour ne pas couper l'animation.
   const escalation = state.escalations.length > 0;
+  useEffect(() => {
+    if (!isTauri() || !isMac) return;
+    void invoke("orb_dock_state", {
+      view: { mode, level: voice.level, armed, stopped, escalation, still: reducedMotion() },
+    });
+  }, [mode, voice.level, armed, stopped, escalation]);
   const size = menu ? MENU_SIZE : pillSize({ mode, armed, stopped, caption, escalation });
   const windowSize = useRef({ width: 0, height: 0 });
   useEffect(() => {
@@ -244,6 +252,12 @@ export function Orb() {
           <button type="button" onClick={() => isTauri() && void invoke("orb_reset_position").then(() => setMenu(false))}>
             Remettre en place
           </button>
+          {isMac && <button type="button" onClick={() => {
+            if (!isTauri()) return;
+            void invoke("set_orb_placement", { placement: "dock" })
+              .then(() => setMenu(false))
+              .catch((reason: unknown) => { setMenu(false); showCaption(String(reason), 5000); });
+          }}>Placer dans le Dock</button>}
           <button type="button" onClick={() => isTauri() && void invoke("quit_app")}>
             Quitter
           </button>
@@ -268,7 +282,12 @@ export function Orb() {
   );
 }
 
+// Les appels IPC doivent arriver dans l'ordre des événements du daemon.
+let speechCommands: Promise<unknown> = Promise.resolve();
 function perform(action: SpeechAction) {
-  if (action.type === "speak") void invoke("voice_speak_delta", { text: action.text });
-  else void invoke("voice_finish_speech");
+  speechCommands = speechCommands.catch(() => undefined).then(() => {
+    if (action.type === "speak") return invoke("voice_speak_delta", { text: action.text });
+    if (action.type === "stop") return invoke("voice_stop_speech");
+    return invoke("voice_finish_speech");
+  });
 }

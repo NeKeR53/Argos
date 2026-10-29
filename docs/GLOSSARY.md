@@ -5,14 +5,14 @@ Vocabulaire canonique du projet. Le code, les docs et les prompts des agents uti
 ## Hiérarchie
 
 - **Assistant** — L0, unique. La session avec laquelle l'utilisateur parle à la voix. Vit sur le hub. Gère des Agents, jamais des Workers.
-- **Agent** — L1. Orchestrateur durable et nommé, dédié à un projet ou un domaine. Possède une charte, un board, une mémoire, des surfaces et des triggers. Gère des Workers.
+- **Agent** — L1. Agent durable et nommé, dédié à un projet ou un domaine. Possède une charte, un board, une mémoire, des surfaces et des triggers. Exécute ses tâches et délègue à des Workers seulement si cela économise temps et tokens.
 - **Worker** — L2. Exécutant éphémère d'une seule tâche, sans mémoire persistante, sans interaction avec l'utilisateur.
 - **Moteur** — le CLI qui fait tourner un agent : `claude` (Claude Code) ou `codex`.
 
 ## Travail
 
 - **Mission** — demande de haut niveau adressée à un Agent (par l'Assistant). L'Agent la découpe en tâches.
-- **Tâche** — unité de travail sur le board d'un Agent, exécutée par un Worker. États : `pending`, `in-progress`, `blocked`, `done`, `cancelled` (et `interrupted` après un crash).
+- **Tâche** — unité de travail sur le board d'un Agent, exécutée par son Agent ou déléguée à un Worker. États : `pending`, `in-progress`, `blocked`, `done`, `cancelled` (et `interrupted` après un crash).
 - **Board** — liste priorisée des tâches d'un Agent. Lui appartient.
 - **Charte** — fiche d'identité d'un Agent : nom, périmètre, ressources possédées. Sert à décider réutiliser vs créer.
 - **Registre** — liste des Agents connus de l'Assistant, avec leurs chartes et leur nœud.
@@ -64,3 +64,5 @@ Vocabulaire canonique du projet. Le code, les docs et les prompts des agents uti
 - **Orbe** — la bulle vocale de l'Assistant, toujours au premier plan.
 - **Console** — panneau invocable au raccourci : arbre des Agents, état global, escalades, panic stop.
 - **Isolation** — mode d'exécution d'un agent : conteneur ou répertoire borné.
+
+- **Workspace** — répertoire de projet sur le nœud de l’Agent, partagé avec ses Workers. Son `AGENTS.md` fournit les consignes du projet. Distinct de la mémoire Argos et du `CODEX_HOME` isolé.

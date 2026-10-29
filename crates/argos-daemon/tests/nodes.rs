@@ -177,11 +177,46 @@ fn one(name: &str, node: &Node) -> BTreeMap<String, NodeConfig> {
 }
 
 #[tokio::test]
+async fn an_agent_can_bind_to_a_workspace_on_its_node() {
+    let node = Node::start("pi");
+    let mut hub = hub(one("pi", &node)).await;
+    hub.connected("pi").await;
+    let mail = hub.agent_on("pi", "mail");
+    let project = node.home.path().join("projet");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("AGENTS.md"), "Règle du projet distant.").unwrap();
+    hub.supervisor
+        .set_workspace(&mail.id, project.to_str().unwrap())
+        .await
+        .unwrap();
+    hub.supervisor.send(&mail.id, "bonjour").await.unwrap();
+    until(&mut hub.events, |event| {
+        common::world::is_message(event, &mail.id, "reply 1")
+    })
+    .await;
+    let args = std::fs::read_to_string(project.join(".fake-args")).unwrap();
+    assert!(args.contains("Règle du projet distant."));
+    hub.supervisor.park(&mail.id).await.unwrap();
+
+    let missing = node.home.path().join("absent");
+    hub.supervisor
+        .set_workspace(&mail.id, missing.to_str().unwrap())
+        .await
+        .unwrap();
+    assert!(hub.supervisor.send(&mail.id, "bonjour").await.is_err());
+    assert!(!missing.exists(), "un chemin erroné ne crée pas de dossier");
+}
+
+#[tokio::test]
 async fn an_agent_placed_on_a_node_runs_there_and_reaches_the_hub_tools() {
     let node = Node::start("pi");
     let mut hub = hub(one("pi", &node)).await;
     hub.connected("pi").await;
     let mail = hub.agent_on("pi", "mail");
+
+    let workspace = node.home.path().join("agents/mail");
+    std::fs::create_dir_all(&workspace).unwrap();
+    std::fs::write(workspace.join("AGENTS.md"), "Consigne propre au nœud pi.").unwrap();
 
     hub.supervisor.send(&mail.id, "bonjour").await.unwrap();
     until(&mut hub.events, |event| {
@@ -195,9 +230,11 @@ async fn an_agent_placed_on_a_node_runs_there_and_reaches_the_hub_tools() {
     let proxy = format!("http://127.0.0.1:{}/mcp/", node.mcp);
     assert!(args.contains(&proxy), "{args}");
     assert!(
-        args.contains("--disallowedTools"),
-        "un Agent ne modifie rien : {args}"
+        !args.contains("--disallowedTools"),
+        "un Agent peut exécuter lui-même : {args}"
     );
+    assert!(args.contains("Consigne propre au nœud pi."));
+    assert!(args.contains("bypassPermissions"));
     assert!(hub.supervisor.inspect(&mail.id).unwrap().running);
 
     // Le mandataire relaie au hub, qui reconnaît l'agent à son jeton.

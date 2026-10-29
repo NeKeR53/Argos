@@ -59,6 +59,39 @@ impl Rect {
 struct GuiState {
     /// Centre de la fenêtre de l'orbe, en points.
     orb_center: Option<Point>,
+    #[serde(default)]
+    orb_placement: Placement,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Placement {
+    #[default]
+    Floating,
+    Dock,
+}
+
+pub fn placement() -> Placement {
+    read_state().orb_placement
+}
+
+// Les mouvements différés et le changement de mode écrivent le même fichier.
+static STATE_WRITE: Mutex<()> = Mutex::new(());
+
+fn update_state(change: impl FnOnce(&mut GuiState)) -> Result<(), String> {
+    let _guard = locked(&STATE_WRITE);
+    let path = state_path().ok_or("dossier Argos indisponible")?;
+    let mut state = read_state();
+    change(&mut state);
+    let text = serde_json::to_string_pretty(&state).map_err(|error| error.to_string())?;
+    let pending = path.with_extension("json.tmp");
+    std::fs::write(&pending, text)
+        .and_then(|()| std::fs::rename(&pending, &path))
+        .map_err(|error| format!("réglage non enregistré : {error}"))
+}
+
+pub fn save_placement(placement: Placement) -> Result<(), String> {
+    update_state(|state| state.orb_placement = placement)
 }
 
 /// Centre par défaut : en bas au milieu de la zone utile.
@@ -129,15 +162,8 @@ fn read_state() -> GuiState {
 }
 
 fn write_center(center: Option<Point>) {
-    let Some(path) = state_path() else {
-        return;
-    };
-    let mut state = read_state();
-    state.orb_center = center;
-    if let Ok(text) = serde_json::to_string_pretty(&state)
-        && let Err(error) = std::fs::write(&path, text)
-    {
-        eprintln!("orbe : position non gardée ({}) : {error}", path.display());
+    if let Err(error) = update_state(|state| state.orb_center = center) {
+        eprintln!("orbe : {error}");
     }
 }
 
@@ -332,8 +358,18 @@ mod tests {
     fn the_state_file_tolerates_missing_fields() {
         let state: GuiState = serde_json::from_str("{}").unwrap();
         assert_eq!(state.orb_center, None);
+        assert_eq!(state.orb_placement, Placement::Floating);
         let state: GuiState =
             serde_json::from_str(r#"{"orb_center":{"x":10.5,"y":20.0},"autre":1}"#).unwrap();
         assert_eq!(state.orb_center, Some(Point { x: 10.5, y: 20.0 }));
+        assert_eq!(state.orb_placement, Placement::Floating);
+        let mut state: GuiState =
+            serde_json::from_str(r#"{"orb_center":{"x":10.5,"y":20.0},"orb_placement":"dock"}"#)
+                .unwrap();
+        assert_eq!(state.orb_placement, Placement::Dock);
+        state.orb_center = None;
+        let saved: GuiState =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(saved.orb_placement, Placement::Dock);
     }
 }

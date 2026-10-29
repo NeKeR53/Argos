@@ -6,7 +6,7 @@
 
 use crate::memory::{MemoryOp, MemoryOutput};
 use crate::policy::ModelPolicy;
-use crate::registry::{NewAgent, NewTrigger, Position, TaskUpdate};
+use crate::registry::{AgentModelUpdate, AgentUpdate, NewAgent, NewTrigger, Position, TaskUpdate};
 use crate::supervisor::{Supervisor, SupervisorError};
 use argos_core::protocol::{AgentStatus, Origin};
 use argos_core::{
@@ -33,12 +33,20 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
     }
     let profiles: Vec<&String> = policy.profiles.keys().collect();
     for tool in &mut tools {
+        if tool.name == "configure_agent" {
+            tool.schema["additionalProperties"] = json!(false);
+            tool.schema["minProperties"] = json!(2);
+        }
         if let Some(profile) = tool.schema["properties"].get_mut("profile") {
             profile["enum"] = json!(profiles);
+            let omitted = if tool.name == "configure_agent" {
+                "Champ omis : conserve le modèle actuel.".to_string()
+            } else {
+                format!("Par défaut « {} ».", policy.default_profile)
+            };
             profile["description"] = json!(format!(
-                "Profil de modèle selon le travail : {}. Par défaut « {} ».",
-                policy.catalogue(),
-                policy.default_profile
+                "Profil de modèle selon le travail : {}. {omitted}",
+                policy.catalogue()
             ));
         }
     }
@@ -236,11 +244,54 @@ fn level_tools(level: Level) -> Vec<Tool> {
                     ),
                     (
                         "workdir",
-                        "Répertoire de travail, sur son nœud. Par défaut, un dossier dédié.",
+                        "Workspace sur son nœud : chemin du projet existant pour hériter de son AGENTS.md. Par défaut, un dossier dédié.",
                     ),
                 ],
                 &["name", "scope"],
             ),
+            tool(
+                "configure_agent",
+                "Configure l'un de tes Agents existants : nom, périmètre (rôle permanent), workspace et moteur (harness)/modèle, ou profil. Donne uniquement les champs à modifier ; ils sont appliqués ensemble. La mémoire et l'identité sont conservées. Un changement de périmètre, de workspace ou de modèle attend la fin de son tour ; le workspace exige aussi le retrait de ses Workers.",
+                &[
+                    ("agent", AGENT_REF),
+                    ("name", "Nouveau nom court et unique."),
+                    (
+                        "scope",
+                        "Nouveau périmètre durable : rôle et domaine de responsabilité de l’Agent.",
+                    ),
+                    (
+                        "workdir",
+                        "Chemin absolu du dossier existant sur le nœud de l'Agent ; il héritera de son AGENTS.md.",
+                    ),
+                    (
+                        "profile",
+                        "Profil de modèle ; incompatible avec engine et model.",
+                    ),
+                    ("engine", "Moteur/harness : claude ou codex. Exige model."),
+                    (
+                        "model",
+                        "Modèle exact ; sans engine, conserve le moteur actuel. Pour un choix autonome, préfère profile.",
+                    ),
+                ],
+                &["agent"],
+            ),
+            Tool {
+                name: "agent_capabilities",
+                description: "Lit la configuration de skills et MCP d'un Agent et de ses Workers.",
+                schema: json!({"type":"object","properties":{"agent":{"type":"string"}},"required":["agent"],"additionalProperties":false}),
+            },
+            Tool {
+                name: "set_agent_capabilities",
+                description: "Remplace les skills et MCP d'un Agent et de ses Workers. Lis d'abord la configuration existante, conserve les éléments non modifiés. Les chemins absolus vers SKILL.md et les commandes MCP sont ceux du nœud de l'Agent. L'Agent doit être inactif et ses Workers retirés ; sa session est mise en pause. Utilise uniquement les capacités demandées ou autorisées par l'utilisateur.",
+                schema: json!({"type":"object","properties":{
+                    "agent":{"type":"string"},
+                    "skills":{"type":"array","items":{"type":"string"},"description":"Chemins absolus des fichiers SKILL.md sur le nœud."},
+                    "mcp":{"type":"array","items":{"oneOf":[
+                        {"type":"object","properties":{"name":{"type":"string"},"type":{"const":"http"},"url":{"type":"string"}},"required":["name","type","url"],"additionalProperties":false},
+                        {"type":"object","properties":{"name":{"type":"string"},"type":{"const":"stdio"},"command":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["name","type","command"],"additionalProperties":false}
+                    ]}}
+                },"required":["agent","skills","mcp"],"additionalProperties":false}),
+            },
             tool(
                 "rename_agent",
                 "Renomme l'un de tes Agents. Son nouveau nom doit être unique parmi tes Agents ; son identité, son périmètre et sa session sont conservés.",
@@ -360,7 +411,7 @@ fn level_tools(level: Level) -> Vec<Tool> {
             ),
             tool(
                 "spawn_worker",
-                "Lance un Worker éphémère sur UNE tâche de ton board (à faire, bloquée ou interrompue). Il reçoit son titre et son détail, travaille dans ton répertoire et te rendra compte par un rapport.",
+                "Seulement si le gain attendu couvre le temps ET les tokens, lancement, contexte et vérification inclus ; sinon exécute toi-même. Lance un Worker éphémère sur UNE tâche de ton board (à faire, bloquée ou interrompue). Il reçoit son titre et son détail, travaille dans ton répertoire et te rendra compte par un rapport.",
                 &[("task", TASK_REF), ("profile", "Profil de modèle.")],
                 &["task"],
             ),
@@ -480,6 +531,7 @@ fn tool(
         .iter()
         .map(|(key, about)| {
             let choices: &[&str] = match *key {
+                "engine" => &["claude", "codex"],
                 "outcome" => &["progress", "done", "blocked"],
                 "mode" => &["replace", "append"],
                 "kind" => &["cockpit", "artifact"],
@@ -583,6 +635,25 @@ pub async fn call(
             listed(supervisor.children(&caller.id).map_err(said)?)
         }
         (Level::Assistant, "create_agent") => create_agent(supervisor, caller, args),
+        (Level::Assistant, "configure_agent") => configure_agent(supervisor, caller, args).await,
+        (Level::Assistant, "agent_capabilities") => {
+            let target = child(supervisor, caller, text(args, "agent")?)?;
+            Ok(
+                serde_json::to_string(&supervisor.capabilities_for(&target).map_err(said)?)
+                    .map_err(said)?,
+            )
+        }
+        (Level::Assistant, "set_agent_capabilities") => {
+            let target = child(supervisor, caller, text(args, "agent")?)?;
+            let config =
+                serde_json::from_value(json!({"skills":args.get("skills"), "mcp":args.get("mcp")}))
+                    .map_err(said)?;
+            supervisor
+                .set_capabilities(&target.id, config)
+                .await
+                .map_err(said)?;
+            Ok("Configuration enregistrée. L'Agent et ses prochains Workers la recevront au démarrage.".into())
+        }
         (Level::Assistant, "rename_agent") => {
             let target = child(supervisor, caller, text(args, "agent")?)?;
             let renamed = supervisor
@@ -907,6 +978,88 @@ fn journal(supervisor: &Supervisor, agent: &AgentId, fact: &str) {
         fact = fact.chars().take(300).collect::<String>() + "…";
     }
     supervisor.memory_log(agent, fact);
+}
+
+async fn configure_agent(
+    supervisor: &Supervisor,
+    caller: &AgentRecord,
+    args: &Value,
+) -> Result<String, String> {
+    let fields = ["name", "scope", "workdir", "profile", "engine", "model"];
+    let object = args.as_object().ok_or("arguments objet attendus")?;
+    if object
+        .keys()
+        .any(|key| key != "agent" && !fields.contains(&key.as_str()))
+    {
+        return Err("champ de configuration inconnu".into());
+    }
+    let mut has_update = false;
+    for key in fields {
+        if object.contains_key(key) {
+            text(args, key)?;
+            has_update = true;
+        }
+    }
+    if !has_update {
+        return Err(
+            "indique au moins un champ à modifier : name, scope, workdir, profile, engine ou model"
+                .into(),
+        );
+    }
+    let target = child(supervisor, caller, text(args, "agent")?)?;
+    let model = if let Some(profile) = optional(args, "profile") {
+        if object.contains_key("engine") || object.contains_key("model") {
+            return Err("utilise soit profile, soit engine/model".into());
+        }
+        let (profile, choice) = supervisor.policy().resolve(Some(profile), Level::Agent)?;
+        Some(AgentModelUpdate {
+            engine: choice.engine,
+            model: choice.model,
+            profile: Some(profile),
+        })
+    } else if let Some(model) = optional(args, "model") {
+        let engine = optional(args, "engine")
+            .map(str::parse)
+            .transpose()
+            .map_err(said)?
+            .unwrap_or(target.engine);
+        Some(AgentModelUpdate {
+            engine,
+            model: model.into(),
+            profile: supervisor
+                .policy()
+                .profile_of(target.profile.as_deref(), engine, model),
+        })
+    } else {
+        if object.contains_key("engine") {
+            return Err("model est requis avec engine".into());
+        }
+        None
+    };
+    let configured = supervisor
+        .configure_agent(
+            &target.id,
+            AgentUpdate {
+                name: optional(args, "name").map(String::from),
+                scope: optional(args, "scope").map(String::from),
+                workdir: optional(args, "workdir").map(Into::into),
+                model,
+            },
+        )
+        .await
+        .map_err(said)?;
+    journal(
+        supervisor,
+        &caller.id,
+        &format!(
+            "{} configuré : workspace {}, moteur {}, modèle {}",
+            label(&configured),
+            configured.workdir.display(),
+            configured.engine,
+            configured.model.as_deref().unwrap_or("par défaut")
+        ),
+    );
+    Ok(summary(&supervisor.inspect(&configured.id).map_err(said)?).to_string())
 }
 
 fn create_agent(
@@ -1411,6 +1564,8 @@ fn summary(status: &AgentStatus) -> Value {
         "scope": record.charter.as_ref().map(|charter| &charter.scope),
         "engine": record.engine,
         "model": record.model,
+        "profile": record.profile,
+        "workdir": record.workdir,
         "node": record.node,
         "state": record.state,
         "running": status.running,
@@ -1476,6 +1631,8 @@ mod tests {
         };
         assert!(names(Level::Assistant).contains(&"create_agent"));
         assert!(names(Level::Assistant).contains(&"rename_agent"));
+        assert!(names(Level::Assistant).contains(&"configure_agent"));
+        assert!(!names(Level::Agent).contains(&"configure_agent"));
         assert!(!names(Level::Agent).contains(&"rename_agent"));
         assert!(names(Level::Assistant).contains(&"assign_mission"));
         assert!(!names(Level::Assistant).contains(&"spawn_worker"));
@@ -1500,6 +1657,8 @@ mod tests {
         assert_eq!(create.schema["required"], json!(["name", "scope"]));
         let rename = find(Level::Assistant, "rename_agent");
         assert_eq!(rename.schema["required"], json!(["agent", "name"]));
+        let workspace = find(Level::Assistant, "configure_agent");
+        assert_eq!(workspace.schema["required"], json!(["agent"]));
         assert_eq!(
             create.schema["properties"]["profile"]["enum"],
             json!(["code", "léger", "standard"])

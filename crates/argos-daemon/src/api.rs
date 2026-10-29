@@ -120,6 +120,14 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         Command::Inspect { agent } => Reply::Agent {
             agent: supervisor.inspect(&agent).map_err(said)?,
         },
+        Command::Capabilities { agent } => {
+            let record = supervisor.record(&agent).map_err(said)?;
+            Reply::Capabilities {
+                config: serde_json::to_value(supervisor.capabilities_for(&record).map_err(said)?)
+                    .map_err(said)?,
+                argos_enabled: supervisor.argos_mcp_enabled(),
+            }
+        }
         Command::Board { agent } => Reply::Board {
             board: supervisor.registry().board(&agent).map_err(said)?,
         },
@@ -226,6 +234,15 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         Command::Models => Reply::Models {
             profiles: supervisor.policy().profiles_info(),
         },
+        Command::SetWorkspace { agent, workdir } => {
+            supervisor
+                .set_workspace(&agent, &workdir)
+                .await
+                .map_err(said)?;
+            Reply::Agent {
+                agent: supervisor.inspect(&agent).map_err(said)?,
+            }
+        }
         Command::SetModel {
             agent,
             engine,

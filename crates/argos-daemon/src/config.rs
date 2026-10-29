@@ -33,9 +33,10 @@ listen = "127.0.0.1:7878"
 listen = "127.0.0.1:7879"
 
 [workers]
+# Ces droits s’appliquent aussi aux Agents, qui exécutent directement par défaut.
 # Droits des Workers : "full" (ceux de l'utilisateur : commandes, réseau, installations,
 # sans approbation) ou "workspace" (écrire dans leur répertoire, sans réseau).
-# L'Assistant et les Agents n'exécutent jamais rien eux-mêmes.
+# Seul l'Assistant reste en lecture seule.
 access = "full"
 
 # Autres nœuds (D32, D33) : le hub s'y connecte, l'Assistant peut y placer des Agents.

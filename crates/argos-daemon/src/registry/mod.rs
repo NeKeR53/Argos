@@ -68,6 +68,22 @@ pub struct NewAgent {
     pub charter: Option<Charter>,
 }
 
+/// Champs modifiables ensemble ; les champs absents gardent leur valeur.
+#[derive(Debug, Default)]
+pub struct AgentUpdate {
+    pub name: Option<String>,
+    pub scope: Option<String>,
+    pub workdir: Option<PathBuf>,
+    pub model: Option<AgentModelUpdate>,
+}
+
+#[derive(Debug)]
+pub struct AgentModelUpdate {
+    pub engine: EngineKind,
+    pub model: String,
+    pub profile: Option<String>,
+}
+
 /// Bilan de la réhydratation au démarrage du daemon.
 #[derive(Debug, Default, PartialEq)]
 pub struct Rehydration {
@@ -82,7 +98,7 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 8] = [
+const MIGRATIONS: [&str; 9] = [
     AGENTS_SCHEMA,
     board::SCHEMA,
     PROFILE_COLUMN,
@@ -91,6 +107,7 @@ const MIGRATIONS: [&str; 8] = [
     triggers::ARMED_COLUMN,
     NODE_COLUMN,
     functions::SCHEMA,
+    "CREATE TABLE agent_capabilities (agent TEXT PRIMARY KEY REFERENCES agents(id), config TEXT NOT NULL);",
 ];
 
 /// v3 : profil de la politique de modèles (T8).
@@ -122,6 +139,35 @@ CREATE UNIQUE INDEX agent_names ON agents(lower(name)) WHERE level = 'agent' AND
 const COLUMNS: &str = "id, level, parent, engine, model, workdir, name, scope, state, session_id, created_at, profile, node";
 
 impl Registry {
+    pub fn capabilities(&self, id: &AgentId) -> Result<crate::capabilities::Capabilities> {
+        use rusqlite::OptionalExtension;
+        let value: Option<String> = self
+            .db
+            .query_row(
+                "SELECT config FROM agent_capabilities WHERE agent = ?1",
+                [id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        value
+            .map(|s| {
+                serde_json::from_str(&s)
+                    .map_err(|e| RegistryError::Hierarchy(format!("configuration illisible : {e}")))
+            })
+            .unwrap_or_else(|| Ok(Default::default()))
+    }
+
+    pub fn set_capabilities(
+        &self,
+        id: &AgentId,
+        config: &crate::capabilities::Capabilities,
+    ) -> Result<()> {
+        let json =
+            serde_json::to_string(config).map_err(|e| RegistryError::Hierarchy(e.to_string()))?;
+        self.db.execute("INSERT INTO agent_capabilities (agent, config) VALUES (?1, ?2) ON CONFLICT(agent) DO UPDATE SET config=excluded.config", params![id.as_str(), json])?;
+        Ok(())
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         Self::init(Connection::open(path)?)
     }
@@ -280,6 +326,77 @@ impl Registry {
         )?;
         charter.name = name.into();
         Ok(record)
+    }
+
+    /// Tout changement de configuration réussit ou est annulé avec la transaction.
+    pub fn configure_agent(&self, id: &AgentId, update: &AgentUpdate) -> Result<AgentRecord> {
+        let record = self.require(id)?;
+        if record.level != Level::Agent || record.state == AgentState::Retired {
+            return Err(RegistryError::Hierarchy(
+                "seul un Agent vivant peut être configuré".into(),
+            ));
+        }
+        let tx = self.db.unchecked_transaction()?;
+        if let Some(name) = &update.name {
+            self.rename_agent(id, name)?;
+        }
+        if let Some(scope) = &update.scope {
+            let scope = scope.trim();
+            if scope.is_empty() {
+                return Err(RegistryError::InvalidCharter(
+                    "le périmètre est obligatoire".into(),
+                ));
+            }
+            self.db.execute(
+                "UPDATE agents SET scope = ?2 WHERE id = ?1",
+                params![id.as_str(), scope],
+            )?;
+        }
+        if let Some(workdir) = &update.workdir
+            && *workdir != record.workdir
+        {
+            self.set_workspace(id, workdir)?;
+        }
+        if let Some(model) = &update.model {
+            if model.model.trim().is_empty() {
+                return Err(RegistryError::InvalidCharter(
+                    "le modèle est obligatoire".into(),
+                ));
+            }
+            self.set_engine_model(id, model.engine, Some(model.model.trim()))?;
+            self.set_profile(id, model.profile.as_deref())?;
+            if model.engine != record.engine {
+                self.clear_session(id)?;
+            }
+        }
+        let configured = self.require(id)?;
+        tx.commit()?;
+        Ok(configured)
+    }
+
+    /// Change le workspace d'un Agent sans réutiliser le contexte de l'ancien projet.
+    pub fn set_workspace(&self, id: &AgentId, workdir: &Path) -> Result<()> {
+        let record = self.require(id)?;
+        if record.level != Level::Agent || record.state == AgentState::Retired {
+            return Err(RegistryError::Hierarchy(
+                "seul un Agent vivant peut changer de workspace".into(),
+            ));
+        }
+        if !workdir.is_absolute() {
+            return Err(RegistryError::Hierarchy(
+                "le workspace doit être un chemin absolu sur le nœud de l'Agent".into(),
+            ));
+        }
+        if !self.children(id)?.is_empty() {
+            return Err(RegistryError::Hierarchy(
+                "termine et retire les Workers avant de changer de workspace".into(),
+            ));
+        }
+        self.db.execute(
+            "UPDATE agents SET workdir = ?2, session_id = NULL WHERE id = ?1",
+            params![id.as_str(), workdir.to_string_lossy()],
+        )?;
+        Ok(())
     }
 
     /// Enfants non retirés, du plus ancien au plus récent.
@@ -830,6 +947,34 @@ mod tests {
     }
 
     #[test]
+    fn invalid_configuration_rolls_back_all_fields_and_the_session() {
+        let (registry, assistant) = registry();
+        let agent = agent(&registry, &assistant, "Projet");
+        registry
+            .set_session(&agent.id, "contexte-conservé")
+            .unwrap();
+        let before = registry.get(&agent.id).unwrap().unwrap();
+        assert!(
+            registry
+                .configure_agent(
+                    &agent.id,
+                    &AgentUpdate {
+                        name: Some("Nouveau nom".into()),
+                        scope: Some("Nouveau rôle".into()),
+                        workdir: Some("/nouveau-projet".into()),
+                        model: Some(AgentModelUpdate {
+                            engine: EngineKind::Codex,
+                            model: "".into(),
+                            profile: None
+                        }),
+                    }
+                )
+                .is_err()
+        );
+        assert_eq!(registry.get(&agent.id).unwrap().unwrap(), before);
+    }
+
+    #[test]
     fn the_registry_survives_a_restart() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("argos.db");
@@ -853,6 +998,14 @@ mod tests {
         let stored = reopened.get(&domotique.id).unwrap().unwrap();
         assert_eq!(stored.session_id.as_deref(), Some("session-1"));
         assert_eq!(stored.charter, domotique.charter);
+        reopened
+            .set_workspace(&domotique.id, Path::new("/projet-rattaché"))
+            .unwrap();
+        drop(reopened);
+        let reopened = Registry::open(&path).unwrap();
+        let stored = reopened.get(&domotique.id).unwrap().unwrap();
+        assert!(stored.session_id.is_none());
+        assert_eq!(stored.workdir, Path::new("/projet-rattaché"));
     }
 
     #[test]

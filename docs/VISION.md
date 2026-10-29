@@ -1,6 +1,6 @@
 # Argos — Vision et décisions
 
-Argos est un assistant IA personnel qui délègue à une hiérarchie d'agents. On parle à un seul Assistant, à la voix ; il orchestre des Agents durables, qui orchestrent des Workers éphémères. Chaque agent est une vraie session `claude` (Claude Code) ou `codex`.
+Argos est un assistant IA personnel qui délègue à une hiérarchie d'agents. On parle à un seul Assistant, à la voix ; il orchestre des Agents durables, qui exécutent leurs missions et délèguent au besoin à des Workers éphémères. Chaque agent est une vraie session `claude` (Claude Code) ou `codex`.
 
 Ce document fige les décisions issues de la session de cadrage du 2026-10-25. Le vocabulaire est défini dans [GLOSSARY.md](GLOSSARY.md). Toute décision remise en cause doit être modifiée ici, pas contournée dans le code.
 
@@ -43,7 +43,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 
 ## 6. Tâches et registre
 
-- **D17 — Le board appartient à l'Agent** (backlog, priorités, états `pending / in-progress / blocked / done / cancelled`). L'Agent découpe toute mission en tâches avant d'exécuter.
+- **D17 — Le board appartient à l'Agent** (backlog, priorités, états `pending / in-progress / blocked / done / cancelled`). L'Agent découpe toute mission en tâches avant d'exécuter. Il les réalise lui-même par défaut et tient leur état à jour. Il appelle un Worker si et seulement si le gain attendu porte sur le temps **et** les tokens, en comptant le lancement, le contexte transmis, les échanges et la vérification ; sinon, ou en cas de doute, il exécute directement (décision du 2026-10-28).
 - **D18 — Un Worker = une tâche**, éphémère, sans mémoire persistante.
 - **D19 — L'Assistant manipule des missions**, pas des tâches ; il lit les boards et peut réinjecter/réprioriser au niveau mission.
 - **D20 — Registre des Agents à base de chartes** (nom, périmètre, ressources possédées). Nouvelle mission : réutiliser l'Agent dont la charte correspond, sinon en créer un. Création autonome + notification, réglable en confirmation obligatoire.
@@ -51,7 +51,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 ## 7. Modèles
 
 - **D21 — Cascade de choix** : l'utilisateur fixe moteur + modèle de l'Assistant ; l'Assistant choisit pour les Agents, l'Agent pour ses Workers. Override utilisateur toujours prioritaire.
-- **D22 — Politique de modèles** : profils sémantiques éditables (ex. `code` → Claude Code + Opus 5.5 ; `léger` → Claude Haiku 5.5, puis Codex `gpt-6-luna`), chaîne de repli quand un quota est épuisé (détecté par le daemon, notification courte), plafonds globaux. L'agent choisit un profil, pas un modèle en dur. **Le moins cher qui suffit** : `léger` est le profil par défaut, pour les Agents qui orchestrent comme pour les Workers qui lisent, trient ou résument ; `standard` est réservé au jugement fin et aux textes soignés (décision de l'utilisateur, 2026-10-27).
+- **D22 — Politique de modèles** : profils sémantiques éditables (ex. `code` → Claude Code + Opus 5.5 ; `léger` → Claude Haiku 5.5, puis Codex `gpt-6-luna`), chaîne de repli quand un quota est épuisé (détecté par le daemon, notification courte), plafonds globaux. L'agent choisit un profil, pas un modèle en dur. **Le moins cher qui suffit** : `léger` est le profil par défaut, pour les Agents et Workers qui lisent, trient ou résument ; choisir `code` pour un Agent qui programme ; `standard` est réservé au jugement fin et aux textes soignés (décision de l'utilisateur, 2026-10-27).
 
 ## 8. Mémoire
 
@@ -79,14 +79,14 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 ## 12. Sécurité
 
 - **D34 — Garde-fous déterministes** plutôt que validation action par action : répertoire borné, profil de capacités, allow/deny-list de commandes, chemins protégés, politique réseau, plafonds de dépense.
-  - **Droits des Workers** (décision de l'utilisateur, 2026-10-27) : par défaut ils ont **les droits de l'utilisateur**, sans approbation (commandes, réseau, installations, fichiers hors de leur répertoire), sinon ils ne servent à rien. Réglable : `[workers] access = "full" | "workspace"`. L'Assistant et les Agents restent sans commande ni écriture. Les garde-fous restants passent par le contrat : ce qui demande l'utilisateur en personne (connexion à un compte, mot de passe) est escaladé avec la commande à lancer, et l'irréversible hors tâche est demandé d'abord (D35).
+  - **Droits des Workers** (décision de l'utilisateur, 2026-10-27) : par défaut ils ont **les droits de l'utilisateur**, sans approbation (commandes, réseau, installations, fichiers hors de leur répertoire), sinon ils ne servent à rien. Réglable : `[workers] access = "full" | "workspace"`. Les Agents partagent ces droits pour exécuter directement leurs tâches ; seul l'Assistant reste sans commande ni écriture (décision du 2026-10-28). Les garde-fous restants passent par le contrat : ce qui demande l'utilisateur en personne (connexion à un compte, mot de passe) est escaladé avec la commande à lancer, et l'irréversible hors tâche est demandé d'abord (D35).
 - **D35 — Les actions irréversibles ou hors scope sont escaladées**, pas exécutées.
 - **D36 — Isolation configurable par nœud** (overridable par agent) : conteneur par défaut sur les serveurs, répertoire borné en local.
 
 ## 13. Voix et interface
 
 - **D37 — Push-to-talk.** STT et TTS **en streaming, locaux sur le Mac** (ex. Whisper.cpp + TTS neural local), backends API payants activables en option. Barge-in : VAD + annulation d'écho, le TTS se coupe dès que l'utilisateur parle. Seul le texte part vers le hub.
-- **D38 — Shell** : orbe toujours au premier plan (repos / écoute / réflexion / parole), console invocable au raccourci (arbre des Agents, état global, escalades, panic stop), surfaces en fenêtres flottantes indépendantes.
+- **D38 — Shell** : orbe flottante toujours au premier plan, ou globe animé dans le Dock sur macOS au choix (repos / écoute / réflexion / parole) ; choix mémorisé, le Dock remplace l'orbe flottante. Console invocable au raccourci ou au clic sur le globe (arbre des Agents, état global, escalades, panic stop), surfaces en fenêtres flottantes indépendantes.
 - **D39 — Coût par agent** visible dans la console.
 
 ## 13 bis. Dialogue entre Agents
@@ -106,6 +106,13 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
   - **Surfaces** : `await argos.call(name, arguments)` appelle uniquement une fonction du propriétaire de cette surface via le bridge, puis rend le résultat JSON ou une erreur. Le HTML n'a ni réseau ni identifiants de service. `send` et `emit` gardent leur sens cognitif.
   - **Contrôle** : validation des arguments, délais et tailles bornés, appels journalisés sans arguments ni secrets. Stop/retrait/panic stop annulent les appels en cours, sans pouvoir annuler un effet déjà produit au service distant. Aucune relance automatique d'une action.
   - **Exception explicite à D13/D40** : appeler un service publié autorise seulement l'action exposée ; cela ne donne aucun contrôle sur le board, la mémoire ou les Workers du propriétaire. Les dialogues latéraux restent des questions et informations.
+
+## 13 quater. Workspaces
+
+- **D42 — Rattachement à un workspace** (décidé le 2026-10-28). Un Agent peut travailler dans un dossier de projet existant sur son nœud, choisi à la création (`workdir`), par l’Assistant via `configure_agent`, ou depuis son en-tête dans la console. Par défaut, il reçoit un dossier dédié dans les données Argos. Ses Workers partagent son répertoire. Plusieurs Agents peuvent utiliser le même dossier ; ce rattachement ne crée ni copie ni worktree Git.
+  - **Configuration par l’Assistant** : `configure_agent(agent, name?, workdir?, profile?, engine?, model?)` modifie les seuls champs fournis, ensemble dans une transaction. `agent` accepte un nom ou un id. Un profil choisit moteur et modèle selon la politique ; `engine`/`model` permettent un choix exact demandé par l’utilisateur (harness `claude` ou `codex`). `profile` ne se combine pas avec `engine`/`model` ; `model` seul conserve le moteur. Un changement de moteur exige un modèle. Un Agent ou Worker ne configure jamais un autre Agent. La mémoire et l’identité persistent, et les changements de workspace/moteur ouvrent une nouvelle session au prochain message. Le renommage seul ne coupe pas un tour.
+  - Le `AGENTS.md` du workspace est chargé au démarrage de chaque session : nativement par Codex, explicitement par Argos pour Claude (qui continue aussi de charger `CLAUDE.md`). Claude reçoit la consigne de lire les éventuels `AGENTS.md` des sous-dossiers avant de les modifier. Sur un nœud, la lecture se fait sur ce nœud.
+  - Le changement de dossier est refusé pendant un tour ou tant qu'un Worker non retiré subsiste. Une session inactive est parkée, son identifiant est effacé et le prochain message ouvre une session neuve avec la mémoire Argos conservée. Les fichiers de l'ancien dossier restent en place. Le chemin est absolu sur le nœud de l'Agent ; le hub vérifie l'existence des dossiers locaux ; un dossier distant est vérifié au prochain démarrage sur son nœud.
 
 ## 14. Phases
 

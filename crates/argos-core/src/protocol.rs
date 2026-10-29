@@ -26,6 +26,10 @@ pub enum Command {
     Inspect {
         agent: AgentId,
     },
+    /// Capacités configurées pour un Agent ou héritées par un Worker.
+    Capabilities {
+        agent: AgentId,
+    },
     /// Le board d'un Agent (missions, tâches).
     Board {
         agent: AgentId,
@@ -108,6 +112,11 @@ pub enum Command {
         engine: EngineKind,
         model: String,
     },
+    /// Rattache un Agent à un workspace ; sa prochaine session repart de sa mémoire.
+    SetWorkspace {
+        agent: AgentId,
+        workdir: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -137,6 +146,10 @@ pub enum Reply {
     },
     Board {
         board: Board,
+    },
+    Capabilities {
+        config: Value,
+        argos_enabled: bool,
     },
     Surfaces {
         surfaces: Vec<SurfaceMeta>,
@@ -223,6 +236,14 @@ pub enum DaemonEvent {
     Tool {
         agent: AgentId,
         name: String,
+    },
+    ToolDetail {
+        agent: AgentId,
+        id: String,
+        name: String,
+        input: Option<String>,
+        output: Option<String>,
+        finished: bool,
     },
     TurnCompleted {
         agent: AgentId,

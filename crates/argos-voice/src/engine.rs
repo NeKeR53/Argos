@@ -2,7 +2,7 @@
 
 use crate::capture::{ActiveCapture, AudioSource, CaptureSink, CpalSource};
 use crate::stt::{self, Transcriber, Turn};
-use crate::tts::{SaySpeaker, Speaker, SpeechQueue};
+use crate::tts::{KokoroSpeaker, SaySpeaker, Speaker, SpeechQueue};
 use crate::whisper::WhisperServer;
 use crate::{VoiceConfig, VoiceError};
 use serde::Serialize;
@@ -82,12 +82,32 @@ impl VoiceEngine {
     /// Moteur local complet : lance `whisper-server` avec le modèle configuré (et attend
     /// qu'il soit chargé), micro par défaut, voix `say` configurée.
     pub async fn start(config: &VoiceConfig) -> Result<Self, VoiceError> {
+        config.check()?;
+        let speaker: Arc<dyn Speaker> = if config.tts_backend == "kokoro" {
+            Arc::new(KokoroSpeaker::new(
+                config
+                    .kokoro_python
+                    .clone()
+                    .ok_or_else(|| VoiceError::Config("kokoro_python absent".into()))?,
+                config
+                    .kokoro_model
+                    .clone()
+                    .ok_or_else(|| VoiceError::Config("kokoro_model absent".into()))?,
+                config
+                    .kokoro_voices
+                    .clone()
+                    .ok_or_else(|| VoiceError::Config("kokoro_voices absent".into()))?,
+                config.kokoro_voice.clone(),
+            ))
+        } else {
+            Arc::new(SaySpeaker::new(&config.voice))
+        };
         let server = WhisperServer::start(config).await?;
         let engine = Self::with_backends(
             Backends {
                 source: Arc::new(CpalSource),
                 transcriber: Arc::new(server.client(&config.language)),
-                speaker: Arc::new(SaySpeaker::new(&config.voice)),
+                speaker,
             },
             config.partial_interval(),
         );

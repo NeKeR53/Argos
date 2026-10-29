@@ -132,7 +132,9 @@ pub fn register_shortcut<R: Runtime>(
         _ => |app, state| {
             if state == ShortcutState::Pressed {
                 // L'orbe montre la confirmation et, au second appui, envoie l'arrêt.
-                if let Some(orb) = app.get_webview_window(ORB_WINDOW) {
+                if !crate::dock::enabled(app)
+                    && let Some(orb) = app.get_webview_window(ORB_WINDOW)
+                {
                     let _ = orb.show();
                 }
                 let _ = app.emit(EVENT_PANIC_SHORTCUT, ());

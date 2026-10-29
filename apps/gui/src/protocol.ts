@@ -83,7 +83,7 @@ export interface Mission {
   created_at: number;
 }
 
-/** Unité de travail du board d'un Agent, exécutée par un Worker. */
+/** Unité de travail du board, exécutée par l'Agent ou un Worker. */
 export interface Task {
   id: string;
   agent: AgentId;
@@ -167,6 +167,7 @@ export interface Trigger {
 export type Command =
   | { command: "tree" }
   | { command: "inspect"; agent: AgentId }
+  | { command: "capabilities"; agent: AgentId }
   /** Le board d'un Agent (lecture seule ; erreur pour un autre niveau). */
   | { command: "board"; agent: AgentId }
   | { command: "send"; agent: AgentId; text: string }
@@ -198,6 +199,8 @@ export type Command =
   | { command: "nodes" }
   /** Les profils de la politique de modèles et leurs modèles. */
   | { command: "models" }
+  /** Rattache un Agent à un dossier sur son nœud ; ouvre une nouvelle session. */
+  | { command: "set_workspace"; agent: AgentId; workdir: string }
   /** Override de l'utilisateur : nouveau moteur et modèle d'un agent (session parkée). */
   | { command: "set_model"; agent: AgentId; engine: EngineKind; model: string };
 
@@ -219,10 +222,16 @@ export interface NodeStatus {
 /** Requête complète : `Command` aplatie avec l'`id` choisi par le client. */
 export type Request = { id: number } & Command;
 
+export interface Capabilities {
+  skills: string[];
+  mcp: ({ name: string; type: "http"; url: string } | { name: string; type: "stdio"; command: string; args: string[] })[];
+}
+
 /** Réponse à une requête (`Reply`, tag `kind`). */
 export type Reply =
   | { kind: "tree"; agents: AgentStatus[] }
   | { kind: "agent"; agent: AgentStatus }
+  | { kind: "capabilities"; config: Capabilities; argos_enabled: boolean }
   | { kind: "board"; board: Board }
   | { kind: "surfaces"; surfaces: SurfaceMeta[] }
   | { kind: "surface"; surface: SurfaceDoc }
@@ -252,6 +261,7 @@ export type DaemonEvent =
   /** Ce que l'agent a dit. */
   | { type: "message"; agent: AgentId; text: string }
   | { type: "tool"; agent: AgentId; name: string }
+  | { type: "tool_detail"; agent: AgentId; id: string; name: string; input: string | null; output: string | null; finished: boolean }
   | {
       type: "turn_completed";
       agent: AgentId;
@@ -322,6 +332,19 @@ function checkReply(reply: Record<string, unknown>) {
     case "agent":
       checkAgent(reply.agent);
       break;
+    case "capabilities": {
+      if (typeof reply.argos_enabled !== "boolean") throw new ProtocolError("argos_enabled : booléen attendu");
+      const config = object(reply.config, "reply.config");
+      array(config.skills, "config.skills").forEach((path) => string(path, "skill"));
+      array(config.mcp, "config.mcp").forEach((value) => {
+        const server = object(value, "mcp");
+        string(server.name, "mcp.name");
+        if (server.type === "http") string(server.url, "mcp.url");
+        else if (server.type === "stdio") { string(server.command, "mcp.command"); array(server.args, "mcp.args").forEach((arg) => string(arg, "mcp.arg")); }
+        else throw new ProtocolError("transport MCP inconnu");
+      });
+      break;
+    }
     case "board": {
       const board = object(reply.board, "reply.board");
       string(board.agent, "board.agent");
@@ -424,6 +447,12 @@ function checkEvent(event: Record<string, unknown>) {
       break;
     case "tool":
       string(event.name, "event.name");
+      break;
+    case "tool_detail":
+      string(event.id, "event.id"); string(event.name, "event.name");
+      if (event.input !== null) string(event.input, "event.input");
+      if (event.output !== null) string(event.output, "event.output");
+      if (typeof event.finished !== "boolean") throw new ProtocolError("tool_detail.finished : booléen attendu");
       break;
     case "turn_completed": {
       const outcome = object(event.outcome, "event.outcome");

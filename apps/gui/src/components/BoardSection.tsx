@@ -45,12 +45,12 @@ export function BoardSection(props: Props) {
         </span>
       </summary>
       <div className="board-body">
-        {board && missions.length === 0 && tasks.length === 0 && <p className="muted">Board vide.</p>}
+        {board && missions.length === 0 && tasks.length === 0 && <p className="muted">Aucune mission en cours.</p>}
         {missions.map((mission) => (
           <section key={mission.id} className="board-mission">
             <header>
-              <span className="mono muted">{mission.id}</span>
-              <span className="board-mission-text">{mission.text}</span>
+              <span className="mission-kicker">Mission</span>
+              <details className="mission-description"><summary><span className="board-mission-text">{mission.text}</span><span className="mission-more" aria-hidden="true" /></summary></details>
             </header>
             <TaskList tasks={tasks.filter((task) => task.mission === mission.id)} isLiving={props.isLiving} onSelect={props.onSelect} />
           </section>

@@ -65,7 +65,7 @@ export interface SpeechPlan {
 
 export const IDLE_PLAN: SpeechPlan = { awaiting: [], speaking: false, streamed: false };
 
-export type SpeechAction = { type: "speak"; text: string } | { type: "finish" };
+export type SpeechAction = { type: "speak"; text: string } | { type: "finish" } | { type: "stop" };
 
 /** Une transcription vient de partir vers l'Assistant. */
 export function voiceSent(plan: SpeechPlan, text: string): SpeechPlan {
@@ -89,9 +89,11 @@ export function onAssistantEvent(
   switch (event.type) {
     case "input": {
       const index = plan.awaiting.indexOf(event.text);
-      if (index < 0) return { plan: speakAll ? { ...plan, speaking: true } : plan, actions: [] };
+      if (index < 0) return speakAll
+        ? { plan: { ...plan, speaking: true, streamed: false }, actions: [{ type: "stop" }] }
+        : { plan, actions: [] };
       const awaiting = plan.awaiting.filter((_, at) => at !== index);
-      return { plan: { ...plan, awaiting, speaking: true, streamed: false }, actions: [] };
+      return { plan: { ...plan, awaiting, speaking: true, streamed: false }, actions: [{ type: "stop" }] };
     }
     case "message_delta":
       if (!plan.speaking) return { plan, actions: [] };

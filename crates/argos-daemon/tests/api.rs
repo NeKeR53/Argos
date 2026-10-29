@@ -5,7 +5,7 @@ mod common;
 use argos_core::protocol::{Command, DaemonEvent, Reply, Request, ServerMessage};
 use argos_core::{AgentId, EngineKind, PROTOCOL_VERSION};
 use argos_daemon::api;
-use common::world::{World, until, world};
+use common::world::{World, turn_completed, until, world};
 use futures_util::{SinkExt, StreamExt};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
@@ -61,6 +61,100 @@ async fn ask(client: &mut Client, id: u64, command: Command) -> Reply {
             return reply;
         }
     }
+}
+
+#[tokio::test]
+async fn workspace_binding_resets_the_session_and_keeps_memory() {
+    let mut w = world();
+    let mut client = connect(&serve(&w).await).await;
+    let project = w.home.path().join("projet");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("AGENTS.md"), "Règle du projet rattaché.").unwrap();
+    let bind = |workdir: String| Command::SetWorkspace {
+        agent: w.agent.id.clone(),
+        workdir,
+    };
+
+    // Aucun Worker ne doit conserver le contexte du workspace précédent.
+    assert!(matches!(
+        ask(&mut client, 1, bind(project.to_string_lossy().into())).await,
+        Reply::Error { .. }
+    ));
+    w.supervisor.retire(&w.worker.id).await.unwrap();
+    for path in [
+        "relatif".to_string(),
+        project.join("absent").to_string_lossy().into(),
+        project.join("AGENTS.md").to_string_lossy().into(),
+    ] {
+        assert!(matches!(
+            ask(&mut client, 2, bind(path)).await,
+            Reply::Error { .. }
+        ));
+    }
+
+    w.supervisor.send(&w.agent.id, "bonjour").await.unwrap();
+    turn_completed(&mut w.events, &w.agent.id).await;
+    let old_session = w
+        .supervisor
+        .record(&w.agent.id)
+        .unwrap()
+        .session_id
+        .unwrap();
+    let memory = w.supervisor.memory().dir(&w.agent.id).join("index.md");
+    std::fs::write(&memory, "Mémoire conservée du projet.").unwrap();
+    match ask(&mut client, 3, bind(project.to_string_lossy().into())).await {
+        Reply::Agent { agent } => {
+            assert_eq!(agent.record.workdir, project);
+            assert!(agent.record.session_id.is_none());
+            assert!(!agent.running);
+        }
+        other => panic!("rattachement attendu : {other:?}"),
+    }
+    w.supervisor.send(&w.agent.id, "encore").await.unwrap();
+    turn_completed(&mut w.events, &w.agent.id).await;
+    let args = std::fs::read_to_string(project.join(".fake-args")).unwrap();
+    assert!(args.contains("Règle du projet rattaché."));
+    assert!(args.contains("Mémoire conservée du projet."));
+    assert!(
+        !args.contains("--disallowedTools"),
+        "l'Agent peut exécuter directement"
+    );
+    assert!(!args.contains(&old_session));
+    assert!(args.contains("temps ET des tokens"));
+    for agent in [&w.assistant.id, &w.worker.id] {
+        assert!(matches!(
+            ask(
+                &mut client,
+                4,
+                Command::SetWorkspace {
+                    agent: agent.clone(),
+                    workdir: project.to_string_lossy().into()
+                }
+            )
+            .await,
+            Reply::Error { .. }
+        ));
+    }
+    w.supervisor.shutdown().await;
+}
+
+#[tokio::test]
+async fn workspace_binding_does_not_interrupt_a_busy_agent() {
+    let w = world();
+    w.supervisor.retire(&w.worker.id).await.unwrap();
+    let project = w.home.path().join("projet");
+    std::fs::create_dir(&project).unwrap();
+    w.supervisor.send(&w.agent.id, "SLOW").await.unwrap();
+    let before = w.supervisor.record(&w.agent.id).unwrap();
+    assert!(
+        w.supervisor
+            .set_workspace(&w.agent.id, project.to_str().unwrap())
+            .await
+            .is_err()
+    );
+    assert_eq!(w.supervisor.record(&w.agent.id).unwrap(), before);
+    assert!(w.supervisor.inspect(&w.agent.id).unwrap().busy);
+    w.supervisor.shutdown().await;
 }
 
 #[tokio::test]

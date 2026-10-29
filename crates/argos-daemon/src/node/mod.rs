@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Version du protocole entre hub et nœud.
-pub const NODE_PROTOCOL: u32 = 4;
+pub const NODE_PROTOCOL: u32 = 5;
 
 /// Ce qu'il faut au nœud pour lancer une session ; il complète le reste lui-même
 /// (binaires, `CODEX_HOME`, adresse de son mandataire MCP).
@@ -44,6 +44,7 @@ pub struct RemoteSpec {
     pub access: Access,
     /// Jeton MCP de la session ; sans lui, l'agent tourne sans les outils d'Argos.
     pub mcp_token: Option<String>,
+    pub capabilities: crate::capabilities::Capabilities,
 }
 
 /// Du hub vers le nœud. `session` est un numéro choisi par le hub.

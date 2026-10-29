@@ -65,7 +65,7 @@ export type ThreadEntry =
   | { seq: number; kind: "agent"; text: string }
   /** Message en cours d'écriture (`message_delta`), remplacé par le message complet. */
   | { seq: number; kind: "streaming"; text: string }
-  | { seq: number; kind: "tool"; name: string }
+  | { seq: number; kind: "tool"; name: string; id?: string; input?: string | null; output?: string | null; finished?: boolean }
   | { seq: number; kind: "turn"; outcome: TurnOutcome; usage: Usage | null }
   | { seq: number; kind: "exited"; code: number | null };
 
@@ -307,6 +307,8 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
       return { ...next, nodes: reply.nodes };
     case "models":
       return { ...next, profiles: reply.profiles };
+    case "capabilities":
+      return next;
     case "function_result":
       // Le résultat revient à la surface appelante, sans alimenter le chat de l'agent.
       return next;
@@ -350,6 +352,13 @@ function onEvent(state: AppState, event: DaemonEvent): AppState {
     }
     case "tool":
       return append(state, event.agent, { kind: "tool", name: event.name });
+    case "tool_detail": {
+      const thread = state.threads[event.agent] ?? [];
+      const index = thread.findIndex((entry) => entry.kind === "tool" && entry.id === event.id);
+      if (index < 0) return append(state, event.agent, { kind: "tool", id: event.id, name: event.name || "Outil", input: event.input, output: event.output, finished: event.finished });
+      const updated = thread.map((entry, i) => i === index && entry.kind === "tool" ? { ...entry, name: event.name || entry.name, input: event.input ?? entry.input, output: event.output ?? entry.output, finished: event.finished } : entry);
+      return { ...state, threads: { ...state.threads, [event.agent]: updated } };
+    }
     case "turn_completed": {
       const settled = settleStreaming(state, event.agent);
       const next = append(feedAgent(settled, event.agent, { type: "busy", busy: false }), event.agent, {
@@ -753,7 +762,11 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return "Lecture des nœuds";
     case "models":
       return "Lecture des modèles";
+    case "capabilities":
+      return `Lecture des capacités de ${target(command.agent)}`;
     case "set_model":
       return `Changement de modèle (${command.model})`;
+    case "set_workspace":
+      return `Rattachement du workspace de ${target(command.agent)}`;
   }
 }

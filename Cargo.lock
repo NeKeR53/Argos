@@ -106,7 +106,9 @@ version = "0.1.0"
 dependencies = [
  "argos-core",
  "argos-voice",
+ "objc2",
  "objc2-app-kit",
+ "objc2-foundation",
  "serde",
  "serde_json",
  "tauri",

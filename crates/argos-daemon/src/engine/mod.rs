@@ -32,6 +32,7 @@ pub struct SessionSpec {
     pub codex_home: Option<PathBuf>,
     /// Serveurs MCP donnés à l'agent (celui d'Argos, avec le jeton de la session).
     pub mcp_servers: Vec<McpServer>,
+    pub capabilities: crate::capabilities::Capabilities,
     /// Ce que l'agent peut faire sur la machine.
     pub access: Access,
 }
@@ -40,7 +41,7 @@ pub struct SessionSpec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Access {
-    /// Ni commande ni écriture : l'agent orchestre et délègue (Assistant, Agents).
+    /// Ni commande ni écriture : réservé à l'Assistant.
     ReadOnly,
     /// Écritures dans son répertoire ; Codex dans son bac à sable, sans réseau, et
     /// Claude sans commande shell.
@@ -69,6 +70,7 @@ impl SessionSpec {
             program: None,
             codex_home: None,
             mcp_servers: vec![],
+            capabilities: Default::default(),
             access: Access::default(),
         }
     }
@@ -92,6 +94,13 @@ pub enum EngineEvent {
     AgentMessage { text: String },
     /// L'agent utilise un outil (commande, édition, appel MCP…).
     ToolActivity { name: String },
+    ToolDetail {
+        id: String,
+        name: String,
+        input: Option<String>,
+        output: Option<String>,
+        finished: bool,
+    },
     TurnCompleted {
         outcome: TurnOutcome,
         usage: Option<Usage>,
@@ -159,7 +168,10 @@ pub struct EventStream {
 }
 
 impl Session {
-    pub async fn spawn(spec: SessionSpec) -> Result<Session, EngineError> {
+    pub async fn spawn(mut spec: SessionSpec) -> Result<Session, EngineError> {
+        spec.capabilities.validate().map_err(EngineError::Config)?;
+        let skills = spec.capabilities.skill_instructions()?;
+        spec.instructions.get_or_insert_default().push_str(&skills);
         match spec.engine {
             EngineKind::Claude => claude::spawn(spec).await,
             EngineKind::Codex => codex::spawn(spec).await,

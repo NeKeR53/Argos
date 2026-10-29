@@ -1,4 +1,5 @@
 mod daemon;
+mod dock;
 mod orb;
 mod shell;
 mod voice;
@@ -46,13 +47,67 @@ fn probe_daemon(url: String) -> daemon::Probe {
     daemon::probe(&url)
 }
 
+/// Ouvre un document local dans l'application choisie par le système.
+#[tauri::command(async)]
+fn open_document(path: String) -> Result<(), String> {
+    let path = std::path::Path::new(&path);
+    if !path.is_absolute() || !(path.is_file() || path.is_dir()) {
+        return Err("Document local introuvable.".into());
+    }
+    let extension = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !path.is_dir()
+        && !matches!(
+            extension.as_str(),
+            "pdf"
+                | "doc"
+                | "docx"
+                | "odt"
+                | "rtf"
+                | "txt"
+                | "md"
+                | "xlsx"
+                | "xls"
+                | "ods"
+                | "ppt"
+                | "pptx"
+                | "odp"
+                | "csv"
+                | "png"
+                | "jpg"
+                | "jpeg"
+        )
+    {
+        return Err("Ce type de fichier ne peut pas être ouvert comme document.".into());
+    }
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(path).status();
+    #[cfg(target_os = "linux")]
+    let status = std::process::Command::new("xdg-open").arg(path).status();
+    #[cfg(target_os = "windows")]
+    let status = std::process::Command::new("rundll32")
+        .arg("url.dll,FileProtocolHandler")
+        .arg(path)
+        .status();
+    status.map_err(|e| e.to_string()).and_then(|status| {
+        if status.success() {
+            Ok(())
+        } else {
+            Err("Impossible d’ouvrir le document.".into())
+        }
+    })
+}
+
 /// Montre ou cache la console (clic sur l'orbe).
 #[tauri::command]
 fn toggle_console(app: AppHandle) {
     shell::toggle_console(&app);
 }
 
-/// Quitte l'app (menu de l'orbe) : sans icône dans le Dock, c'est la seule sortie. La
+/// Quitte l'app (menu de l'orbe). La
 /// voix s'arrête d'abord, pour ne pas laisser `whisper-server` orphelin.
 #[tauri::command]
 fn quit_app(app: AppHandle) {
@@ -175,6 +230,28 @@ mod commands {
         crate::orb::reset(&app);
     }
 
+    #[tauri::command]
+    pub fn orb_placement(app: AppHandle) -> crate::orb::Placement {
+        if crate::dock::enabled(&app) {
+            crate::orb::Placement::Dock
+        } else {
+            crate::orb::Placement::Floating
+        }
+    }
+
+    #[tauri::command]
+    pub fn set_orb_placement(
+        app: AppHandle,
+        placement: crate::orb::Placement,
+    ) -> Result<(), String> {
+        crate::dock::set_placement(&app, placement)
+    }
+
+    #[tauri::command]
+    pub fn orb_dock_state(app: AppHandle, view: crate::dock::View) {
+        crate::dock::update(&app, view);
+    }
+
     /// Mode d'essai sans micro (debug seulement) : une transcription comme si
     /// l'utilisateur l'avait dite, envoyée à l'Assistant par le front.
     #[cfg(debug_assertions)]
@@ -188,6 +265,7 @@ mod commands {
 macro_rules! handler {
     ($($debug_only:path),*) => {
         tauri::generate_handler![
+            open_document,
             core_info,
             daemon_url,
             hooks_base,
@@ -203,6 +281,9 @@ macro_rules! handler {
             commands::voice_stop_speech,
             commands::orb_resize,
             commands::orb_reset_position,
+            commands::orb_placement,
+            commands::set_orb_placement,
+            commands::orb_dock_state,
             $($debug_only),*
         ]
     };
@@ -254,13 +335,14 @@ pub fn run() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(voice::Voice::new(gui.speak_typed_replies))
         .manage(orb::OrbPlacement::default())
+        .manage(dock::Dock::default())
         .manage(Shortcuts {
             config: std::sync::Mutex::new(gui.clone()),
             errors: std::sync::Mutex::default(),
         })
         .invoke_handler(invoke_handler())
         .setup(move |app| {
-            // L'orbe tient lieu d'icône : pas d'icône dans le Dock (D38).
+            // Le mode flottant reste le défaut ; le mode Dock est restauré plus bas.
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -276,6 +358,7 @@ pub fn run() {
                 }
             }
             orb::restore(app.handle());
+            dock::start(app.handle());
             let errors = shell::register_shortcuts(app.handle(), &gui);
             for error in &errors {
                 eprintln!("{error}");
@@ -307,6 +390,15 @@ pub fn run() {
         .expect("échec du lancement de la GUI Argos");
 
     app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if matches!(event, RunEvent::Reopen { .. })
+            && dock::enabled(app)
+            && let Some(console) = app.get_webview_window(shell::MAIN_WINDOW)
+        {
+            let _ = console.show();
+            let _ = console.unminimize();
+            let _ = console.set_focus();
+        }
         // Toute sortie (quitter, signal de fin de session…) arrête la voix, et avec elle
         // `whisper-server`. Sans effet si `quit_app` l'a déjà fait.
         if let RunEvent::Exit = event {

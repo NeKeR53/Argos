@@ -11,6 +11,9 @@ import type { AgentStatus, Command, EngineKind, ProfileInfo } from "../protocol"
 interface Props {
   agent: AgentStatus;
   profiles: ProfileInfo[] | null;
+  buttonLabel?: string;
+  inline?: boolean;
+  onChoose?: () => void;
   connected: boolean;
   send: (command: Command) => boolean;
 }
@@ -30,19 +33,21 @@ export function parseModelValue(value: string): { engine: EngineKind; model: str
   return { engine, model };
 }
 
-export function ModelPicker({ agent, profiles, connected, send }: Props) {
+export function ModelPicker({ agent, profiles, connected, send, buttonLabel, inline = false, onChoose }: Props) {
   const [open, setOpen] = useState(false);
+  const [customEngine, setCustomEngine] = useState<EngineKind>("codex");
+  const [customModel, setCustomModel] = useState("");
   const root = useRef<HTMLDivElement>(null);
   const current = agent.model ? modelValue(agent.engine, agent.model) : "";
 
   // Profils pas encore reçus (connexion récente) : redemandés à l'ouverture.
   useEffect(() => {
-    if (open && !profiles && connected) send({ command: "models" });
-  }, [open, profiles, connected, send]);
+    if ((open || inline) && !profiles && connected) send({ command: "models" });
+  }, [open, inline, profiles, connected, send]);
 
   // Un clic ailleurs ou Échap referme le menu.
   useEffect(() => {
-    if (!open) return;
+    if (!open || inline) return;
     const onPointer = (event: PointerEvent) => {
       if (!root.current?.contains(event.target as Node)) setOpen(false);
     };
@@ -55,54 +60,44 @@ export function ModelPicker({ agent, profiles, connected, send }: Props) {
       window.removeEventListener("pointerdown", onPointer);
       window.removeEventListener("keydown", onKey);
     };
-  }, [open]);
+  }, [open, inline]);
 
   const choose = (engine: EngineKind, model: string) => {
     setOpen(false);
+    onChoose?.();
     if (modelValue(engine, model) === current) return;
     send({ command: "set_model", agent: agent.id, engine, model });
   };
 
   return (
     <div className="model-picker" ref={root}>
-      <button
+      {!inline && <button
         type="button"
         className="model-picker-button"
         aria-haspopup="listbox"
         aria-expanded={open}
         disabled={!connected}
         onClick={() => setOpen(!open)}
+        aria-label="Choisir le modèle"
         title="Changer le modèle : la session est parkée, l'agent reprend sur ce modèle au prochain message"
       >
-        {agent.engine} · {agent.model ?? "modèle par défaut"}
-        {agent.profile && <span className="muted"> ({agent.profile})</span>} ▾
-      </button>
-      {open && (
-        <div className="model-picker-menu" role="listbox" aria-label="Modèle de l'agent">
+        {buttonLabel ?? agent.model ?? "Modèle par défaut"} <span aria-hidden="true">⌄</span>
+      </button>}
+      {(open || inline) && (
+        <div className="model-picker-menu" role="group" aria-label="Modèle de l'agent">
           {!profiles && <p className="muted model-picker-empty">Chargement des modèles…</p>}
-          {(profiles ?? []).map((profile) => (
-            <div key={profile.name} role="group" aria-label={profile.name} className="model-picker-group">
-              <div className="model-picker-profile">
-                <strong>{profile.name}</strong> <span className="muted">{profile.description}</span>
-              </div>
-              {profile.models.map((choice) => {
-                const value = modelValue(choice.engine, choice.model);
-                return (
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={value === current}
-                    key={`${profile.name}-${value}`}
-                    className="model-picker-option"
-                    onClick={() => choose(choice.engine, choice.model)}
-                  >
-                    {value === current ? "✓ " : ""}
-                    {choice.engine} · {choice.model}
-                  </button>
-                );
-              })}
-            </div>
-          ))}
+          {(["codex", "claude"] as const).map((engine) => {
+            const configured = (profiles ?? []).flatMap((profile) => profile.models).filter((model) => model.engine === engine);
+            const defaults = engine === "codex" ? ["gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] : [];
+            const names = [...new Set([...configured.map((model) => model.model), ...defaults, ...(agent.engine === engine && agent.model ? [agent.model] : [])])];
+            return <div key={engine} role="group" aria-label={engine === "codex" ? "Codex" : "Claude"} className="model-picker-group">
+              <div className="model-picker-profile">{engine === "codex" ? "Codex" : "Claude"}</div>
+              {names.map((model) => <button key={model} type="button" aria-pressed={modelValue(engine, model) === current} className="model-picker-option" onClick={() => choose(engine, model)}><span>{model}</span>{modelValue(engine, model) === current && <span aria-hidden="true">✓</span>}</button>)}
+            </div>;
+          })}
+          <form className="model-custom" onSubmit={(event) => { event.preventDefault(); const model = customModel.trim(); if (model) { choose(customEngine, model); setCustomModel(""); } }}>
+            <label htmlFor="custom-model">Autre modèle</label><div><select aria-label="Moteur" value={customEngine} onChange={(event) => setCustomEngine(event.target.value as EngineKind)}><option value="codex">Codex</option><option value="claude">Claude</option></select><input id="custom-model" value={customModel} onChange={(event) => setCustomModel(event.target.value)} placeholder="Identifiant du modèle" /><button type="submit" disabled={!customModel.trim()}>OK</button></div>
+          </form>
         </div>
       )}
     </div>

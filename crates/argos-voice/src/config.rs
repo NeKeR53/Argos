@@ -28,6 +28,17 @@ pub struct VoiceConfig {
     pub language: String,
     #[serde(default = "default_voice")]
     pub voice: String,
+    /// Synthèse locale : `say` (macOS) ou `kokoro`.
+    #[serde(default = "default_tts_backend")]
+    pub tts_backend: String,
+    #[serde(default)]
+    pub kokoro_python: Option<PathBuf>,
+    #[serde(default)]
+    pub kokoro_model: Option<PathBuf>,
+    #[serde(default)]
+    pub kokoro_voices: Option<PathBuf>,
+    #[serde(default = "default_kokoro_voice")]
+    pub kokoro_voice: String,
     #[serde(default = "default_partial_interval_ms")]
     pub partial_interval_ms: u64,
 }
@@ -42,6 +53,13 @@ fn default_language() -> String {
 
 fn default_voice() -> String {
     "Thomas".into()
+}
+
+fn default_tts_backend() -> String {
+    "say".into()
+}
+fn default_kokoro_voice() -> String {
+    "ff_siwis".into()
 }
 
 fn default_partial_interval_ms() -> u64 {
@@ -61,6 +79,11 @@ impl VoiceConfig {
             whisper_server: default_whisper_server(),
             language: default_language(),
             voice: default_voice(),
+            tts_backend: default_tts_backend(),
+            kokoro_python: None,
+            kokoro_model: None,
+            kokoro_voices: None,
+            kokoro_voice: default_kokoro_voice(),
             partial_interval_ms: default_partial_interval_ms(),
         }
     }
@@ -74,6 +97,9 @@ impl VoiceConfig {
             .voice
             .ok_or_else(|| VoiceError::Config("section [voice] absente".into()))?;
         config.whisper_model = expand_home(&config.whisper_model);
+        config.kokoro_python = config.kokoro_python.map(|p| expand_home(&p));
+        config.kokoro_model = config.kokoro_model.map(|p| expand_home(&p));
+        config.kokoro_voices = config.kokoro_voices.map(|p| expand_home(&p));
         config.check()?;
         Ok(config)
     }
@@ -88,6 +114,25 @@ impl VoiceConfig {
             return Err(VoiceError::Config(format!(
                 "partial_interval_ms doit valoir au moins {MIN_PARTIAL_INTERVAL_MS}"
             )));
+        }
+        if self.tts_backend != "say" && self.tts_backend != "kokoro" {
+            return Err(VoiceError::Config(
+                "tts_backend doit être say ou kokoro".into(),
+            ));
+        }
+        if self.tts_backend == "kokoro" {
+            for (name, path) in [
+                ("kokoro_python", &self.kokoro_python),
+                ("kokoro_model", &self.kokoro_model),
+                ("kokoro_voices", &self.kokoro_voices),
+            ] {
+                if !path.as_ref().is_some_and(|p| p.is_file()) {
+                    return Err(VoiceError::Config(format!("{name} absent ou introuvable")));
+                }
+            }
+            if self.kokoro_voice.trim().is_empty() {
+                return Err(VoiceError::Config("kokoro_voice est obligatoire".into()));
+            }
         }
         if self.language.trim().is_empty() || self.voice.trim().is_empty() {
             return Err(VoiceError::Config(
@@ -144,6 +189,32 @@ mod tests {
         assert_eq!(config.language, "en");
         assert_eq!(config.voice, "Amélie");
         assert_eq!(config.partial_interval_ms, 500);
+    }
+
+    #[test]
+    fn kokoro_requires_its_local_files_and_accepts_valid_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let incomplete = with_model(&dir, "tts_backend = \"kokoro\"\n");
+        assert!(
+            VoiceConfig::from_toml(&incomplete)
+                .unwrap_err()
+                .to_string()
+                .contains("kokoro_python")
+        );
+        let python = dir.path().join("python");
+        let model = dir.path().join("kokoro.onnx");
+        let voices = dir.path().join("voices.bin");
+        for path in [&python, &model, &voices] {
+            std::fs::write(path, b"fixture").unwrap();
+        }
+        let settings = format!(
+            "tts_backend = \"kokoro\"\nkokoro_python = {:?}\nkokoro_model = {:?}\nkokoro_voices = {:?}\n",
+            python.to_str().unwrap(),
+            model.to_str().unwrap(),
+            voices.to_str().unwrap()
+        );
+        let config = VoiceConfig::from_toml(&with_model(&dir, &settings)).unwrap();
+        assert_eq!(config.kokoro_voice, "ff_siwis");
     }
 
     #[test]

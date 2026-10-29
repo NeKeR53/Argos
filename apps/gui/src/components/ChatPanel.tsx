@@ -2,7 +2,8 @@
 // surfaces, board d'un Agent, fil des messages, saisie. Un Worker s'affiche en lecture
 // seule (D2) et n'a pas de surface.
 
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
 import type {
   AgentId,
   AgentStatus,
@@ -18,20 +19,15 @@ import type {
 import {
   displayName,
   isAddressable,
-  isRetirable,
-  shortId,
   type ConsoleSend,
   type FeedItem,
   type ThreadEntry,
 } from "../state";
-import { engineLabel, formatCost, formatUsage, levelLabel, outcomeLabel } from "../format";
+import { formatUsage, levelLabel, outcomeLabel } from "../format";
 import { classifyInput } from "../inputs";
 import { AgentFlags } from "./AgentTree";
-import { BoardSection } from "./BoardSection";
-import { ModelPicker } from "./ModelPicker";
 import { StatusDot } from "./StatusDot";
 import { SurfaceView } from "./SurfaceView";
-import { TriggerPanel } from "./TriggerPanel";
 
 interface Props {
   agent: AgentStatus;
@@ -66,11 +62,8 @@ interface Props {
 }
 
 export function ChatPanel(props: Props) {
-  const { agent, parent, thread, spent, connected, send, onRetire, onSelect, nameOf } = props;
+  const { agent, parent, thread, connected, send, onSelect, nameOf } = props;
   const addressable = isAddressable(agent);
-  // Board ouvert ou replié : le choix suit l'utilisateur d'un Agent à l'autre.
-  const [boardOpen, setBoardOpen] = useState(true);
-  const [triggersOpen, setTriggersOpen] = useState(false);
   // Onglet affiché, par agent : on retrouve la surface qu'on regardait.
   const [tabs, setTabs] = useState<Record<AgentId, string>>({});
   // Une surface supprimée laisse place au chat.
@@ -96,55 +89,6 @@ export function ChatPanel(props: Props) {
           </span>
           <AgentFlags agent={agent} />
         </div>
-        <div className="chat-meta">
-          {addressable ? (
-            <ModelPicker agent={agent} profiles={props.profiles} connected={connected} send={send} />
-          ) : (
-            <span>{engineLabel(agent)}</span>
-          )}
-          {agent.node && <span title="Nœud où tourne sa session">nœud {agent.node}</span>}
-          {/* Un Worker porte déjà son id court en titre. */}
-          {agent.level !== "worker" && (
-            <span className="mono" title={agent.id}>
-              {shortId(agent.id)}
-            </span>
-          )}
-          {agent.charter && <span title="Périmètre de la charte">{agent.charter.scope}</span>}
-          {spent != null && <span title="Coût cumulé depuis la connexion de la console">{formatCost(spent)}</span>}
-        </div>
-        {addressable && (
-          <div className="chat-actions">
-            <button
-              type="button"
-              className="button"
-              disabled={!connected || !agent.running}
-              onClick={() => send({ command: "park", agent: agent.id })}
-              title="Arrêt propre du process ; l'agent reprendra sa session au prochain message"
-            >
-              Parker
-            </button>
-            <button
-              type="button"
-              className="button"
-              disabled={!connected}
-              onClick={() => send({ command: "stop", agent: agent.id })}
-              title="Arrêt dur de l'agent et de tout son sous-arbre"
-            >
-              Stopper
-            </button>
-            {isRetirable(agent) && (
-              <button
-                type="button"
-                className="button button-danger-quiet"
-                disabled={!connected}
-                onClick={() => onRetire(agent)}
-                title="Retrait définitif de l'Agent et de ses Workers"
-              >
-                Retirer…
-              </button>
-            )}
-          </div>
-        )}
       </header>
 
       {!addressable && (
@@ -182,40 +126,14 @@ export function ChatPanel(props: Props) {
         />
       ) : (
         <>
-          {agent.level === "agent" && (
-            <BoardSection
-              agent={agent}
-              board={props.board}
-              revision={props.boardRevision}
-              connected={connected}
-              open={boardOpen}
-              onToggle={setBoardOpen}
-              send={send}
-              isLiving={props.isLiving}
-              onSelect={onSelect}
-            />
-          )}
-
-          {addressable && (
-            <TriggerPanel
-              agent={agent}
-              triggers={props.triggers}
-              revision={props.triggerRevision}
-              hooksBase={props.hooksBase}
-              connected={connected}
-              open={triggersOpen}
-              onToggle={setTriggersOpen}
-              send={send}
-              nameOf={nameOf}
-            />
-          )}
-
           {/* Clés par agent : défilement et brouillon ne passent pas d'un agent à l'autre. */}
           <Thread
             key={`thread-${agent.id}`}
             entries={thread}
             nameOf={nameOf}
             dictation={agent.level === "assistant" ? props.dictation : null}
+            remote={!!agent.node}
+            busy={agent.busy}
           />
 
           {addressable && <Composer key={`composer-${agent.id}`} agent={agent} connected={connected} send={send} />}
@@ -265,7 +183,11 @@ function Thread({
   entries,
   nameOf,
   dictation,
+  remote,
+  busy,
 }: {
+  remote: boolean;
+  busy: boolean;
   entries: ThreadEntry[];
   nameOf: (agent: AgentId) => string;
   /** Ce que l'utilisateur est en train de dire (fil de l'Assistant seulement). */
@@ -280,11 +202,19 @@ function Thread({
     if (element && pinned.current) element.scrollTop = element.scrollHeight;
   }, [entries, dictation]);
 
+  const groups: Array<ThreadEntry | { kind: "tools"; seq: number; tools: Extract<ThreadEntry, { kind: "tool" }>[] }> = [];
+  for (const entry of entries) {
+    const last = groups[groups.length - 1];
+    if (entry.kind === "tool" && last?.kind === "tools") last.tools.push(entry);
+    else if (entry.kind === "tool") groups.push({ kind: "tools", seq: entry.seq, tools: [entry] });
+    else groups.push(entry);
+  }
+  const lastGroup = groups[groups.length - 1];
   if (entries.length === 0 && dictation === null) {
     return (
       <div className="thread thread-empty">
         <p>Aucun message depuis la connexion.</p>
-        <p className="muted">Le daemon ne garde pas d'historique : le fil commence à l'ouverture de la console.</p>
+
       </div>
     );
   }
@@ -299,8 +229,10 @@ function Thread({
         pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40;
       }}
     >
-      {entries.map((entry) => (
-        <Entry key={entry.seq} entry={entry} nameOf={nameOf} />
+      {groups.map((entry) => entry.kind === "tools" ? (
+        <ToolGroup key={entry.seq} tools={entry.tools} active={busy && entry === lastGroup} />
+      ) : (
+        <Entry key={entry.seq} entry={entry} nameOf={nameOf} remote={remote} />
       ))}
       {dictation !== null && (
         <div className="entry entry-input entry-dictation" aria-live="polite">
@@ -312,6 +244,34 @@ function Thread({
       )}
     </div>
   );
+}
+
+function ToolGroup({ tools, active }: { tools: Extract<ThreadEntry, { kind: "tool" }>[]; active: boolean }) {
+  return <details className="tool-group">
+    <summary><span className="tool-indicator" data-active={active} aria-hidden="true" /><span>{tools.length} {tools.length === 1 ? "outil" : "outils"}{active ? " · activité en cours" : ""}</span><span className="tool-chevron" aria-hidden="true">⌄</span></summary>
+    <ul>{tools.map((tool) => <li key={tool.seq}><details className="tool-detail"><summary><span>{tool.name}</span><span className="tool-detail-state">{tool.finished === false ? "En cours" : tool.finished ? "Terminé" : ""}</span></summary><div className="tool-detail-content">{tool.input && <section><strong>Commande / entrée</strong><pre>{tool.input}</pre></section>}{tool.output && <section><strong>Sortie</strong><pre>{tool.output}</pre></section>}{!tool.input && !tool.output && <p>Les détails ne sont pas disponibles.</p>}{tool.finished === false && !tool.output && <p>En attente de la sortie…</p>}</div></details></li>)}</ul>
+  </details>;
+}
+
+/** Rend les chemins de documents directement à leur place dans le message. */
+function DocumentText({ text, remote }: { text: string; remote: boolean }) {
+  const [error, setError] = useState<string | null>(null);
+  const pattern = /\[([^\]\n]+)\]\((<\/[^>\n]+>|\/[^)\n]+)\)|\/(?:[^\s`<>()[\]]+\/)*[^\s`<>()[\]]+/g;
+  const parts: ReactNode[] = [];
+  let end = 0;
+  for (const match of text.matchAll(pattern)) {
+    const rawPath = (match[2] ?? match[0]).replace(/^<|>$/g, "");
+    const path = rawPath.replace(/[.,;:!?]+$/, "");
+    if (!/^\/(?!\/).+\.(pdf|docx?|odt|rtf|txt|md|xlsx?|ods|pptx?|odp|csv|png|jpe?g)$/i.test(path) && !(match[1] && /^\/(?!\/).+\/$/.test(path))) continue;
+    const start = match.index;
+    parts.push(text.slice(end, start));
+    const label = match[1] ?? path;
+    parts.push(<button key={start} type="button" className="document-link" disabled={remote || !isTauri()} title={remote ? "Ce document se trouve sur un autre nœud" : !isTauri() ? "Disponible dans l’application Argos" : path} onClick={() => { setError(null); void invoke("open_document", { path }).catch((reason: unknown) => setError(String(reason))); }}>{label}</button>);
+    if (!match[1]) parts.push(rawPath.slice(path.length));
+    end = start + match[0].length;
+  }
+  parts.push(text.slice(end));
+  return <>{parts}{error && <p className="document-error" role="alert">{error}</p>}</>;
 }
 
 const deliveryLabel = {
@@ -335,7 +295,7 @@ function senderLabel(from: Origin | null, nameOf: (agent: AgentId) => string): s
   }
 }
 
-function Entry({ entry, nameOf }: { entry: ThreadEntry; nameOf: (agent: AgentId) => string }) {
+function Entry({ entry, nameOf, remote }: { entry: ThreadEntry; nameOf: (agent: AgentId) => string; remote: boolean }) {
   switch (entry.kind) {
     case "input":
       return (
@@ -350,7 +310,7 @@ function Entry({ entry, nameOf }: { entry: ThreadEntry; nameOf: (agent: AgentId)
     case "agent":
       return (
         <div className="entry entry-agent">
-          <div className="bubble">{entry.text}</div>
+          <div className="bubble"><DocumentText text={entry.text} remote={remote} /></div>
         </div>
       );
     case "streaming":

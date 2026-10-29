@@ -2,7 +2,7 @@
 
 mod common;
 
-use argos_core::{AgentId, Level, TaskState};
+use argos_core::{AgentId, EngineKind, Level, TaskState};
 use common::world::{World, is_message, until, world};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -123,6 +123,8 @@ async fn each_caller_sees_the_tools_of_its_level() {
 
     assert!(assistant.contains(&"create_agent".to_string()));
     assert!(assistant.contains(&"rename_agent".to_string()));
+    assert!(assistant.contains(&"configure_agent".to_string()));
+    assert!(!agent.contains(&"configure_agent".to_string()));
     assert!(!agent.contains(&"rename_agent".to_string()));
     assert!(agent.contains(&"spawn_worker".to_string()));
     for tool in ["function_list", "function_call"] {
@@ -134,6 +136,173 @@ async fn each_caller_sees_the_tools_of_its_level() {
         assert!(!assistant.iter().any(|name| name == tool));
     }
     assert_eq!(worker, vec!["report_to_agent", "escalate_to_agent"]);
+}
+
+#[tokio::test]
+async fn the_assistant_configures_an_agent_and_its_next_workers_inherit_the_folder() {
+    let mut w = world();
+    let address = serve(&w).await;
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+    w.supervisor.retire(&w.worker.id).await.unwrap();
+    w.supervisor
+        .registry()
+        .set_session(&w.agent.id, "ancien-contexte")
+        .unwrap();
+    let project = w.home.path().join("projet");
+    std::fs::create_dir(&project).unwrap();
+    std::fs::write(project.join("AGENTS.md"), "Consigne du projet configuré.").unwrap();
+    let (result, error) = assistant
+        .call(
+            "configure_agent",
+            json!({
+                "agent": "Domotique", "name": "Projet", "scope": "Gérer le projet", "workdir": project,
+                "engine": "codex", "model": "modele-explicite"
+            }),
+        )
+        .await;
+    assert!(!error, "{result}");
+    let result: Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(result["workdir"], project.to_str().unwrap());
+    assert_eq!(result["engine"], "codex");
+    let configured = w.supervisor.record(&w.agent.id).unwrap();
+    assert_eq!(configured.id, w.agent.id);
+    assert_eq!(configured.charter.as_ref().unwrap().name, "Projet");
+    assert_eq!(
+        configured.charter.as_ref().unwrap().scope,
+        "Gérer le projet"
+    );
+    assert_eq!(configured.workdir, project);
+    assert_eq!(configured.engine, EngineKind::Codex);
+    assert_eq!(configured.model.as_deref(), Some("modele-explicite"));
+    assert!(configured.session_id.is_none());
+
+    let (result, error) = assistant
+        .call(
+            "configure_agent",
+            json!({"agent": w.agent.id, "model": "modele-suivant"}),
+        )
+        .await;
+    assert!(!error, "{result}");
+    let configured = w.supervisor.record(&w.agent.id).unwrap();
+    assert_eq!(configured.engine, EngineKind::Codex);
+    assert_eq!(configured.model.as_deref(), Some("modele-suivant"));
+
+    // Changer de profil par id conserve le nouveau nom et le dossier.
+    let (result, error) = assistant
+        .call(
+            "configure_agent",
+            json!({"agent": w.agent.id, "profile": "léger"}),
+        )
+        .await;
+    assert!(!error, "{result}");
+    let configured = w.supervisor.record(&w.agent.id).unwrap();
+    assert_eq!(configured.profile.as_deref(), Some("léger"));
+    assert_eq!(configured.engine, EngineKind::Claude);
+    assert_eq!(configured.workdir, project);
+    assert_eq!(configured.charter.as_ref().unwrap().name, "Projet");
+    let agent = Client::new(&w, &address, &w.agent.id);
+    let task = add_task(&agent, &w, "Lire les consignes du projet").await;
+    let (result, error) = agent.call("spawn_worker", json!({"task": task})).await;
+    assert!(!error, "{result}");
+    let worker = w
+        .supervisor
+        .children(&w.agent.id)
+        .unwrap()
+        .pop()
+        .unwrap()
+        .record;
+    assert_eq!(worker.workdir, project);
+    until(&mut w.events, |event| {
+        is_message(event, &worker.id, "reply 1")
+    })
+    .await;
+    let args = std::fs::read_to_string(project.join(".fake-args")).unwrap();
+    assert!(args.contains("Consigne du projet configuré."));
+    w.supervisor.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_or_unauthorized_configuration_keeps_the_agent_unchanged() {
+    let w = world();
+    let address = serve(&w).await;
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+    let agent = Client::new(&w, &address, &w.agent.id);
+    let worker = Client::new(&w, &address, &w.worker.id);
+    let project = w.home.path().join("projet");
+    std::fs::create_dir(&project).unwrap();
+    let change = json!({"agent": w.agent.id, "workdir": project});
+    for caller in [&assistant, &agent, &worker] {
+        let (result, error) = caller.call("configure_agent", change.clone()).await;
+        assert!(
+            error,
+            "un Worker vivant ou un appelant non autorisé doit être refusé : {result}"
+        );
+    }
+    w.supervisor.retire(&w.worker.id).await.unwrap();
+    assistant
+        .call(
+            "create_agent",
+            json!({"name": "Autre", "scope": "autre domaine"}),
+        )
+        .await;
+    for fields in [
+        json!({}),
+        json!({"name": ""}),
+        json!({"name": 42}),
+        json!({"name": "Modifié", "workdir": "relatif"}),
+        json!({"name": "Modifié", "workdir": project.join("absent")}),
+        json!({"name": "Autre", "workdir": project}),
+        json!({"name": "Modifié", "engine": "inconnu", "model": "x"}),
+        json!({"engine": "codex"}),
+        json!({"profile": "inconnu"}),
+        json!({"profile": "léger", "model": "x"}),
+        json!({"harness": "codex"}),
+    ] {
+        let mut args = fields;
+        args["agent"] = json!(w.agent.id);
+        let (result, error) = assistant.call("configure_agent", args).await;
+        assert!(error, "{result}");
+        assert_eq!(w.supervisor.record(&w.agent.id).unwrap(), w.agent);
+    }
+    for target in [&w.assistant.id, &w.worker.id] {
+        let (result, error) = assistant
+            .call(
+                "configure_agent",
+                json!({"agent": target, "name": "Interdit"}),
+            )
+            .await;
+        assert!(error, "{result}");
+    }
+}
+
+#[tokio::test]
+async fn configuration_does_not_interrupt_work_and_renaming_preserves_the_session() {
+    let w = world();
+    let address = serve(&w).await;
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+    w.supervisor.send(&w.agent.id, "SLOW").await.unwrap();
+    let before = w.supervisor.record(&w.agent.id).unwrap();
+    let (result, error) = assistant
+        .call(
+            "configure_agent",
+            json!({"agent": w.agent.id, "name": "Modifié", "engine": "codex", "model": "x"}),
+        )
+        .await;
+    assert!(error, "{result}");
+    assert_eq!(w.supervisor.record(&w.agent.id).unwrap(), before);
+    let (result, error) = assistant
+        .call(
+            "configure_agent",
+            json!({"agent": w.agent.id, "name": "Maison"}),
+        )
+        .await;
+    assert!(!error, "{result}");
+    assert_eq!(
+        w.supervisor.record(&w.agent.id).unwrap().session_id,
+        before.session_id
+    );
+    assert!(w.supervisor.inspect(&w.agent.id).unwrap().busy);
+    w.supervisor.shutdown().await;
 }
 
 #[tokio::test]
@@ -496,4 +665,51 @@ async fn a_worker_gets_the_engine_and_model_of_its_profile() {
         .call("spawn_worker", json!({"task": task, "profile": "inconnu"}))
         .await;
     assert!(error, "{refusal}");
+}
+
+#[tokio::test]
+async fn assistant_configures_capabilities_inherited_by_worker() {
+    let mut w = world();
+    let address = serve(&w).await;
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+    let config = json!({"agent":"Domotique", "skills": [w.home.path().join("SKILL.md")], "mcp": [
+        {"name":"example", "type":"stdio", "command":"example-server", "args":["--stdio"]}
+    ]});
+    let (_, error) = assistant
+        .call("set_agent_capabilities", config.clone())
+        .await;
+    assert!(error, "un Worker vivant interdit la modification");
+    w.supervisor.retire(&w.worker.id).await.unwrap();
+    std::fs::write(w.home.path().join("SKILL.md"), "Consigne de skill de test").unwrap();
+    let (message, error) = assistant.call("set_agent_capabilities", config).await;
+    assert!(!error, "{message}");
+    let (message, error) = assistant
+        .call("agent_capabilities", json!({"agent":"Domotique"}))
+        .await;
+    assert!(!error, "{message}");
+    let saved: Value = serde_json::from_str(&message).unwrap();
+    assert_eq!(saved["mcp"][0]["name"], "example");
+    let agent = Client::new(&w, &address, &w.agent.id);
+    let task = add_task(&agent, &w, "Tester les capacités").await;
+    let (message, error) = agent.call("spawn_worker", json!({"task":task})).await;
+    assert!(!error, "{message}");
+    let worker = w
+        .supervisor
+        .children(&w.agent.id)
+        .unwrap()
+        .pop()
+        .unwrap()
+        .record;
+    assert_eq!(
+        w.supervisor.capabilities_for(&worker).unwrap(),
+        w.supervisor.capabilities_for(&w.agent).unwrap()
+    );
+    until(&mut w.events, |event| {
+        is_message(event, &worker.id, "reply 1")
+    })
+    .await;
+    let args = std::fs::read_to_string(w.agent.workdir.join(".fake-args")).unwrap();
+    assert!(args.contains("Consigne de skill de test"));
+    assert!(args.contains("example-server"));
+    w.supervisor.shutdown().await;
 }

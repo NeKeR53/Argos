@@ -14,7 +14,7 @@ use crate::engine::{
 use crate::memory::{Memory, MemoryOp, MemoryOutput};
 use crate::node::{Nodes, RemoteSpec};
 use crate::policy::ModelPolicy;
-use crate::registry::{NewAgent, Registry, RegistryError};
+use crate::registry::{AgentUpdate, NewAgent, Registry, RegistryError};
 use argos_core::protocol::{AgentStatus, DaemonEvent, Origin};
 use argos_core::{AgentId, AgentRecord, AgentState, EngineKind, Level, Usage};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -51,8 +51,7 @@ pub struct SupervisorSettings {
     pub policy: ModelPolicy,
     /// Les autres nœuds, où tournent les agents qui y sont placés (D32).
     pub nodes: Nodes,
-    /// Droits des Workers sur la machine (`[workers] access`). L'Assistant et les Agents
-    /// orchestrent : ils ne touchent jamais à rien eux-mêmes.
+    /// Droits des Agents et Workers sur la machine (`[workers] access`).
     pub worker_access: Access,
 }
 
@@ -452,6 +451,20 @@ impl Supervisor {
                 EngineEvent::ToolActivity { name } => {
                     self.publish(DaemonEvent::Tool { agent, name })
                 }
+                EngineEvent::ToolDetail {
+                    id,
+                    name,
+                    input,
+                    output,
+                    finished,
+                } => self.publish(DaemonEvent::ToolDetail {
+                    agent,
+                    id,
+                    name,
+                    input,
+                    output,
+                    finished,
+                }),
                 EngineEvent::RateLimited { message } => self.start_fall_back(agent, message),
                 EngineEvent::TurnCompleted { outcome, usage } => {
                     busy.store(false, Ordering::SeqCst);
@@ -510,13 +523,76 @@ impl Supervisor {
         self.publish_status(id);
     }
 
+    pub fn argos_mcp_enabled(&self) -> bool {
+        self.inner.settings.mcp_url.is_some()
+    }
+
+    pub fn capabilities_for(
+        &self,
+        record: &AgentRecord,
+    ) -> Result<crate::capabilities::Capabilities> {
+        let id = match record.level {
+            Level::Worker => record
+                .parent
+                .as_ref()
+                .ok_or_else(|| RegistryError::Hierarchy("Worker sans Agent".into()))?,
+            _ => &record.id,
+        };
+        Ok(self.registry().capabilities(id)?)
+    }
+
+    pub async fn set_capabilities(
+        &self,
+        id: &AgentId,
+        config: crate::capabilities::Capabilities,
+    ) -> Result<()> {
+        config.validate().map_err(RegistryError::Hierarchy)?;
+        let slot = self.slot(id);
+        let mut live = slot.lock().await;
+        let record = self.record(id)?;
+        if record.level != Level::Agent || record.state == AgentState::Retired {
+            return Err(RegistryError::Hierarchy(
+                "seul un Agent vivant peut être configuré".into(),
+            )
+            .into());
+        }
+        if self.inspect(id)?.busy {
+            return Err(
+                RegistryError::Hierarchy("attends la fin du tour de l'Agent".into()).into(),
+            );
+        }
+        if !self.children(id)?.is_empty() {
+            return Err(RegistryError::Hierarchy(
+                "termine et retire les Workers avant de modifier les capacités".into(),
+            )
+            .into());
+        }
+        if let Some(session) = live.take() {
+            let _ = session.control.park();
+            if !exited(session.exited.clone()).await {
+                session.control.kill();
+                exited(session.exited).await;
+            }
+            self.settle(id);
+        }
+        if !self.children(id)?.is_empty() {
+            return Err(RegistryError::Hierarchy(
+                "termine et retire les Workers avant de modifier les capacités".into(),
+            )
+            .into());
+        }
+        self.registry().set_capabilities(id, &config)?;
+        self.publish_status(id);
+        Ok(())
+    }
+
     async fn spec_for(&self, record: &AgentRecord) -> Result<SessionSpec> {
         let settings = &self.inner.settings;
         std::fs::create_dir_all(&record.workdir)?;
         let mut spec = SessionSpec::new(record.engine, &record.workdir);
+        spec.capabilities = self.capabilities_for(record)?;
         spec.model = record.model.clone();
         spec.resume = record.session_id.clone();
-        // L'Assistant et les Agents orchestrent : seuls les Workers modifient (D17, D18).
         spec.access = self.access_of(record);
         spec.program = settings.programs.get(&record.engine).cloned();
         if let Some(base) = &settings.mcp_url {
@@ -540,6 +616,7 @@ impl Supervisor {
         let instructions = self.instructions(record).await?;
         Ok(RemoteSpec {
             agent: record.id.clone(),
+            capabilities: self.capabilities_for(record)?,
             engine: record.engine,
             cwd: record.workdir.clone(),
             model: record.model.clone(),
@@ -555,19 +632,19 @@ impl Supervisor {
         })
     }
 
-    /// L'Assistant et les Agents orchestrent : seuls les Workers modifient (D17, D18).
+    /// Un Agent peut exécuter lui-même ; seul l'Assistant reste en lecture seule.
     fn access_of(&self, record: &AgentRecord) -> Access {
         match record.level {
-            Level::Worker => self.inner.settings.worker_access,
-            _ => Access::ReadOnly,
+            Level::Agent | Level::Worker => self.inner.settings.worker_access,
+            Level::Assistant => Access::ReadOnly,
         }
     }
 
     /// Le contrat du niveau d'abord, puis la mémoire pour ceux qui en ont une.
     async fn instructions(&self, record: &AgentRecord) -> Result<String> {
         let mut instructions = contracts::contract(record, self.policy());
-        if record.level == Level::Worker {
-            instructions.push_str(contracts::worker_access(self.access_of(record)));
+        if record.level != Level::Assistant {
+            instructions.push_str(contracts::execution_access(self.access_of(record)));
         }
         if record.level.has_memory() {
             let state = self.render_state(record)?;
@@ -842,6 +919,128 @@ impl Supervisor {
         {
             self.notice(&id, format!("reprise impossible après le repli : {error}"));
         }
+    }
+
+    /// Configuration groupée par l'Assistant, sans interrompre une tâche en cours.
+    pub async fn configure_agent(&self, id: &AgentId, update: AgentUpdate) -> Result<AgentRecord> {
+        let slot = self.slot(id);
+        let mut live = slot.lock().await;
+        let record = self.record(id)?;
+        if record.level != Level::Agent || record.state == AgentState::Retired {
+            return Err(RegistryError::Hierarchy(
+                "seul un Agent vivant peut être configuré".into(),
+            )
+            .into());
+        }
+        if update
+            .scope
+            .as_ref()
+            .is_some_and(|scope| scope.trim().is_empty())
+        {
+            return Err(
+                RegistryError::InvalidCharter("le périmètre est obligatoire".into()).into(),
+            );
+        }
+        let scope_changed = update.scope.as_ref().is_some_and(|scope| {
+            record
+                .charter
+                .as_ref()
+                .is_some_and(|charter| charter.scope != scope.trim())
+        });
+        let workspace_changed = update
+            .workdir
+            .as_ref()
+            .is_some_and(|dir| *dir != record.workdir);
+        if let Some(dir) = &update.workdir
+            && (!dir.is_absolute() || (record.node.is_none() && !dir.is_dir()))
+        {
+            return Err(RegistryError::Hierarchy("workspace invalide : indique un dossier existant avec son chemin absolu sur le nœud de l'Agent".into()).into());
+        }
+        let model_changed = update.model.as_ref().is_some_and(|model| {
+            model.engine != record.engine || record.model.as_deref() != Some(model.model.as_str())
+        });
+        if (scope_changed || workspace_changed || model_changed) && self.inspect(id)?.busy {
+            return Err(RegistryError::Hierarchy(
+                "attends la fin du tour avant de changer le périmètre, le workspace ou le modèle"
+                    .into(),
+            )
+            .into());
+        }
+        if workspace_changed && !self.children(id)?.is_empty() {
+            return Err(RegistryError::Hierarchy(
+                "termine et retire les Workers avant de changer de workspace".into(),
+            )
+            .into());
+        }
+        if (scope_changed || workspace_changed || model_changed)
+            && let Some(session) = live.take()
+        {
+            let _ = session.control.park();
+            if !exited(session.exited.clone()).await {
+                session.control.kill();
+                exited(session.exited).await;
+            }
+            self.settle(id);
+        }
+        let configured = self.registry().configure_agent(id, &update)?;
+        self.memory_log(
+            id,
+            format!(
+                "configuration mise à jour : nom {}, workspace {}, moteur {}, modèle {}",
+                configured.charter.as_ref().map_or("", |c| c.name.as_str()),
+                configured.workdir.display(),
+                configured.engine,
+                configured.model.as_deref().unwrap_or("par défaut")
+            ),
+        );
+        self.publish_status(id);
+        Ok(configured)
+    }
+
+    /// Rattachement explicite à un workspace existant, sans emporter l'ancien contexte.
+    pub async fn set_workspace(&self, id: &AgentId, workdir: &str) -> Result<AgentRecord> {
+        let workdir = PathBuf::from(workdir.trim());
+        let slot = self.slot(id);
+        let mut live = slot.lock().await;
+        let record = self.record(id)?;
+        if record.level != Level::Agent || record.state == AgentState::Retired {
+            return Err(RegistryError::Hierarchy(
+                "seul un Agent vivant peut changer de workspace".into(),
+            )
+            .into());
+        }
+        if !workdir.is_absolute() || (record.node.is_none() && !workdir.is_dir()) {
+            return Err(RegistryError::Hierarchy("workspace invalide : indique un dossier existant avec son chemin absolu sur le nœud de l'Agent".into()).into());
+        }
+        if workdir == record.workdir {
+            return Ok(record);
+        }
+        if self.inspect(id)?.busy || !self.children(id)?.is_empty() {
+            return Err(RegistryError::Hierarchy(
+                "termine la tâche en cours et retire les Workers avant de changer de workspace"
+                    .into(),
+            )
+            .into());
+        }
+        if let Some(session) = live.take() {
+            let _ = session.control.park();
+            if !exited(session.exited.clone()).await {
+                session.control.kill();
+                exited(session.exited).await;
+            }
+            self.settle(id);
+        }
+        self.registry().set_workspace(id, &workdir)?;
+        self.memory_log(
+            id,
+            format!(
+                "workspace changé : {} → {}",
+                record.workdir.display(),
+                workdir.display()
+            ),
+        );
+        self.publish_status(id);
+        self.record(id)
     }
 
     /// Override de l'utilisateur (D21) : nouveau moteur et modèle pour un agent. Sa session

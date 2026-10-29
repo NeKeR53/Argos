@@ -25,11 +25,17 @@ describe("lecture des réponses", () => {
     const sent = voiceSent(IDLE_PLAN, "Dis-moi bonjour");
     const { plan, actions } = play(sent, [input("Dis-moi bonjour"), delta("Bonjour, "), delta("Alexandre."), message("Bonjour, Alexandre."), done]);
     expect(actions).toEqual([
+      { type: "stop" },
       { type: "speak", text: "Bonjour, " },
       { type: "speak", text: "Alexandre." },
       { type: "finish" },
     ]);
     expect(plan).toEqual(IDLE_PLAN);
+  });
+
+  it("vide la lecture précédente avant la réponse à une nouvelle demande vocale", () => {
+    const { actions } = play(voiceSent(IDLE_PLAN, "nouvelle demande"), [input("nouvelle demande"), message("Nouvelle réponse"), done]);
+    expect(actions).toEqual([{ type: "stop" }, { type: "speak", text: "Nouvelle réponse" }, { type: "finish" }]);
   });
 
   it("ne lit pas la réponse à une demande tapée", () => {
@@ -38,12 +44,12 @@ describe("lecture des réponses", () => {
 
   it("lit tout avec speak_typed_replies", () => {
     const { actions } = play(IDLE_PLAN, [input("tapé"), delta("Réponse"), message("Réponse"), done], true);
-    expect(actions).toEqual([{ type: "speak", text: "Réponse" }, { type: "finish" }]);
+    expect(actions).toEqual([{ type: "stop" }, { type: "speak", text: "Réponse" }, { type: "finish" }]);
   });
 
   it("lit d'un bloc un message arrivé sans fragments", () => {
     const { actions } = play(voiceSent(IDLE_PLAN, "salut"), [input("salut"), message("Salut !"), done]);
-    expect(actions).toEqual([{ type: "speak", text: "Salut !" }, { type: "finish" }]);
+    expect(actions).toEqual([{ type: "stop" }, { type: "speak", text: "Salut !" }, { type: "finish" }]);
   });
 
   it("ne lit pas le tour d'une autre demande arrivée avant celle faite à la voix", () => {

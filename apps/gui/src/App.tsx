@@ -13,16 +13,17 @@ import {
   shortId,
   treeOf,
   type Connection,
-  type Escalation,
-  type Notice,
 } from "./state";
 import { useDaemon } from "./useDaemon";
 import { simulateVoice, useVoiceView } from "./useVoiceView";
 import { voiceReason, voiceStatusLabel, type VoiceStatus } from "./voice";
+import { NotificationCenter } from "./components/NotificationCenter";
+import { AgentContextPanel } from "./components/AgentContextPanel";
 import { AgentTree } from "./components/AgentTree";
 import { ChatPanel } from "./components/ChatPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
+import { OrbSettings } from "./components/OrbSettings";
 import { DEFAULT_SHORTCUTS, formatShortcut, loadShortcuts, matchesShortcut, type Shortcuts } from "./shortcuts";
 
 const isMac = navigator.platform.toLowerCase().startsWith("mac");
@@ -43,6 +44,8 @@ export default function App() {
   const [panicAsked, setPanicAsked] = useState(false);
   const [shortcuts, setShortcuts] = useState<Shortcuts>(DEFAULT_SHORTCUTS);
   const [editingShortcuts, setEditingShortcuts] = useState(false);
+  const [editingOrb, setEditingOrb] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   useEffect(() => {
     void loadShortcuts().then(setShortcuts).catch(() => undefined);
   }, []);
@@ -89,35 +92,6 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <span className="brand">Argos</span>
-        <ConnectionBadge connection={state.connection} />
-        {state.voice.status && <VoiceBadge status={state.voice.status} />}
-        <NodeDots nodes={state.nodes} />
-        <span className="spacer" />
-        {VOICE_TRIAL && <VoiceTrial disabled={!connected} />}
-        {isTauri() && (
-          <button
-            type="button"
-            className="button"
-            onClick={() => setEditingShortcuts(true)}
-            title={`Parler : ${formatShortcut(shortcuts.push_to_talk, isMac)}`}
-            data-warning={shortcuts.errors.length > 0 || undefined}
-          >
-            Raccourcis{shortcuts.errors.length > 0 ? " ⚠︎" : ""}
-          </button>
-        )}
-        <button
-          type="button"
-          className="button panic"
-          disabled={!connected}
-          onClick={() => setPanicAsked(true)}
-          title={`Arrêt dur de tout l'arbre (${panicLabel})`}
-        >
-          Panic stop <kbd>{panicLabel}</kbd>
-        </button>
-      </header>
-
       <div className="body">
         <aside className="sidebar" aria-label="Agents">
           <div className="sidebar-head">
@@ -129,28 +103,30 @@ export default function App() {
           ) : (
             <p className="sidebar-empty muted">{connected ? "Arbre vide." : "En attente du daemon…"}</p>
           )}
+          <div className="sidebar-actions">
+            <NotificationCenter
+              notices={state.notices}
+              escalations={state.escalations}
+              agents={state.agents}
+              onOpenNotice={(id) => { setSettingsOpen(false); select(id); }}
+              onOpenEscalation={(escalation) => {
+                setSettingsOpen(false);
+                const target = escalation.agent && isLiving(escalation.agent) ? escalation.agent : assistant?.id;
+                if (target) select(target);
+                dispatch({ type: "dismiss_escalation", escalation: escalation.id });
+              }}
+              onDismissNotice={(id) => dispatch({ type: "dismiss", notice: id })}
+              onDismissEscalation={(id) => dispatch({ type: "dismiss_escalation", escalation: id })}
+            />
+            <button type="button" className="sidebar-action danger-action" disabled={!connected} onClick={() => setPanicAsked(true)}><svg className="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" /></svg><span>Tout arrêter</span></button>
+            <button type="button" className="sidebar-action" onClick={() => setSettingsOpen(true)}><svg className="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10.4 3.4h3.2l.5 2a7 7 0 0 1 1.6.9l2-.6 1.6 2.7-1.5 1.4a7 7 0 0 1 0 1.9l1.5 1.4-1.6 2.7-2-.6a7 7 0 0 1-1.6.9l-.5 2h-3.2l-.5-2a7 7 0 0 1-1.6-.9l-2 .6-1.6-2.7 1.5-1.4a7 7 0 0 1 0-1.9L4.7 8.4l1.6-2.7 2 .6a7 7 0 0 1 1.6-.9z" transform="translate(0 1)"/><circle cx="12" cy="12" r="2.5" /></svg><span>Réglages</span></button>
+          </div>
         </aside>
 
         <main className="main">
-          <Escalations
-            escalations={state.escalations}
-            isLiving={isLiving}
-            onOpen={(escalation) => {
-              // L'Agent s'il est connu, sinon l'Assistant qui a reçu l'escalade.
-              const target = escalation.agent && isLiving(escalation.agent) ? escalation.agent : assistant?.id;
-              if (target) select(target);
-              dispatch({ type: "dismiss_escalation", escalation: escalation.id });
-            }}
-            onDismiss={(id) => dispatch({ type: "dismiss_escalation", escalation: id })}
-          />
-          <Notices
-            notices={state.notices}
-            agents={state.agents}
-            onOpen={select}
-            onDismiss={(id) => dispatch({ type: "dismiss", notice: id })}
-          />
+          {settingsOpen ? <section className="settings-page"><button className="button" onClick={() => setSettingsOpen(false)}>← Retour</button><h1>Réglages</h1><div className="settings-row"><span>Petit bonhomme</span><button className="button" onClick={() => setEditingOrb(true)}>Configurer</button></div><div className="settings-row"><span>Raccourcis</span><button className="button" onClick={() => setEditingShortcuts(true)}>Configurer</button></div><div className="settings-row"><span>Connexion</span><ConnectionBadge connection={state.connection} /></div>{state.voice.status && <div className="settings-row"><span>Voix</span><VoiceBadge status={state.voice.status} /></div>}<NodeDots nodes={state.nodes} />{VOICE_TRIAL && <VoiceTrial disabled={!connected} />}</section> : <>
           {agent ? (
-            <ChatPanel
+            <div className="agent-workspace"><ChatPanel
               agent={agent}
               parent={agent.parent ? (state.agents[agent.parent] ?? null) : null}
               thread={state.threads[agent.id] ?? []}
@@ -174,9 +150,12 @@ export default function App() {
               onRetire={setRetiring}
               onSelect={select}
             />
+            <AgentContextPanel key={agent.id} profiles={state.profiles} agent={agent} triggers={state.triggers[agent.id]} revision={state.triggerRevisions[agent.id] ?? 0} hooksBase={hooksBase} connected={connected} send={send} request={request} nameOf={(id) => state.agents[id] ? displayName(state.agents[id]) : shortId(id)} />
+            </div>
           ) : (
             <Placeholder connection={state.connection} />
           )}
+          </>}
         </main>
       </div>
 
@@ -204,6 +183,8 @@ export default function App() {
           onClose={() => setEditingShortcuts(false)}
         />
       )}
+
+      {editingOrb && <OrbSettings onClose={() => setEditingOrb(false)} />}
 
       {retiring && (
         <ConfirmDialog
@@ -299,67 +280,6 @@ function ConnectionBadge({ connection }: { connection: Connection }) {
       <span className="connection-label">{label}</span>
       {detail && <span className="connection-detail">{detail}</span>}
     </span>
-  );
-}
-
-/** Erreurs des commandes et informations du daemon, avec un lien vers l'agent concerné. */
-function Notices(props: {
-  notices: Notice[];
-  agents: Record<AgentId, AgentStatus>;
-  onOpen: (agent: AgentId) => void;
-  onDismiss: (id: number) => void;
-}) {
-  const { notices, agents, onOpen, onDismiss } = props;
-  if (notices.length === 0) return null;
-  return (
-    <div className="notices" role="alert">
-      {notices.map((notice) => (
-        <div key={notice.id} className="notice" data-tone={notice.tone}>
-          <span>{notice.text}</span>
-          {notice.agent && agents[notice.agent] && (
-            <button type="button" className="link" onClick={() => onOpen(notice.agent!)}>
-              Ouvrir {displayName(agents[notice.agent])}
-            </button>
-          )}
-          <button type="button" className="notice-close" aria-label="Fermer" onClick={() => onDismiss(notice.id)}>
-            ×
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** Escalades vers l'utilisateur (D12) : visibles quel que soit l'agent affiché. */
-function Escalations(props: {
-  escalations: Escalation[];
-  isLiving: (id: AgentId) => boolean;
-  onOpen: (escalation: Escalation) => void;
-  onDismiss: (id: number) => void;
-}) {
-  if (props.escalations.length === 0) return null;
-  return (
-    <div className="escalations" role="alert">
-      {props.escalations.map((escalation) => (
-        <div key={escalation.id} className="escalation">
-          <div className="escalation-text">
-            <strong>L'Agent {escalation.name} a besoin de vous</strong>
-            {escalation.text && <span className="escalation-body">{escalation.text}</span>}
-          </div>
-          <button type="button" className="button" onClick={() => props.onOpen(escalation)}>
-            {escalation.agent && props.isLiving(escalation.agent) ? `Ouvrir ${escalation.name}` : "Voir l'Assistant"}
-          </button>
-          <button
-            type="button"
-            className="notice-close"
-            aria-label="Fermer"
-            onClick={() => props.onDismiss(escalation.id)}
-          >
-            ×
-          </button>
-        </div>
-      ))}
-    </div>
   );
 }
 

@@ -546,3 +546,11 @@ describe("nœuds", () => {
     expect(initialState.nodes).toBeNull();
   });
 });
+
+it("associe la sortie d’un outil à son appel sans ajouter une ligne", () => {
+  const start = server({ type: "event", event: { type: "tool_detail", agent: "a0", id: "x", name: "shell", input: "pwd", output: null, finished: false } });
+  const end = server({ type: "event", event: { type: "tool_detail", agent: "a0", id: "x", name: "shell", input: null, output: "/tmp", finished: true } });
+  const state = run(tree, start, end);
+  expect(state.threads.a0).toHaveLength(1);
+  expect(state.threads.a0[0]).toMatchObject({ kind: "tool", name: "shell", input: "pwd", output: "/tmp", finished: true });
+});

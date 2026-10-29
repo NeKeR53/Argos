@@ -48,6 +48,7 @@ export function TriggerPanel(props: Props) {
         <span className="board-title">Déclencheurs</span>
         <span className="muted">{count === undefined ? "lecture…" : count === 0 ? "aucun" : count}</span>
       </summary>
+      {triggers && triggers.length === 0 && <p className="inspector-empty">Aucun déclencheur pour cet agent.</p>}
       {triggers && triggers.length > 0 && (
         <ul className="trigger-list">
           {triggers.map((trigger) => (

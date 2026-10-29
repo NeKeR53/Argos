@@ -345,8 +345,17 @@ impl Runner {
     fn local_spec(&self, remote: RemoteSpec) -> Result<SessionSpec, String> {
         let settings = &self.inner.settings;
         let cwd = settings.home.join(&remote.cwd);
+        // Les dossiers dédiés relatifs sont créés par Argos ; un workspace absolu
+        // désigne un projet existant sur ce nœud.
+        if remote.cwd.is_absolute() && !cwd.is_dir() {
+            return Err(format!(
+                "workspace introuvable sur ce nœud : {}",
+                cwd.display()
+            ));
+        }
         std::fs::create_dir_all(&cwd).map_err(|error| format!("{}: {error}", cwd.display()))?;
         let mut spec = SessionSpec::new(remote.engine, cwd);
+        spec.capabilities = remote.capabilities;
         spec.model = remote.model;
         spec.instructions = remote.instructions;
         spec.resume = remote.resume;

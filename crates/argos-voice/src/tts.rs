@@ -9,6 +9,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 use tokio::sync::{broadcast, mpsc};
 
@@ -58,6 +59,66 @@ impl Speaker for SaySpeaker {
                 Err(VoiceError::Speech(format!(
                     "say a échoué ({}) : {}",
                     output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )))
+            }
+        })
+    }
+}
+
+/// Kokoro ONNX local ; le processus est interrompu avec la lecture en cours.
+#[derive(Debug, Clone)]
+pub struct KokoroSpeaker {
+    python: PathBuf,
+    model: PathBuf,
+    voices: PathBuf,
+    voice: String,
+}
+impl KokoroSpeaker {
+    pub fn new(python: PathBuf, model: PathBuf, voices: PathBuf, voice: String) -> Self {
+        Self {
+            python,
+            model,
+            voices,
+            voice,
+        }
+    }
+}
+impl Speaker for KokoroSpeaker {
+    fn speak(&self, text: String) -> BoxFuture<'static, Result<(), VoiceError>> {
+        let mut cmd = Command::new(&self.python);
+        cmd.arg("-c")
+            .arg(include_str!("kokoro_worker.py"))
+            .arg(&self.model)
+            .arg(&self.voices)
+            .arg(&self.voice)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let program = self.python.display().to_string();
+        Box::pin(async move {
+            let mut child = cmd
+                .spawn()
+                .map_err(|source| VoiceError::Spawn { program, source })?;
+            let mut input = child
+                .stdin
+                .take()
+                .ok_or_else(|| VoiceError::Speech("entrée Kokoro indisponible".into()))?;
+            input
+                .write_all(text.as_bytes())
+                .await
+                .map_err(|e| VoiceError::Speech(e.to_string()))?;
+            drop(input);
+            let output = child
+                .wait_with_output()
+                .await
+                .map_err(|e| VoiceError::Speech(e.to_string()))?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(VoiceError::Speech(format!(
+                    "Kokoro : {}",
                     String::from_utf8_lossy(&output.stderr).trim()
                 )))
             }
