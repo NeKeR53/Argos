@@ -35,7 +35,8 @@
         "alwaysOnTop": true,
         "visibleOnAllWorkspaces": true,
         "skipTaskbar": true,
-        "focus": false
+        "focus": false,
+        "backgroundThrottling": "disabled"
       }
     ],
     "security": {

@@ -86,6 +86,9 @@ fn apply(app: &AppHandle, placement: Placement) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
         native::clear()?;
     }
+    // Masquée, la webview de l'orbe continue de mener la voix : `backgroundThrottling`
+    // est désactivé pour elle dans `tauri.conf.json`, sinon WebKit suspend son JavaScript
+    // et la lecture s'arrête après la première phrase.
     if in_dock {
         window.hide()
     } else {
