@@ -1,4 +1,5 @@
-//! L'orbe dans le Dock : animation AppKit indépendante de la webview masquée.
+//! L'orbe dans le Dock : la pieuvre animée en AppKit, indépendante de la webview masquée.
+//! La lueur autour dit l'état ; la pieuvre (`octopus.rs`) le joue.
 
 use crate::{orb::Placement, shell::ORB_WINDOW};
 use serde::Deserialize;
@@ -109,7 +110,7 @@ pub fn start(app: &AppHandle) {
             // Une seule image en attente, même quand le thread principal est occupé.
             let pending = std::sync::Arc::new(AtomicBool::new(false));
             loop {
-                tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 if !enabled(&app) || pending.swap(true, Ordering::Relaxed) {
                     continue;
                 }
@@ -140,8 +141,12 @@ pub fn start(app: &AppHandle) {
 #[cfg(target_os = "macos")]
 mod native {
     use super::{Mode, View};
+    use crate::octopus::{self, Pt};
+    use objc2::rc::Retained;
     use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::{NSApplication, NSBezierPath, NSColor, NSImage, NSImageView};
+    use objc2_app_kit::{
+        NSApplication, NSBezierPath, NSColor, NSGradient, NSImage, NSImageView, NSLineCapStyle,
+    };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
     fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
@@ -159,99 +164,200 @@ mod native {
     }
 
     /// Coordonnées de la pieuvre (grille 64×64, origine en haut à gauche) vers la tuile
-    /// de 128 points (origine en bas à gauche) : même dessin que la console.
-    fn at(x: f64, y: f64) -> NSPoint {
+    /// de 128 points (origine en bas à gauche).
+    fn at((x, y): Pt) -> NSPoint {
         NSPoint::new(x * 2.0, 128.0 - y * 2.0)
     }
 
     /// Ovale centré sur (cx, cy) de demi-axes (rx, ry), en coordonnées de la grille.
-    fn oval(cx: f64, cy: f64, rx: f64, ry: f64) -> NSRect {
-        rect((cx - rx) * 2.0, 128.0 - (cy + ry) * 2.0, rx * 4.0, ry * 4.0)
+    fn oval(cx: f64, cy: f64, rx: f64, ry: f64) -> Retained<NSBezierPath> {
+        NSBezierPath::bezierPathWithOvalInRect(rect(
+            (cx - rx) * 2.0,
+            128.0 - (cy + ry) * 2.0,
+            rx * 4.0,
+            ry * 4.0,
+        ))
     }
 
-    /// La pieuvre : tête, tentacules, yeux qui clignent, bouche qui articule quand elle
-    /// parle. La couleur de la lueur (et la pastille) disent toujours l'état.
-    fn draw_octopus(view: View, t: f64, r: f64, g: f64, b: f64) {
-        let speaking = matches!(view.mode, Mode::Speaking) && !view.armed && !view.stopped;
-        let skin = NSColor::colorWithSRGBRed_green_blue_alpha(0.56, 0.47, 0.95, 1.0);
-        let ink = NSColor::colorWithSRGBRed_green_blue_alpha(0.11, 0.10, 0.20, 1.0);
-        let tentacles = [
-            ([19.0, 40.0], [10.0, 46.0], [11.0, 54.0], [15.0, 57.0]),
-            ([25.0, 44.0], [22.0, 50.0], [23.0, 55.0], [26.0, 58.0]),
-            ([32.0, 45.0], [32.0, 50.0], [31.0, 54.0], [33.0, 58.0]),
-            ([39.0, 44.0], [42.0, 50.0], [41.0, 55.0], [38.0, 58.0]),
-            ([45.0, 40.0], [54.0, 46.0], [53.0, 54.0], [49.0, 57.0]),
-        ];
-        skin.setStroke();
-        skin.setFill();
-        for (start, c1, c2, end) in tentacles {
-            let path = NSBezierPath::bezierPath();
-            path.moveToPoint(at(start[0], start[1]));
-            path.curveToPoint_controlPoint1_controlPoint2(
-                at(end[0], end[1]),
-                at(c1[0], c1[1]),
-                at(c2[0], c2[1]),
-            );
-            path.setLineWidth(9.0);
-            path.stroke();
-            NSBezierPath::bezierPathWithOvalInRect(rect(
-                at(end[0], end[1]).x - 4.5,
-                at(end[0], end[1]).y - 4.5,
-                9.0,
-                9.0,
-            ))
+    fn color(r: f64, g: f64, b: f64, a: f64) -> Retained<NSColor> {
+        NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, a)
+    }
+
+    /// Courbe quadratique en cubique (NSBezierPath n'a que les cubiques).
+    fn quad(path: &NSBezierPath, from: Pt, control: Pt, to: Pt) {
+        let c1 = (
+            from.0 + 2.0 / 3.0 * (control.0 - from.0),
+            from.1 + 2.0 / 3.0 * (control.1 - from.1),
+        );
+        let c2 = (
+            to.0 + 2.0 / 3.0 * (control.0 - to.0),
+            to.1 + 2.0 / 3.0 * (control.1 - to.1),
+        );
+        path.curveToPoint_controlPoint1_controlPoint2(at(to), at(c1), at(c2));
+    }
+
+    /// Contour fermé lissé : on passe par le milieu des côtés (même tracé que la console).
+    fn smooth_path(points: &[Pt]) -> Retained<NSBezierPath> {
+        let n = points.len();
+        let mid = |a: Pt, b: Pt| ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        let path = NSBezierPath::bezierPath();
+        let mut from = mid(points[n - 1], points[0]);
+        path.moveToPoint(at(from));
+        for i in 0..n {
+            let to = mid(points[i], points[(i + 1) % n]);
+            quad(&path, from, points[i], to);
+            from = to;
+        }
+        path.closePath();
+        path
+    }
+
+    /// La pieuvre, d'après `octopus::pose` : la même que dans la console et l'orbe.
+    fn draw_octopus(view: View, t: f64) {
+        let mode = if view.armed || view.stopped {
+            Mode::Idle
+        } else {
+            view.mode
+        };
+        let mouth = matches!(mode, Mode::Speaking).then(|| octopus::synthetic_viseme(t));
+        let p = octopus::pose(mode, t, view.level, mouth);
+        let offline = matches!(mode, Mode::Offline);
+        // Hors ligne, la pieuvre pâlit.
+        let fade = |c: (f64, f64, f64)| {
+            if offline {
+                let grey = 0.3 * c.0 + 0.59 * c.1 + 0.11 * c.2;
+                (
+                    lerp(c.0, grey, 0.6),
+                    lerp(c.1, grey, 0.6),
+                    lerp(c.2, grey, 0.6),
+                )
+            } else {
+                c
+            }
+        };
+        let rgb = |c: (f64, f64, f64), a: f64| {
+            let (r, g, b) = fade(c);
+            color(r, g, b, a)
+        };
+        let top = rgb((0.71, 0.66, 1.0), 1.0);
+        let bottom = rgb((0.46, 0.39, 0.93), 1.0);
+        let gradient =
+            NSGradient::initWithStartingColor_endingColor(NSGradient::alloc(), &bottom, &top);
+        let skin = |path: &NSBezierPath| match &gradient {
+            Some(g) => g.drawInBezierPath_angle(path, 90.0),
+            None => {
+                bottom.setFill();
+                path.fill();
+            }
+        };
+
+        rgb((0.37, 0.31, 0.84), 1.0).setFill();
+        for arm in &p.back {
+            smooth_path(arm).fill();
+        }
+        for arm in &p.front {
+            skin(&smooth_path(arm));
+        }
+        rgb((0.94, 0.92, 1.0), 0.75).setFill();
+        for s in &p.suckers {
+            oval(s.x, s.y, s.r, s.r).fill();
+        }
+        skin(&smooth_path(&p.head));
+        // Reflet sur la tête.
+        let (hx, hy) = p.head[42];
+        color(1.0, 1.0, 1.0, 0.3).setFill();
+        oval(hx + 3.0, hy + 5.5, 6.0, 3.0).fill();
+        for arm in &p.over {
+            skin(&smooth_path(arm));
+        }
+
+        for c in &p.cheeks {
+            color(1.0, 0.56, 0.7, c.alpha).setFill();
+            oval(c.x, c.y, c.r, c.r * 0.6).fill();
+        }
+
+        let ink = color(0.11, 0.10, 0.20, 1.0);
+        for e in &p.eyes {
+            if e.open < 0.18 {
+                ink.setStroke();
+                let lid = NSBezierPath::bezierPath();
+                lid.moveToPoint(at((e.cx - e.rx * 0.85, e.cy)));
+                quad(
+                    &lid,
+                    (e.cx - e.rx * 0.85, e.cy),
+                    (e.cx, e.cy + 2.6),
+                    (e.cx + e.rx * 0.85, e.cy),
+                );
+                lid.setLineWidth(3.0);
+                lid.setLineCapStyle(NSLineCapStyle::Round);
+                lid.stroke();
+                continue;
+            }
+            // Paupière : l'œil s'écrase vers le bas ; la pupille suit, sans déborder.
+            let shift = e.ry * (1.0 - e.open) * 0.4;
+            color(0.99, 0.99, 1.0, 1.0).setFill();
+            oval(e.cx, e.cy + shift, e.rx, e.ry * e.open).fill();
+            ink.setFill();
+            oval(e.px, e.py + shift, e.pr, e.pr * e.open).fill();
+            NSColor::whiteColor().setFill();
+            let hr = e.pr * 0.36;
+            oval(
+                e.px + e.pr * 0.38,
+                e.py + shift - e.pr * 0.4 * e.open,
+                hr,
+                hr * e.open,
+            )
             .fill();
         }
-        NSBezierPath::bezierPathWithOvalInRect(oval(32.0, 25.5, 22.0, 19.5)).fill();
 
-        // Yeux : ils clignent deux fois par période de 4,2 s, sauf figés (`still`).
-        let blink = !view.still && t % 4.2 > 4.05;
-        let eye_ry = if blink { 0.6 } else { 3.8 };
-        ink.setFill();
-        for cx in [25.0, 39.0] {
-            NSBezierPath::bezierPathWithOvalInRect(oval(cx, 28.0, 3.4, eye_ry)).fill();
-        }
-        if !blink {
-            NSColor::whiteColor().setFill();
-            for cx in [26.2, 40.2] {
-                NSBezierPath::bezierPathWithOvalInRect(oval(cx, 26.6, 1.2, 1.2)).fill();
+        if p.brow_alpha > 0.01 {
+            color(0.23, 0.18, 0.48, p.brow_alpha).setStroke();
+            for [a, c, b] in p.brows {
+                let brow = NSBezierPath::bezierPath();
+                brow.moveToPoint(at(a));
+                quad(&brow, a, c, b);
+                brow.setLineWidth(2.6);
+                brow.setLineCapStyle(NSLineCapStyle::Round);
+                brow.stroke();
             }
         }
 
-        // Bouche : une lèvre ouverte quand elle parle, un petit sourire sinon.
-        ink.setFill();
-        ink.setStroke();
-        let mouth = NSBezierPath::bezierPath();
-        if speaking {
-            let open = 2.0 + 8.0 * (t * 8.0).sin().abs();
-            mouth.moveToPoint(at(27.0, 36.5));
-            mouth.curveToPoint_controlPoint1_controlPoint2(
-                at(37.0, 36.5),
-                at(30.0, 36.5 - open),
-                at(34.0, 36.5 - open),
-            );
-            mouth.curveToPoint_controlPoint1_controlPoint2(
-                at(27.0, 36.5),
-                at(34.0, 36.5 + open),
-                at(30.0, 36.5 + open),
-            );
-            mouth.fill();
+        let m = &p.mouth;
+        let lips = color(0.23, 0.12, 0.25, 1.0);
+        let (l, r) = ((m.x - m.half, m.y), (m.x + m.half, m.y));
+        let mouth_path = NSBezierPath::bezierPath();
+        mouth_path.moveToPoint(at(l));
+        if m.upper + m.lower < 0.9 {
+            quad(&mouth_path, l, (m.x, m.y + m.curve), r);
+            lips.setStroke();
+            mouth_path.setLineWidth(3.0);
+            mouth_path.setLineCapStyle(NSLineCapStyle::Round);
+            mouth_path.stroke();
         } else {
-            mouth.moveToPoint(at(28.4, 36.1));
-            mouth.curveToPoint_controlPoint1_controlPoint2(
-                at(35.6, 36.1),
-                at(30.5, 39.0),
-                at(33.5, 39.0),
-            );
-            mouth.setLineWidth(3.0);
-            mouth.stroke();
+            quad(&mouth_path, l, (m.x, m.y - m.upper), r);
+            quad(&mouth_path, r, (m.x, m.y + m.lower), l);
+            lips.setFill();
+            mouth_path.fill();
+            if m.lower > 3.0 {
+                color(0.91, 0.42, 0.56, 1.0).setFill();
+                oval(m.x, m.y + m.lower * 0.55, m.half * 0.45, m.lower * 0.2).fill();
+            }
         }
 
-        // Contour de la tête à la couleur de l'état.
-        NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 0.85).setStroke();
-        let outline = NSBezierPath::bezierPathWithOvalInRect(oval(32.0, 25.5, 22.0, 19.5));
-        outline.setLineWidth(1.5);
-        outline.stroke();
+        for b in &p.bubbles {
+            if b.alpha > 0.02 {
+                let bubble = oval(b.x, b.y, b.r, b.r);
+                rgb((0.91, 0.89, 1.0), 0.35 * b.alpha).setFill();
+                bubble.fill();
+                rgb((0.71, 0.66, 1.0), b.alpha).setStroke();
+                bubble.setLineWidth(1.2);
+                bubble.stroke();
+            }
+        }
+    }
+
+    fn lerp(a: f64, b: f64, k: f64) -> f64 {
+        a + (b - a) * k
     }
 
     // AppKit ne redessine pas automatiquement une tuile du Dock personnalisée.
@@ -284,7 +390,7 @@ mod native {
         ));
         NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 0.16).setFill();
         glow.fill();
-        draw_octopus(view, t, r, g, b);
+        draw_octopus(view, t);
         image.unlockFocus();
         let content = NSImageView::initWithFrame(
             NSImageView::alloc(mtm),

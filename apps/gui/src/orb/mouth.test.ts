@@ -45,15 +45,15 @@ describe("taille de la pastille", () => {
   const view = { mode: "idle" as const, armed: false, stopped: false, caption: null, escalation: false };
 
   it("reste petite au repos et ne grandit que s'il se passe quelque chose", () => {
-    expect(pillSize(view)).toEqual({ width: 120, height: 36 });
-    expect(pillSize({ ...view, mode: "offline" })).toEqual({ width: 120, height: 36 });
+    expect(pillSize(view)).toEqual({ width: 68, height: 36 });
+    expect(pillSize({ ...view, mode: "offline" })).toEqual({ width: 68, height: 36 });
     for (const busy of [
       pillSize({ ...view, mode: "thinking" }),
       pillSize({ ...view, mode: "listening" }),
       pillSize({ ...view, mode: "speaking" }),
       pillSize({ ...view, armed: true }),
     ]) {
-      expect(busy.width).toBeGreaterThan(120);
+      expect(busy.width).toBeGreaterThan(68);
     }
     // La transcription élargit l'écoute ; la confirmation du panic stop passe avant tout.
     expect(pillSize({ ...view, mode: "listening", caption: "Allume" }).width).toBeGreaterThan(

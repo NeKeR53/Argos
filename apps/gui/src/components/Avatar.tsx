@@ -1,4 +1,4 @@
-// Avatar d'une conversation : la pieuvre pour l'Assistant, un monogramme coloré pour un
+// Avatar d'une conversation : la pieuvre pour l'Assistant (qui réfléchit pendant ses tours), un monogramme coloré pour un
 // Agent (teinte tirée de son nom, stable d'une session à l'autre).
 
 import type { AgentStatus } from "../protocol";
@@ -23,7 +23,11 @@ export function Avatar({ agent, size = "md" }: { agent: AgentStatus; size?: "sm"
   if (agent.level === "assistant") {
     return (
       <span className={`avatar avatar-${size} avatar-assistant`} aria-hidden="true">
-        <Octopus size={size === "lg" ? 50 : size === "sm" ? 28 : 36} />
+        <Octopus
+          size={size === "lg" ? 50 : size === "sm" ? 28 : 36}
+          mode={!agent.running ? "offline" : agent.busy ? "thinking" : "idle"}
+          followPointer
+        />
       </span>
     );
   }

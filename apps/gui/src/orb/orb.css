@@ -1,5 +1,6 @@
 /* Orbe (D38) : une pastille sombre et translucide, comme une île flottante. Au repos elle
-   tient en 120×36 ; elle grandit en douceur quand l'Assistant réfléchit, écoute ou parle. */
+   tient en 68×36 (la pieuvre et sa pastille d'état) ; elle grandit en douceur quand
+   l'Assistant réfléchit, écoute ou parle. */
 
 html,
 body {
@@ -102,36 +103,15 @@ body {
   font-weight: 700;
 }
 
-/* Repos : un petit motif d'ondes au calme. */
-.pill-glyph {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.pill-glyph i {
+/* La pieuvre, dans tous les états sauf la parole (où `Face` la fait articuler). */
+.pill-octopus {
   display: block;
-  width: 3px;
-  border-radius: 2px;
-  background: rgb(255 255 255 / 0.45);
+  flex-shrink: 0;
 }
 
-.pill-glyph i:nth-child(1),
-.pill-glyph i:nth-child(5) {
-  height: 5px;
-}
-
-.pill-glyph i:nth-child(2),
-.pill-glyph i:nth-child(4) {
-  height: 9px;
-}
-
-.pill-glyph i:nth-child(3) {
-  height: 12px;
-}
-
-.pill[data-mode="offline"] .pill-glyph i {
-  background: rgb(255 255 255 / 0.22);
+.pill[data-mode="offline"] .pill-octopus {
+  opacity: 0.6;
+  filter: saturate(0.4);
 }
 
 /* Réflexion : trois points qui passent en vague. */
@@ -171,20 +151,9 @@ body {
   color: rgb(255 255 255 / 0.85);
 }
 
-/* Parole : un visage minimal. */
+/* Parole : la pieuvre articule. */
 .orb-face {
   display: block;
-}
-
-.orb-eye {
-  fill: #f2f2f5;
-}
-
-.orb-mouth {
-  fill: #4a1c22;
-  stroke: #ffb46b;
-  stroke-width: 2.4;
-  stroke-linejoin: round;
 }
 
 .pill-alert {

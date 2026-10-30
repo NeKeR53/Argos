@@ -1,83 +1,292 @@
-// La pieuvre : le visage de l'Assistant, dans la console comme dans l'orbe. Elle cligne
-// des yeux et, quand l'Assistant parle, sa bouche articule (formes de `orb/mouth.ts`).
+// La pieuvre : le visage de l'Assistant, dans la console comme dans l'orbe. Elle respire,
+// ses tentacules ondulent, elle te regarde (et suit le pointeur si on le lui demande), et
+// son attitude dit ce qu'elle fait : elle écoute, réfléchit, parle ou dort. La posture
+// vient de `octopus/pose.ts` ; ici, on ne fait que la tracer à chaque image.
 
+import { useEffect, useId, useRef, useState } from "react";
 import type { MouthShape } from "../orb/mouth";
+import { mixPose, pose, type Mouth, type OctopusMode, type Pose, type Pt } from "../octopus/pose";
 
 interface Props {
   size?: number;
-  /** Forme de la bouche ; sans elle, un petit sourire au repos. */
+  mode?: OctopusMode;
+  /** Niveau de la voix (écoute), 0..1. */
+  level?: number;
+  /** Forme de la bouche à la parole. */
   mouth?: MouthShape;
-  /** Yeux fermés (clignement). */
-  blink?: boolean;
+  /** Animations coupées (préférence système) : une pose figée. */
+  still?: boolean;
+  /** Les yeux suivent le pointeur quand il bouge. */
+  followPointer?: boolean;
+  /** Ventouses et sourcils : à partir d'une certaine taille seulement. */
+  detail?: boolean;
+  /**
+   * Cadrage : `full` montre toute la pieuvre, `portrait` serre sur le visage (petites
+   * tailles, où un corps entier rendrait les yeux minuscules).
+   */
+  framing?: "full" | "portrait";
   className?: string;
 }
 
-const MX = 32;
-const MY = 36.5;
+/** Durée du fondu d'une attitude à l'autre (s). */
+const BLEND_S = 0.4;
+/** Le pointeur compte tant qu'il a bougé il y a moins de ça (ms). */
+const POINTER_MS = 2500;
 
-/** Bouche : petit sourire au repos, lèvres qui s'ouvrent quand elle parle. */
-function mouthPath(shape: MouthShape | undefined): string {
-  if (!shape) return `M ${MX - 3.6} ${MY - 0.6} Q ${MX} ${MY + 3} ${MX + 3.6} ${MY - 0.6}`;
-  const half = 5 * shape.width * (1 - 0.3 * shape.round);
-  const upper = 0.3 + shape.open * 1.4 + shape.round * 1;
-  const lower = 0.5 + shape.open * 4.4 + shape.round * 1.2;
-  return (
-    `M ${(MX - half).toFixed(2)} ${MY} ` +
-    `Q ${MX} ${(MY - upper).toFixed(2)} ${(MX + half).toFixed(2)} ${MY} ` +
-    `Q ${MX} ${(MY + lower).toFixed(2)} ${(MX - half).toFixed(2)} ${MY} Z`
+const reducedMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+
+// Dernière position du pointeur, partagée par toutes les pieuvres de la page.
+const pointer = { x: 0, y: 0, at: -Infinity };
+let listening = false;
+function trackPointer() {
+  if (listening || typeof window === "undefined") return;
+  listening = true;
+  window.addEventListener(
+    "pointermove",
+    (event) => {
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
+      pointer.at = performance.now();
+    },
+    { passive: true },
   );
 }
 
-export function Octopus({ size = 40, mouth, blink = false, className }: Props) {
-  const eye = blink ? 0.2 : 1;
+/** Temps de l'animation (s), à ~30 images par seconde ; 0 quand elle est figée. */
+function useClock(still: boolean): number {
+  const [t, setT] = useState(0);
+  useEffect(() => {
+    if (still) {
+      setT(0);
+      return;
+    }
+    let frame = 0;
+    let last = 0;
+    const origin = performance.now();
+    const tick = (now: number) => {
+      if (now - last >= 32) {
+        last = now;
+        setT((now - origin) / 1000);
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [still]);
+  return t;
+}
+
+/** Contour fermé lissé : on passe par le milieu des côtés, les sommets servent de contrôle. */
+function smoothPath(points: Pt[]): string {
+  const n = points.length;
+  const mid = (a: Pt, b: Pt) => `${((a[0] + b[0]) / 2).toFixed(2)} ${((a[1] + b[1]) / 2).toFixed(2)}`;
+  let d = `M ${mid(points[n - 1], points[0])}`;
+  for (let i = 0; i < n; i++) {
+    const p = points[i];
+    d += ` Q ${p[0].toFixed(2)} ${p[1].toFixed(2)} ${mid(p, points[(i + 1) % n])}`;
+  }
+  return `${d} Z`;
+}
+
+function mouthPath(m: Mouth): { d: string; open: boolean } {
+  const l = `${(m.x - m.half).toFixed(2)} ${m.y.toFixed(2)}`;
+  const r = `${(m.x + m.half).toFixed(2)} ${m.y.toFixed(2)}`;
+  if (m.upper + m.lower < 0.9) {
+    return { d: `M ${l} Q ${m.x.toFixed(2)} ${(m.y + m.curve).toFixed(2)} ${r}`, open: false };
+  }
+  return {
+    d:
+      `M ${l} Q ${m.x.toFixed(2)} ${(m.y - m.upper).toFixed(2)} ${r} ` +
+      `Q ${m.x.toFixed(2)} ${(m.y + m.lower).toFixed(2)} ${l} Z`,
+    open: true,
+  };
+}
+
+export function Octopus({
+  size = 40,
+  mode = "idle",
+  level = 0,
+  mouth,
+  still: stillProp,
+  followPointer = false,
+  detail = size >= 30,
+  framing = size < 48 ? "portrait" : "full",
+  className,
+}: Props) {
+  const still = stillProp ?? reducedMotion();
+  const t = useClock(still);
+  const id = useId().replace(/:/g, "");
+  const svg = useRef<SVGSVGElement>(null);
+
+  // Fondu entre l'ancienne attitude et la nouvelle.
+  const previous = useRef<{ mode: OctopusMode; at: number }>({ mode, at: -Infinity });
+  const current = useRef(mode);
+  if (current.current !== mode) {
+    previous.current = { mode: current.current, at: t };
+    current.current = mode;
+  }
+
+  useEffect(() => {
+    if (followPointer) trackPointer();
+  }, [followPointer]);
+
+  let look: Pt | null = null;
+  if (followPointer && !still && svg.current && performance.now() - pointer.at < POINTER_MS) {
+    const box = svg.current.getBoundingClientRect();
+    const dx = pointer.x - (box.left + box.width / 2);
+    const dy = pointer.y - (box.top + box.height * 0.4);
+    const dist = Math.hypot(dx, dy) || 1;
+    const reach = Math.min(1, dist / 140);
+    look = [(dx / dist) * reach, (dy / dist) * reach];
+  }
+
+  const input = { t, level, mouth, look };
+  let p: Pose = pose({ ...input, mode });
+  const k = (t - previous.current.at) / BLEND_S;
+  if (k < 1) {
+    const eased = k * k * (3 - 2 * k);
+    p = mixPose(pose({ ...input, mode: previous.current.mode }), p, eased);
+  }
+
+  const lips = mouthPath(p.mouth);
+  const skin = `url(#${id}-skin)`;
+
   return (
     <svg
+      ref={svg}
       className={className ? `octopus ${className}` : "octopus"}
-      viewBox="0 0 64 64"
+      data-mode={mode}
+      viewBox={framing === "portrait" ? "8 2 48 48" : "0 0 64 64"}
       width={size}
       height={size}
       aria-hidden="true"
     >
       <defs>
-        <linearGradient id="octopus-skin" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0" stopColor="#a99bff" />
-          <stop offset="1" stopColor="#7d6cf2" />
+        <linearGradient id={`${id}-skin`} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="var(--octopus-top, #b4a8ff)" />
+          <stop offset="1" stopColor="var(--octopus-bottom, #7563ee)" />
         </linearGradient>
+        {p.eyes.map((e, i) => (
+          <clipPath key={i} id={`${id}-eye${i}`}>
+            <ellipse cx={e.cx} cy={e.cy + e.ry * (1 - e.open) * 0.4} rx={e.rx} ry={Math.max(0.01, e.ry * e.open)} />
+          </clipPath>
+        ))}
       </defs>
-      <g fill="url(#octopus-skin)">
-        {/* Tentacules, enroulés au bout. */}
-        <path d="M17 40 C12 46 10 52 14 56 C17 59 21 56 19 53 C17 51 19 47 22 44 Z" />
-        <path d="M24 43 C22 49 22 55 26 58 C29 60 31 57 29 55 C27 53 28 49 29 45 Z" />
-        <path d="M40 43 C42 49 42 55 38 58 C35 60 33 57 35 55 C37 53 36 49 35 45 Z" />
-        <path d="M47 40 C52 46 54 52 50 56 C47 59 43 56 45 53 C47 51 45 47 42 44 Z" />
-        <path d="M30 44 C30 50 31 55 33 58 C35 55 35 50 34 44 Z" />
-        {/* Tête */}
-        <path d="M32 6 C46 6 54 16 54 28 C54 38 46 45 32 45 C18 45 10 38 10 28 C10 16 18 6 32 6 Z" />
+
+      <g className="octopus-body">
+        {p.back.map((arm, i) => (
+          <path key={`b${i}`} d={smoothPath(arm)} fill="var(--octopus-back, #5f4fd6)" />
+        ))}
+        {p.front.map((arm, i) => (
+          <path key={`f${i}`} d={smoothPath(arm)} fill={skin} />
+        ))}
+        {detail &&
+          p.suckers.map((s, i) => (
+            <circle key={`s${i}`} cx={s.x} cy={s.y} r={s.r} fill="#efeaff" opacity={s.alpha} />
+          ))}
+        <path d={smoothPath(p.head)} fill={skin} />
+        {/* Reflet sur la tête */}
+        <ellipse
+          cx={p.head[42][0] + 3}
+          cy={p.head[42][1] + 5.5}
+          rx={6}
+          ry={3}
+          fill="#fff"
+          opacity={0.3}
+          transform={`rotate(-24 ${p.head[42][0] + 3} ${p.head[42][1] + 5.5})`}
+        />
+        {p.over.map((arm, i) => (
+          <path key={`o${i}`} d={smoothPath(arm)} fill={skin} stroke="#5f4fd6" strokeWidth={0.5} strokeOpacity={0.5} />
+        ))}
       </g>
-      {/* Reflet sur la tête */}
-      <ellipse cx={24} cy={15} rx={6} ry={3.2} fill="#fff" opacity={0.28} transform="rotate(-22 24 15)" />
-      {/* Joues */}
-      <ellipse cx={20.5} cy={34} rx={3.6} ry={2.2} fill="#ff8fb3" opacity={0.55} />
-      <ellipse cx={43.5} cy={34} rx={3.6} ry={2.2} fill="#ff8fb3" opacity={0.55} />
-      {/* Yeux */}
-      <g>
-        <ellipse cx={25} cy={28} rx={3.4} ry={3.8 * eye} fill="#1d1a33" />
-        <ellipse cx={39} cy={28} rx={3.4} ry={3.8 * eye} fill="#1d1a33" />
-        {!blink && (
-          <>
-            <circle cx={26.2} cy={26.6} r={1.2} fill="#fff" />
-            <circle cx={40.2} cy={26.6} r={1.2} fill="#fff" />
-          </>
-        )}
-      </g>
+
+      {p.cheeks.map((c, i) => (
+        <ellipse key={`c${i}`} cx={c.x} cy={c.y} rx={c.r} ry={c.r * 0.6} fill="#ff8fb3" opacity={c.alpha} />
+      ))}
+
+      {p.eyes.map((e, i) =>
+        e.open < 0.18 ? (
+          // Paupière fermée : un trait courbe.
+          <path
+            key={`e${i}`}
+            d={`M ${e.cx - e.rx * 0.85} ${e.cy} Q ${e.cx} ${e.cy + 2.6} ${e.cx + e.rx * 0.85} ${e.cy}`}
+            fill="none"
+            stroke="#1d1a33"
+            strokeWidth={1.5}
+            strokeLinecap="round"
+          />
+        ) : (
+          <g key={`e${i}`} clipPath={`url(#${id}-eye${i})`}>
+            <ellipse cx={e.cx} cy={e.cy} rx={e.rx} ry={e.ry} fill="#fdfcff" />
+            <circle cx={e.px} cy={e.py} r={e.pr} fill="#1d1a33" />
+            <circle cx={e.px + e.pr * 0.38} cy={e.py - e.pr * 0.4} r={e.pr * 0.36} fill="#fff" />
+            <circle cx={e.px - e.pr * 0.35} cy={e.py + e.pr * 0.45} r={e.pr * 0.14} fill="#fff" opacity={0.8} />
+          </g>
+        ),
+      )}
+
+      {detail &&
+        p.browAlpha > 0.01 &&
+        p.brows.map(([a, c, b], i) => (
+          <path
+            key={`w${i}`}
+            d={`M ${a[0]} ${a[1]} Q ${c[0]} ${c[1]} ${b[0]} ${b[1]}`}
+            fill="none"
+            stroke="#3b2f7a"
+            strokeWidth={1.3}
+            strokeLinecap="round"
+            opacity={p.browAlpha}
+          />
+        ))}
+
       <path
-        d={mouthPath(mouth)}
-        fill={mouth ? "#3a1f3f" : "none"}
+        d={lips.d}
+        fill={lips.open ? "#3a1f3f" : "none"}
         stroke="#3a1f3f"
-        strokeWidth={mouth ? 0.6 : 1.6}
+        strokeWidth={lips.open ? 0.6 : 1.5}
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+      {lips.open && p.mouth.lower > 3 && (
+        // La langue, quand la bouche s'ouvre grand.
+        <ellipse
+          cx={p.mouth.x}
+          cy={p.mouth.y + p.mouth.lower * 0.55}
+          rx={p.mouth.half * 0.45}
+          ry={p.mouth.lower * 0.2}
+          fill="#e86b8f"
+        />
+      )}
+
+      {p.bubbles.map(
+        (b, i) =>
+          b.alpha > 0.02 &&
+          (mode === "offline" ? (
+            <text
+              key={`z${i}`}
+              x={b.x}
+              y={b.y}
+              fontSize={3 + b.r * 1.6}
+              fontWeight={700}
+              fill="var(--octopus-z, #9aa0c0)"
+              opacity={b.alpha}
+            >
+              z
+            </text>
+          ) : (
+            <circle
+              key={`u${i}`}
+              cx={b.x}
+              cy={b.y}
+              r={b.r}
+              fill="#e8e4ff"
+              fillOpacity={0.35}
+              stroke="#b4a8ff"
+              strokeWidth={0.6}
+              opacity={b.alpha}
+            />
+          )),
+      )}
     </svg>
   );
 }

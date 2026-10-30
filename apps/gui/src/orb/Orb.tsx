@@ -186,7 +186,8 @@ export function Orb() {
       view: { mode, level: voice.level, armed, stopped, escalation, still: reducedMotion() },
     });
   }, [mode, voice.level, armed, stopped, escalation]);
-  const size = menu ? MENU_SIZE : pillSize({ mode, armed, stopped, caption, escalation });
+  const mute = status && status.status !== "ready" ? (voiceReason(status) ?? voiceStatusLabel(status)) : null;
+  const size = menu ? MENU_SIZE : pillSize({ mode, armed, stopped, caption, escalation, mute });
   const windowSize = useRef({ width: 0, height: 0 });
   useEffect(() => {
     if (!isTauri()) return;
@@ -235,7 +236,6 @@ export function Orb() {
     }, DOUBLE_CLICK_MS);
   };
 
-  const mute = status && status.status !== "ready" ? (voiceReason(status) ?? voiceStatusLabel(status)) : null;
   return (
     <div
       className="orb-root"

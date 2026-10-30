@@ -1,5 +1,6 @@
 mod daemon;
 mod dock;
+mod octopus;
 mod orb;
 mod shell;
 mod voice;

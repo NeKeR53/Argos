@@ -3,6 +3,7 @@
 // démo (`orb.html?demo=…`) le montre sans daemon ni voix.
 
 import { useState } from "react";
+import { Octopus } from "../components/Octopus";
 import { Face, type Utterance } from "./Face";
 import type { OrbMode } from "./logic";
 import { Waves } from "./Waves";
@@ -34,19 +35,22 @@ export interface Size {
 }
 
 /** Taille de la pastille selon ce qu'elle montre (points). */
-export function pillSize(view: Pick<PillView, "mode" | "armed" | "stopped" | "caption" | "escalation">): Size {
+export function pillSize(
+  view: Pick<PillView, "mode" | "armed" | "stopped" | "caption" | "escalation"> & { mute?: string | null },
+): Size {
   if (view.armed) return { width: 236, height: 38 };
   if (view.stopped) return { width: 160, height: 36 };
   switch (view.mode) {
     case "listening":
-      return view.caption ? { width: 280, height: 44 } : { width: 196, height: 44 };
+      return view.caption ? { width: 310, height: 44 } : { width: 226, height: 44 };
     case "speaking":
       return { width: 148, height: 52 };
     default:
       // Une légende (« Rien entendu », voix indisponible…) prend la place du motif.
-      if (view.caption) return { width: 260, height: 36 };
-      if (view.mode === "thinking") return { width: 148, height: 36 };
-      return { width: view.escalation ? 136 : 120, height: 36 };
+      if (view.caption) return { width: 290, height: 36 };
+      if (view.mode === "thinking") return { width: 120, height: 36 };
+      // La pieuvre et sa pastille d'état, plus la marque d'escalade et le micro barré.
+      return { width: 68 + (view.escalation ? 24 : 0) + (view.mute ? 20 : 0), height: 36 };
   }
 }
 
@@ -88,6 +92,15 @@ export function Pill(view: PillView) {
       ) : (
         <>
           <span className="pill-status" aria-hidden />
+          {view.mode !== "speaking" && (
+            <Octopus
+              className="pill-octopus"
+              size={34}
+              mode={view.mode}
+              level={view.level}
+              still={view.still}
+            />
+          )}
           {listening && (
             <>
               <Waves level={view.level} width={130} height={26} still={view.still} onLevel={setSwell} />
@@ -102,15 +115,6 @@ export function Pill(view: PillView) {
           )}
           {view.mode === "thinking" && !view.caption && (
             <span className="pill-thinking" aria-hidden>
-              <i />
-              <i />
-              <i />
-            </span>
-          )}
-          {(view.mode === "idle" || view.mode === "offline") && !view.caption && (
-            <span className="pill-glyph" aria-hidden>
-              <i />
-              <i />
               <i />
               <i />
               <i />

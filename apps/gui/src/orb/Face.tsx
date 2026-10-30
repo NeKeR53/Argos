@@ -1,4 +1,4 @@
-// Visage de l'Assistant quand il parle : la pieuvre, qui cligne des yeux et articule
+// Visage de l'Assistant quand il parle : la pieuvre, qui te regarde et articule
 // le texte que `say` prononce (synchronisation labiale procédurale, voir `mouth.ts`).
 // Entre deux phrases, la bouche respire à peine ; à la fin du discours, elle se ferme.
 
@@ -40,7 +40,6 @@ export function lipsPath(shape: MouthShape): string {
 
 export function Face({ utterance, speaking, still = false, frozenAt }: Props) {
   const [shape, setShape] = useState<MouthShape>(SHAPES.rest);
-  const [blink, setBlink] = useState(false);
   const segments = useRef<Segment[]>([]);
   const current = useRef(utterance);
   current.current = utterance;
@@ -77,26 +76,6 @@ export function Face({ utterance, speaking, still = false, frozenAt }: Props) {
     return () => cancelAnimationFrame(frame);
   }, [still, frozenAt, utterance]);
 
-  // Un clignement toutes les 3 à 5 s.
-  useEffect(() => {
-    if (still) return;
-    let timer: ReturnType<typeof setTimeout>;
-    const schedule = () => {
-      timer = setTimeout(
-        () => {
-          setBlink(true);
-          timer = setTimeout(() => {
-            setBlink(false);
-            schedule();
-          }, 120);
-        },
-        3000 + Math.random() * 2000,
-      );
-    };
-    schedule();
-    return () => clearTimeout(timer);
-  }, [still]);
-
   // L'Assistant est une pieuvre : c'est elle qui parle (même visage que dans la console).
-  return <Octopus className="orb-face" size={34} mouth={shape} blink={blink} />;
+  return <Octopus className="orb-face" size={40} mode="speaking" mouth={shape} still={still} />;
 }
