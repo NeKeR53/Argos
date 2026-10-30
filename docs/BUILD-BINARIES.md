@@ -8,6 +8,9 @@ macOS Intel et Windows x64, puis publie la release uniquement lorsque les trois
 archives et leurs sommes SHA-256 sont disponibles. Les versions `0.x` et les tags
 avec suffixe sont publiés comme préversions. En cas d'échec, le brouillon reste
 disponible et l'exécution peut être relancée depuis GitHub Actions.
+Si seules les étapes finales ont échoué et que les six fichiers sont déjà présents,
+le workflow manuel **Publish completed release draft** vérifie ces fichiers et publie
+le brouillon sans reconstruire les archives.
 
 ```sh
 git tag -a v0.1.0 -m 'Argos v0.1.0'

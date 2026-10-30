@@ -114,13 +114,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/$GH_REPO/releases/tags/$GITHUB_REF_NAME" > /tmp/argos-release.json
+          gh release view "$GITHUB_REF_NAME" --json isDraft,assets > /tmp/argos-release.json
           python3 - <<'PY'
           import json
           with open('/tmp/argos-release.json') as f: release = json.load(f)
           expected = {'Argos-macOS-arm64.zip', 'Argos-macOS-x86_64.zip', 'Argos-Windows-x64.zip', 'SHA256SUMS-macos-arm64.txt', 'SHA256SUMS-macos-x86_64.txt', 'SHA256SUMS-windows.txt'}
           uploaded = {a['name'] for a in release['assets'] if a['state'] == 'uploaded' and a['size'] > 0}
-          if not release['draft'] or expected - uploaded:
+          if not release['isDraft'] or expected - uploaded:
               raise SystemExit(f'Brouillon incomplet : {expected - uploaded}')
           PY
           flags=()

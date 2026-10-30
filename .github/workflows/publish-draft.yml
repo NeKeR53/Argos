@@ -1,0 +1,38 @@
+name: Publish completed release draft
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag du brouillon complet à publier
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify assets and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          gh release view "$RELEASE_TAG" --json isDraft,assets > /tmp/argos-release.json
+          python3 - <<'PY'
+          import json
+          with open('/tmp/argos-release.json') as f: release = json.load(f)
+          expected = {'Argos-macOS-arm64.zip', 'Argos-macOS-x86_64.zip', 'Argos-Windows-x64.zip', 'SHA256SUMS-macos-arm64.txt', 'SHA256SUMS-macos-x86_64.txt', 'SHA256SUMS-windows.txt'}
+          uploaded = {a['name'] for a in release['assets'] if a['state'] == 'uploaded' and a['size'] > 0}
+          if not release['isDraft'] or expected - uploaded:
+              raise SystemExit(f'Brouillon incomplet : {expected - uploaded}')
+          PY
+          flags=()
+          if [[ "$RELEASE_TAG" == v0.* || "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release edit "$RELEASE_TAG" --draft=false "${flags[@]}"
