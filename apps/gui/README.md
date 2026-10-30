@@ -21,7 +21,7 @@ panic = "CmdOrCtrl+Shift+X"         # panic stop : deux appuis en moins de 2 s
 speak_typed_replies = false         # vrai : lire aussi les réponses aux demandes tapées
 
 [voice]
-whisper_model = "/Users/alexandre/.cache/short-editing/ggml-large-v3-turbo.bin"
+whisper_model = "/chemin/vers/ggml-large-v3-turbo.bin"
 whisper_server = "whisper-server"   # binaire whisper.cpp, cherché dans le PATH
 language = "fr"
 voice = "Thomas"                    # voix de `say` (`say -v '?'` pour la liste)
@@ -100,9 +100,9 @@ kokoro_voices = "/chemin/vers/voices-v1.0.bin"
 kokoro_voice = "ff_siwis"
 ```
 
-Sous Windows, le Python de l'environnement est `venv/Scripts/python.exe` ; utiliser des
-chemins absolus avec `/` dans TOML. Les dépendances, le modèle, les voix et le serveur
-Whisper doivent être installés sur la machine Windows. Cette configuration de la synthèse
-vocale ne constitue pas à elle seule une validation de l'application sur Windows.
+Sous Windows, le ZIP de release inclut les dépendances, les modèles et Whisper ; son
+lanceur les configure au premier démarrage. Pour une installation manuelle, le Python
+de l'environnement est `venv/Scripts/python.exe` ; utiliser des chemins absolus avec
+`/` dans TOML. La version Windows reste à valider sur une machine réelle.
 L'ancienne synthèse macOS reste disponible avec `tts_backend = "say"`. Redémarrer l'app
 après modification. Le modèle est chargé à chaque phrase ; cela peut ajouter un délai.
