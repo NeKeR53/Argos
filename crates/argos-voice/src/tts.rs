@@ -8,9 +8,9 @@ use crate::stt::BoxFuture;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
+use std::sync::{Arc, Mutex as StdMutex};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::{broadcast, mpsc};
 
 /// Un backend de synthèse : `say` en local, ou plus tard une API.
@@ -66,14 +66,19 @@ impl Speaker for SaySpeaker {
     }
 }
 
-/// Kokoro ONNX local ; le processus est interrompu avec la lecture en cours.
+/// Kokoro ONNX local. Un seul processus Python sert toute la session : le modèle de
+/// 325 Mo n'est chargé qu'une fois, et chaque phrase lui est envoyée sur stdin. Lâcher le
+/// futur d'une phrase coupe le processus (barge-in) ; la phrase suivante en relance un.
 #[derive(Debug, Clone)]
 pub struct KokoroSpeaker {
     python: PathBuf,
     model: PathBuf,
     voices: PathBuf,
     voice: String,
+    /// Le processus entre deux phrases. Pris le temps d'une phrase, il est rendu ensuite.
+    worker: Arc<StdMutex<Option<KokoroWorker>>>,
 }
+
 impl KokoroSpeaker {
     pub fn new(python: PathBuf, model: PathBuf, voices: PathBuf, voice: String) -> Self {
         Self {
@@ -81,46 +86,107 @@ impl KokoroSpeaker {
             model,
             voices,
             voice,
+            worker: Arc::new(StdMutex::new(None)),
         }
     }
 }
+
+/// Le processus Python de Kokoro et ses tubes.
+pub struct KokoroWorker {
+    child: Child,
+    input: ChildStdin,
+    output: Lines<BufReader<ChildStdout>>,
+}
+
+impl std::fmt::Debug for KokoroWorker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KokoroWorker")
+            .field("pid", &self.child.id())
+            .finish()
+    }
+}
+
+impl KokoroWorker {
+    async fn start(speaker: &KokoroSpeaker) -> Result<Self, VoiceError> {
+        let program = speaker.python.display().to_string();
+        let mut child = Command::new(&speaker.python)
+            .arg("-c")
+            .arg(include_str!("kokoro_worker.py"))
+            .arg(&speaker.model)
+            .arg(&speaker.voices)
+            .arg(&speaker.voice)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            // Les traces de Kokoro (chargement, erreurs) restent visibles dans le terminal.
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|source| VoiceError::Spawn { program, source })?;
+        let input = child
+            .stdin
+            .take()
+            .ok_or_else(|| VoiceError::Speech("entrée Kokoro indisponible".into()))?;
+        let output = child
+            .stdout
+            .take()
+            .ok_or_else(|| VoiceError::Speech("sortie Kokoro indisponible".into()))?;
+        Ok(Self {
+            child,
+            input,
+            output: BufReader::new(output).lines(),
+        })
+    }
+
+    /// Envoie une phrase et attend qu'elle soit dite. `Ok(Err(message))` : Kokoro n'a pas pu
+    /// la dire, mais le processus reste utilisable. `Err` : le processus est à reprendre.
+    async fn say(&mut self, sentence: &str) -> Result<Result<(), String>, VoiceError> {
+        let io = |error: std::io::Error| VoiceError::Speech(format!("Kokoro : {error}"));
+        // Une phrase tient sur une ligne : les retours à la ligne deviennent des espaces.
+        let line = serde_json::to_string(&sentence.replace(['\n', '\r'], " "))
+            .map_err(|e| VoiceError::Speech(e.to_string()))?;
+        self.input
+            .write_all(format!("{line}\n").as_bytes())
+            .await
+            .map_err(io)?;
+        self.input.flush().await.map_err(io)?;
+        let reply = self
+            .output
+            .next_line()
+            .await
+            .map_err(io)?
+            .ok_or_else(|| VoiceError::Speech("Kokoro s'est arrêté".into()))?;
+        Ok(match reply.strip_prefix("erreur ") {
+            Some(message) => Err(message.to_string()),
+            None if reply == "ok" => Ok(()),
+            None => Err(format!("réponse inattendue : {reply}")),
+        })
+    }
+}
+
 impl Speaker for KokoroSpeaker {
     fn speak(&self, text: String) -> BoxFuture<'static, Result<(), VoiceError>> {
-        let mut cmd = Command::new(&self.python);
-        cmd.arg("-c")
-            .arg(include_str!("kokoro_worker.py"))
-            .arg(&self.model)
-            .arg(&self.voices)
-            .arg(&self.voice)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let program = self.python.display().to_string();
+        let speaker = self.clone();
         Box::pin(async move {
-            let mut child = cmd
-                .spawn()
-                .map_err(|source| VoiceError::Spawn { program, source })?;
-            let mut input = child
-                .stdin
-                .take()
-                .ok_or_else(|| VoiceError::Speech("entrée Kokoro indisponible".into()))?;
-            input
-                .write_all(text.as_bytes())
-                .await
-                .map_err(|e| VoiceError::Speech(e.to_string()))?;
-            drop(input);
-            let output = child
-                .wait_with_output()
-                .await
-                .map_err(|e| VoiceError::Speech(e.to_string()))?;
-            if output.status.success() {
-                Ok(())
-            } else {
-                Err(VoiceError::Speech(format!(
-                    "Kokoro : {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                )))
+            // Repris le temps de la phrase : si ce futur est lâché, le processus part avec.
+            let taken = speaker
+                .worker
+                .lock()
+                .expect("verrou Kokoro empoisonné")
+                .take();
+            let mut worker = match taken {
+                Some(worker) => worker,
+                None => KokoroWorker::start(&speaker).await?,
+            };
+            match worker.say(&text).await? {
+                Ok(()) => {
+                    *speaker.worker.lock().expect("verrou Kokoro empoisonné") = Some(worker);
+                    Ok(())
+                }
+                Err(message) => {
+                    // Le processus est sain : il reste pour la phrase suivante.
+                    *speaker.worker.lock().expect("verrou Kokoro empoisonné") = Some(worker);
+                    Err(VoiceError::Speech(format!("Kokoro : {message}")))
+                }
             }
         })
     }
