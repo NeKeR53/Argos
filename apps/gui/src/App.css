@@ -1419,3 +1419,6 @@ textarea {
 .model-custom summary { padding: 4px 8px; color: var(--text-muted); cursor: pointer; }
 .model-custom form { display: flex; gap: 4px; padding: 4px 8px; }
 .model-custom input { min-width: 0; flex: 1; width: auto; }
+
+/* Les Réglages commencent en haut de la page, pas au milieu. */
+.settings-page { margin: 0 auto; align-self: flex-start; }

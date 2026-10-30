@@ -249,7 +249,7 @@ function ToolGroup({ tools, live }: { tools: ToolEntry[]; live: boolean }) {
   const last = tools[tools.length - 1];
   return <details className="tool-group">
     <summary><span className="tool-indicator" data-active={live} aria-hidden="true" /><span className="tool-summary-text">{live ? `${last.name}…` : toolsSummary(tools.length)}</span><span className="tool-chevron" aria-hidden="true">▸</span></summary>
-    <ul>{tools.map((tool) => <li key={tool.seq}><details className="tool-detail"><summary><span>{tool.name}</span><span className="tool-detail-state">{tool.finished === false ? "En cours" : tool.finished ? "Terminé" : ""}</span></summary><div className="tool-detail-content">{tool.input && <section><strong>Commande / entrée</strong><pre>{tool.input}</pre></section>}{tool.output && <section><strong>Sortie</strong><pre>{tool.output}</pre></section>}{!tool.input && !tool.output && <p>Les détails ne sont pas disponibles.</p>}{tool.finished === false && !tool.output && <p>En attente de la sortie…</p>}</div></details></li>)}</ul>
+    <ul>{tools.map((tool) => <li key={tool.seq}><details className="tool-detail"><summary><span>{tool.name}</span><span className="tool-detail-state">{tool.finished === false && live ? "En cours" : tool.finished !== undefined ? "Terminé" : ""}</span></summary><div className="tool-detail-content">{tool.input && <section><strong>Commande / entrée</strong><pre>{tool.input}</pre></section>}{tool.output && <section><strong>Sortie</strong><pre>{tool.output}</pre></section>}{!tool.input && !tool.output && <p>Les détails ne sont pas disponibles.</p>}{tool.finished === false && live && !tool.output && <p>En attente de la sortie…</p>}</div></details></li>)}</ul>
   </details>;
 }
 
