@@ -157,7 +157,7 @@ pub struct Session {
 pub struct SessionControl {
     session_id: String,
     /// Groupe de process local ; `None` pour une session sur un autre nœud.
-    pgid: Option<i32>,
+    pgid: Option<process::ProcessTree>,
     exited: Arc<AtomicBool>,
     commands: mpsc::UnboundedSender<Command>,
 }
@@ -209,7 +209,11 @@ impl Session {
 
     /// Démarre la tâche qui possède le process (ou son relais, pour une session
     /// distante). `driver` rend l'événement de fin.
-    pub(crate) fn launch<F, Fut>(session_id: String, pgid: Option<i32>, driver: F) -> Session
+    pub(crate) fn launch<F, Fut>(
+        session_id: String,
+        pgid: Option<process::ProcessTree>,
+        driver: F,
+    ) -> Session
     where
         F: FnOnce(mpsc::UnboundedReceiver<Command>, Events) -> Fut,
         Fut: Future<Output = EngineEvent> + Send + 'static,
@@ -261,8 +265,8 @@ impl SessionControl {
         if self.exited.load(Ordering::SeqCst) {
             return;
         }
-        match self.pgid {
-            Some(pgid) => process::kill_group(pgid),
+        match &self.pgid {
+            Some(tree) => tree.kill(),
             None => {
                 let _ = self.command(Command::Kill);
             }

@@ -445,3 +445,6 @@ mod tests {
         assert_eq!(error.to_string(), "Level inconnu : \"chef\"");
     }
 }
+
+#[cfg(windows)]
+pub mod windows_job;

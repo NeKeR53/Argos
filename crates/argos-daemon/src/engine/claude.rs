@@ -32,7 +32,7 @@ pub(super) async fn spawn(mut spec: SessionSpec) -> Result<Session, EngineError>
         .args(arguments(&spec, &session_id))
         .current_dir(&spec.cwd);
     let process = process::spawn(command)?;
-    let pgid = process.pgid;
+    let pgid = process.tree.clone();
     Ok(Session::launch(
         session_id,
         Some(pgid),

@@ -88,7 +88,12 @@ export function onAssistantEvent(
 ): { plan: SpeechPlan; actions: SpeechAction[] } {
   switch (event.type) {
     case "input": {
-      const index = plan.awaiting.indexOf(event.text);
+      // Un retour d’agent ouvre un nouveau tour de l’Assistant. Sa réponse doit être
+      // audible, même si le tour de la demande vocale initiale est déjà terminé.
+      if (event.from.kind === "agent") {
+        return { plan: { ...plan, speaking: true, streamed: false }, actions: [] };
+      }
+      const index = event.from.kind === "user" ? plan.awaiting.indexOf(event.text) : -1;
       if (index < 0) return speakAll
         ? { plan: { ...plan, speaking: true, streamed: false }, actions: [{ type: "stop" }] }
         : { plan, actions: [] };

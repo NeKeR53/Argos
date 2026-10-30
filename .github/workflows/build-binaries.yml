@@ -1,0 +1,77 @@
+name: Build binaries
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Plateforme à construire
+        type: choice
+        options:
+          - macos
+          - windows
+          - both
+        default: macos
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    if: inputs.platform == 'macos' || inputs.platform == 'both'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build macOS application and daemon
+        run: ./scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: argos-macos-${{ matrix.arch }}-unsigned
+          path: target/distribution/macos-${{ matrix.arch }}/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  windows:
+    if: inputs.platform == 'windows' || inputs.platform == 'both'
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test Windows process isolation
+        run: cargo test --locked -p argos-core --lib
+      - name: Build Windows installer and daemon
+        shell: pwsh
+        run: ./scripts/package-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: argos-windows-x64-unsigned
+          path: |
+            target/distribution/windows-x64/Argos-Windows-x64.zip
+            target/distribution/windows-x64/SHA256SUMS-windows.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

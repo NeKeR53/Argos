@@ -410,6 +410,7 @@ pub fn run() {
 /// SIGTERM, SIGHUP ou SIGINT (fin de session, `kill`, terminal fermé) : sortie propre,
 /// voix arrêtée d'abord, sans quoi `whisper-server` resterait orphelin. Un SIGKILL, lui,
 /// ne se rattrape pas.
+#[cfg(unix)]
 fn exit_on_signals(app: &AppHandle) {
     use tokio::signal::unix::{SignalKind, signal};
     let app = app.clone();
@@ -432,6 +433,11 @@ fn exit_on_signals(app: &AppHandle) {
         voice::shutdown(&app).await;
         app.exit(0);
     });
+}
+
+#[cfg(windows)]
+fn exit_on_signals(_app: &AppHandle) {
+    // La fermeture de la fenêtre et l'événement Exit arrêtent déjà la voix.
 }
 
 /// Debug seulement : `ARGOS_VOICE_SIMULATE="phrase"` la « dit » une fois, 10 s après le

@@ -1,0 +1,15 @@
+ARGOS POUR WINDOWS X64
+
+1. Extraire intégralement le ZIP dans un dossier conservé sur le PC.
+2. Double-cliquer sur Argos.cmd. Il démarre le daemon local puis l'application.
+3. Installer et authentifier Codex ou Claude séparément pour utiliser les agents.
+
+Le ZIP contient les modèles vocaux, Python et Whisper : la transcription et la
+synthèse se font localement. WebView2 et le runtime Microsoft Visual C++ x64 peuvent
+être nécessaires. Les données Argos sont conservées dans %LOCALAPPDATA%\Argos\data.
+Une configuration vocale existante dans ce dossier n'est pas remplacée.
+
+Cette version n'est pas signée et n'a pas encore été validée sur tous les PC Windows.
+Pour arrêter le daemon, quitter son processus argos-daemon.exe dans le Gestionnaire
+des tâches. Les fichiers d'installation peuvent ensuite être supprimés sans effacer
+les données. La connexion aux fournisseurs d'IA reste nécessaire pour les agents.

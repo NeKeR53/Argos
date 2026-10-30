@@ -1,0 +1,9 @@
+ARGOS POUR MACOS
+
+Décompressez l'archive et lancez Lancer-Argos.command. Le daemon démarre en
+arrière-plan, puis l'application s'ouvre. L'application et le daemon utilisent
+~/.argos (ou ARGOS_HOME). Installez et authentifiez Codex ou Claude séparément.
+
+La transcription Whisper et la voix Kokoro ne sont pas incluses dans ce paquet
+macOS : leur installation et configuration restent nécessaires pour la voix.
+Ce paquet n'est pas signé ni notarié. Installez uniquement une version de confiance.

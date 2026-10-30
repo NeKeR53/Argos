@@ -75,6 +75,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -98,6 +99,7 @@ dependencies = [
  "tokio-tungstenite",
  "toml 1.1.8+spec-1.1.0",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -123,6 +125,7 @@ dependencies = [
 name = "argos-voice"
 version = "0.1.0"
 dependencies = [
+ "argos-core",
  "cpal",
  "libc",
  "serde",

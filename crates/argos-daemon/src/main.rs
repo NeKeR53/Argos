@@ -140,12 +140,14 @@ fn argos_home() -> Result<PathBuf, &'static str> {
         return Ok(dir.into());
     }
     std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| PathBuf::from(home).join(".argos"))
         .ok_or("ni ARGOS_HOME ni HOME ne sont définis")
 }
 
 fn user_home() -> PathBuf {
     std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_default()
 }

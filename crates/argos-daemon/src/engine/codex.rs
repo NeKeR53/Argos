@@ -22,7 +22,15 @@ pub fn prepare_codex_home(dir: &Path, user_codex_home: &Path) -> io::Result<()> 
     fs::create_dir_all(dir)?;
     let auth = dir.join("auth.json");
     if fs::symlink_metadata(&auth).is_err() {
+        #[cfg(unix)]
         std::os::unix::fs::symlink(user_codex_home.join("auth.json"), &auth)?;
+        #[cfg(windows)]
+        {
+            let source = user_codex_home.join("auth.json");
+            if source.is_file() {
+                fs::hard_link(source, &auth)?;
+            }
+        }
     }
     let config = dir.join("config.toml");
     if !config.exists() {
@@ -125,7 +133,7 @@ pub(super) async fn spawn(spec: SessionSpec) -> Result<Session, EngineError> {
         .ok_or_else(|| EngineError::Protocol(format!("{method} sans thread.id")))?
         .to_string();
 
-    let pgid = process.pgid;
+    let pgid = process.tree.clone();
     let session_id = state.thread_id.clone();
     Ok(Session::launch(
         session_id,

@@ -126,6 +126,7 @@ pub fn argos_home() -> Result<PathBuf, String> {
         return Ok(dir.into());
     }
     std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
         .map(|home| PathBuf::from(home).join(".argos"))
         .ok_or_else(|| "ni ARGOS_HOME ni HOME ne sont définis".into())
 }

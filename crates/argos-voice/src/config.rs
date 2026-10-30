@@ -148,7 +148,10 @@ impl VoiceConfig {
 }
 
 fn expand_home(path: &Path) -> PathBuf {
-    match (path.strip_prefix("~"), std::env::var_os("HOME")) {
+    match (
+        path.strip_prefix("~"),
+        std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")),
+    ) {
         (Ok(rest), Some(home)) => PathBuf::from(home).join(rest),
         _ => path.to_path_buf(),
     }

@@ -6,9 +6,12 @@ use crate::policy::{DEFAULT_MODELS, ModelPolicy};
 use argos_core::EngineKind;
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
+#[cfg(unix)]
+use std::fs::OpenOptions;
+use std::fs::{self};
 use std::io::{self, Write};
 use std::net::SocketAddr;
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use uuid::Uuid;
@@ -170,13 +173,70 @@ pub fn load_or_create_token(path: &Path) -> io::Result<String> {
         return Ok(token.trim().to_string());
     }
     let token = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let mut file = OpenOptions::new()
+    let mut file = create_private_token(path)?;
+    writeln!(file, "{token}")?;
+    Ok(token)
+}
+
+#[cfg(unix)]
+fn create_private_token(path: &Path) -> io::Result<fs::File> {
+    OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)?;
-    writeln!(file, "{token}")?;
-    Ok(token)
+        .open(path)
+}
+
+#[cfg(windows)]
+fn create_private_token(path: &Path) -> io::Result<fs::File> {
+    use std::os::windows::{ffi::OsStrExt, io::FromRawHandle};
+    use windows_sys::Win32::{
+        Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree},
+        Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            SECURITY_ATTRIBUTES,
+        },
+        Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ},
+    };
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // Owner Rights : accès uniquement au propriétaire, sans héritage des permissions du dossier.
+    let descriptor: Vec<u16> = "D:P(A;;FA;;;OW)".encode_utf16().chain(Some(0)).collect();
+    let mut sd = std::ptr::null_mut();
+    // SAFETY : Win32 initialise le descripteur ; il reste vivant jusqu'à la création.
+    unsafe {
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            descriptor.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+        let attributes = SECURITY_ATTRIBUTES {
+            nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: sd,
+            bInheritHandle: 0,
+        };
+        let handle = CreateFileW(
+            name.as_ptr(),
+            GENERIC_WRITE,
+            FILE_SHARE_READ,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        );
+        let result = if handle == INVALID_HANDLE_VALUE {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(fs::File::from_raw_handle(handle as _))
+        };
+        LocalFree(sd as _);
+        result
+    }
 }
 
 #[cfg(test)]

@@ -22,6 +22,7 @@ use tokio::time::{Instant, sleep, timeout};
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 const READY_POLL: Duration = Duration::from_millis(100);
 /// Délai laissé à `whisper-server` pour sortir après SIGTERM avant d'être tué.
+#[cfg(unix)]
 const GRACE: Duration = Duration::from_secs(2);
 /// Garde-fou d'une requête : le large-v3-turbo transcrit 30 s d'audio en ~1 s sur M5 Pro.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -32,6 +33,8 @@ const STDERR_TAIL: usize = 20;
 /// Lâcher la valeur tue le process ; [`WhisperServer::shutdown`] l'arrête proprement.
 pub struct WhisperServer {
     child: Child,
+    #[cfg(windows)]
+    job: argos_core::windows_job::Job,
     addr: SocketAddr,
     stderr: Arc<Mutex<VecDeque<String>>>,
 }
@@ -60,6 +63,12 @@ impl WhisperServer {
             program: config.whisper_server.display().to_string(),
             source,
         })?;
+        #[cfg(windows)]
+        let job = argos_core::windows_job::Job::assign_suspended(
+            child.raw_handle().ok_or(VoiceError::Closed)?,
+            child.id().ok_or(VoiceError::Closed)?,
+        )
+        .map_err(|error| VoiceError::ServerStart(format!("groupe de processus : {error}")))?;
         let stderr = Arc::new(Mutex::new(VecDeque::new()));
         let sink = Arc::clone(&stderr);
         let pipe = child.stderr.take().expect("stderr est redirigé");
@@ -75,6 +84,8 @@ impl WhisperServer {
         });
         let mut server = Self {
             child,
+            #[cfg(windows)]
+            job,
             addr,
             stderr,
         };
@@ -129,6 +140,7 @@ impl WhisperServer {
     }
 
     /// SIGTERM, puis SIGKILL si le process traîne.
+    #[cfg(unix)]
     pub async fn shutdown(mut self) {
         signal_group(&self.child, libc::SIGTERM);
         if timeout(GRACE, self.child.wait()).await.is_err() {
@@ -136,16 +148,27 @@ impl WhisperServer {
             let _ = self.child.wait().await;
         }
     }
+    #[cfg(windows)]
+    pub async fn shutdown(mut self) {
+        let _ = self.job.kill();
+        let _ = self.child.wait().await;
+    }
 }
 
 impl Drop for WhisperServer {
     fn drop(&mut self) {
         // Sans effet après `shutdown` : le groupe n'existe plus.
+        #[cfg(unix)]
         signal_group(&self.child, libc::SIGKILL);
+        #[cfg(windows)]
+        {
+            let _ = self.job.kill();
+        }
     }
 }
 
 /// Envoie un signal au groupe du serveur : la garde et `whisper-server`.
+#[cfg(unix)]
 fn signal_group(child: &Child, signal: i32) {
     if let Some(pid) = child.id() {
         // SAFETY : kill ne touche à aucune mémoire ; au pire le groupe a disparu.
@@ -156,6 +179,7 @@ fn signal_group(child: &Child, signal: i32) {
 }
 
 /// Chemin du binaire : tel quel s'il contient un `/`, sinon cherché dans le `PATH`.
+#[cfg(unix)]
 fn locate(program: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let runnable = |path: &std::path::Path| {
@@ -174,11 +198,43 @@ fn locate(program: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
     found.ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
 }
 
+#[cfg(windows)]
+fn locate(program: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    let candidates = |p: std::path::PathBuf| {
+        if p.extension().is_none() {
+            vec![p.with_extension("exe"), p]
+        } else {
+            vec![p]
+        }
+    };
+    let paths: Vec<_> = if program.components().count() > 1 {
+        candidates(program.to_path_buf())
+    } else {
+        std::env::var_os("PATH")
+            .into_iter()
+            .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .flat_map(|dir| candidates(dir.join(program)))
+            .collect()
+    };
+    paths
+        .into_iter()
+        .find(|p| p.is_file())
+        .ok_or_else(|| std::io::ErrorKind::NotFound.into())
+}
+
+#[cfg(windows)]
+fn watched(_parent: u32, program: &std::ffi::OsStr) -> Command {
+    let mut command = Command::new(program);
+    command.kill_on_drop(true).creation_flags(0x0000_0004); // CREATE_SUSPENDED
+    command
+}
+
 /// Lance `program` sous une garde `sh` qui le termine dès que `parent` disparaît, même
 /// tué par SIGKILL (macOS n'a pas d'équivalent à `PR_SET_PDEATHSIG`). Sans elle, une app
 /// tuée net laisserait `whisper-server` orphelin, avec le modèle en mémoire. Garde et
 /// serveur forment un groupe de process à part, arrêté d'un coup par [`signal_group`].
 /// La garde rend le statut du serveur ; les arguments s'ajoutent à la commande rendue.
+#[cfg(unix)]
 fn watched(parent: u32, program: &std::ffi::OsStr) -> Command {
     const GUARD: &str = r#"parent=$1; shift
 "$@" &
@@ -195,7 +251,7 @@ wait "$child""#;
     command
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod guard_tests {
     use super::*;
 

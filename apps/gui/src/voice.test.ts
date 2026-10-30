@@ -52,6 +52,12 @@ describe("lecture des réponses", () => {
     expect(actions).toEqual([{ type: "stop" }, { type: "speak", text: "Salut !" }, { type: "finish" }]);
   });
 
+  it("lit la réponse de l’assistant quand un agent lui transmet un résultat", () => {
+    const report: DaemonEvent = { type: "input", agent: "a0", from: { kind: "agent", agent: "a1" }, text: "[Rapport de Maison]\nIl fait 20 degrés." };
+    const { actions } = play(IDLE_PLAN, [report, delta("Il fait "), delta("20 degrés."), message("Il fait 20 degrés."), done]);
+    expect(actions).toEqual([{ type: "speak", text: "Il fait " }, { type: "speak", text: "20 degrés." }, { type: "finish" }]);
+  });
+
   it("ne lit pas le tour d'une autre demande arrivée avant celle faite à la voix", () => {
     const sent = voiceSent(IDLE_PLAN, "à la voix");
     const { plan, actions } = play(sent, [input("tapé avant"), delta("pour l'autre"), done]);
