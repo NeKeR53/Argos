@@ -4,18 +4,7 @@
 
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import type {
-  AgentId,
-  AgentStatus,
-  Board,
-  Command,
-  Origin,
-  ProfileInfo,
-  Reply,
-  SurfaceDoc,
-  SurfaceMeta,
-  Trigger,
-} from "../protocol";
+import type { AgentId, AgentStatus, Command, Origin, Reply, SurfaceDoc, SurfaceMeta } from "../protocol";
 import {
   displayName,
   isAddressable,
@@ -23,10 +12,9 @@ import {
   type FeedItem,
   type ThreadEntry,
 } from "../state";
-import { formatUsage, levelLabel, outcomeLabel } from "../format";
+import { formatUsage, outcomeLabel } from "../format";
 import { classifyInput } from "../inputs";
-import { AgentFlags } from "./AgentTree";
-import { StatusDot } from "./StatusDot";
+import { threadItems, toolsSummary, type ToolEntry } from "../threadView";
 import { SurfaceView } from "./SurfaceView";
 
 interface Props {
@@ -34,36 +22,29 @@ interface Props {
   /** Agent parent d'un Worker, pour y renvoyer l'utilisateur. */
   parent: AgentStatus | null;
   thread: ThreadEntry[];
-  spent: number | undefined;
-  /** Board d'un Agent (absent pour les autres niveaux ou avant la première lecture). */
-  board: Board | undefined;
-  boardRevision: number;
   /** Surfaces de l'agent (jamais pour un Worker), leur code et leur flux. */
   surfaces: SurfaceMeta[];
   surfaceDocs: Record<string, SurfaceDoc>;
   surfaceFeeds: Record<string, FeedItem[]>;
   surfaceRevision: number;
-  /** Déclencheurs de l'agent (propriétaire ou cible), et base des URL de webhooks. */
-  triggers: Trigger[] | undefined;
-  triggerRevision: number;
-  hooksBase: string | null;
   /** Transcription partielle du push-to-talk, montrée dans le fil de l'Assistant. */
   dictation: string | null;
   connected: boolean;
   send: (command: Command) => boolean;
   request: (command: Command) => Promise<Reply>;
-  /** Profils de la politique de modèles, pour choisir le modèle de l'agent. */
-  profiles: ProfileInfo[] | null;
-  isLiving: (agent: AgentId) => boolean;
   /** Nom affichable d'un agent, pour dire qui a envoyé un message. */
   nameOf: (agent: AgentId) => string;
-  onRetire: (agent: AgentStatus) => void;
   onSelect: (agent: AgentId) => void;
+  /** Panneau des réglages de l'agent (bouton « ⋯ »). */
+  panelOpen: boolean;
+  onTogglePanel: () => void;
 }
 
 export function ChatPanel(props: Props) {
   const { agent, parent, thread, connected, send, onSelect, nameOf } = props;
   const addressable = isAddressable(agent);
+  // Incrémenté par « Répondre » sur une escalade : la saisie reprend le focus.
+  const [replyTick, setReplyTick] = useState(0);
   // Onglet affiché, par agent : on retrouve la surface qu'on regardait.
   const [tabs, setTabs] = useState<Record<AgentId, string>>({});
   // Une surface supprimée laisse place au chat.
@@ -82,13 +63,24 @@ export function ChatPanel(props: Props) {
     <section className="chat" aria-label={`Fil de ${displayName(agent)}`}>
       <header className="chat-header">
         <div className="chat-title">
-          <StatusDot agent={agent} />
           <h1>{displayName(agent)}</h1>
-          <span className="level-tag" data-level={agent.level}>
-            {levelLabel[agent.level]}
-          </span>
-          <AgentFlags agent={agent} />
+          {agent.busy && (
+            <span className="working" role="status">
+              <span className="working-dot" aria-hidden="true" />
+              au travail
+            </span>
+          )}
         </div>
+        <button
+          type="button"
+          className="icon-button"
+          aria-label={`Réglages de ${displayName(agent)}`}
+          aria-expanded={props.panelOpen}
+          title="Réglages et détails de l'agent"
+          onClick={props.onTogglePanel}
+        >
+          ⋯
+        </button>
       </header>
 
       {!addressable && (
@@ -134,9 +126,13 @@ export function ChatPanel(props: Props) {
             dictation={agent.level === "assistant" ? props.dictation : null}
             remote={!!agent.node}
             busy={agent.busy}
+            onReply={() => setReplyTick((tick) => tick + 1)}
+            canReply={addressable}
           />
 
-          {addressable && <Composer key={`composer-${agent.id}`} agent={agent} connected={connected} send={send} />}
+          {addressable && (
+            <Composer key={`composer-${agent.id}`} agent={agent} connected={connected} send={send} focusTick={replyTick} />
+          )}
         </>
       )}
     </section>
@@ -185,9 +181,14 @@ function Thread({
   dictation,
   remote,
   busy,
+  onReply,
+  canReply,
 }: {
   remote: boolean;
   busy: boolean;
+  /** « Répondre » sur une escalade (agents auxquels on peut parler seulement). */
+  onReply: () => void;
+  canReply: boolean;
   entries: ThreadEntry[];
   nameOf: (agent: AgentId) => string;
   /** Ce que l'utilisateur est en train de dire (fil de l'Assistant seulement). */
@@ -202,19 +203,11 @@ function Thread({
     if (element && pinned.current) element.scrollTop = element.scrollHeight;
   }, [entries, dictation]);
 
-  const groups: Array<ThreadEntry | { kind: "tools"; seq: number; tools: Extract<ThreadEntry, { kind: "tool" }>[] }> = [];
-  for (const entry of entries) {
-    const last = groups[groups.length - 1];
-    if (entry.kind === "tool" && last?.kind === "tools") last.tools.push(entry);
-    else if (entry.kind === "tool") groups.push({ kind: "tools", seq: entry.seq, tools: [entry] });
-    else groups.push(entry);
-  }
-  const lastGroup = groups[groups.length - 1];
+  const items = threadItems(entries, busy);
   if (entries.length === 0 && dictation === null) {
     return (
       <div className="thread thread-empty">
         <p>Aucun message depuis la connexion.</p>
-
       </div>
     );
   }
@@ -229,11 +222,13 @@ function Thread({
         pinned.current = element.scrollHeight - element.scrollTop - element.clientHeight < 40;
       }}
     >
-      {groups.map((entry) => entry.kind === "tools" ? (
-        <ToolGroup key={entry.seq} tools={entry.tools} active={busy && entry === lastGroup} />
-      ) : (
-        <Entry key={entry.seq} entry={entry} nameOf={nameOf} remote={remote} />
-      ))}
+      {items.map((item) =>
+        item.kind === "tools" ? (
+          <ToolGroup key={item.key} tools={item.tools} live={item.live} />
+        ) : (
+          <Entry key={item.key} entry={item.entry} nameOf={nameOf} remote={remote} onReply={canReply ? onReply : undefined} />
+        ),
+      )}
       {dictation !== null && (
         <div className="entry entry-input entry-dictation" aria-live="polite">
           <div className="bubble">
@@ -246,9 +241,14 @@ function Thread({
   );
 }
 
-function ToolGroup({ tools, active }: { tools: Extract<ThreadEntry, { kind: "tool" }>[]; active: boolean }) {
+/**
+ * Les outils d'un tour, sur une seule ligne repliée (« 3 outils utilisés ▸ ») ; en cours
+ * de tour, la ligne montre le dernier outil appelé.
+ */
+function ToolGroup({ tools, live }: { tools: ToolEntry[]; live: boolean }) {
+  const last = tools[tools.length - 1];
   return <details className="tool-group">
-    <summary><span className="tool-indicator" data-active={active} aria-hidden="true" /><span>{tools.length} {tools.length === 1 ? "outil" : "outils"}{active ? " · activité en cours" : ""}</span><span className="tool-chevron" aria-hidden="true">⌄</span></summary>
+    <summary><span className="tool-indicator" data-active={live} aria-hidden="true" /><span className="tool-summary-text">{live ? `${last.name}…` : toolsSummary(tools.length)}</span><span className="tool-chevron" aria-hidden="true">▸</span></summary>
     <ul>{tools.map((tool) => <li key={tool.seq}><details className="tool-detail"><summary><span>{tool.name}</span><span className="tool-detail-state">{tool.finished === false ? "En cours" : tool.finished ? "Terminé" : ""}</span></summary><div className="tool-detail-content">{tool.input && <section><strong>Commande / entrée</strong><pre>{tool.input}</pre></section>}{tool.output && <section><strong>Sortie</strong><pre>{tool.output}</pre></section>}{!tool.input && !tool.output && <p>Les détails ne sont pas disponibles.</p>}{tool.finished === false && !tool.output && <p>En attente de la sortie…</p>}</div></details></li>)}</ul>
   </details>;
 }
@@ -295,8 +295,33 @@ function senderLabel(from: Origin | null, nameOf: (agent: AgentId) => string): s
   }
 }
 
-function Entry({ entry, nameOf, remote }: { entry: ThreadEntry; nameOf: (agent: AgentId) => string; remote: boolean }) {
+function Entry({
+  entry,
+  nameOf,
+  remote,
+  onReply,
+}: {
+  entry: ThreadEntry;
+  nameOf: (agent: AgentId) => string;
+  remote: boolean;
+  onReply?: () => void;
+}) {
   switch (entry.kind) {
+    case "escalation":
+      // Surligné avec discrétion : l'agent attend une réponse de l'utilisateur.
+      return (
+        <div className="entry entry-escalation">
+          <div className="escalation-card">
+            <div className="input-tag">a besoin de vous</div>
+            <div className="escalation-text">{entry.text}</div>
+            {onReply && (
+              <button type="button" className="button" onClick={onReply}>
+                Répondre
+              </button>
+            )}
+          </div>
+        </div>
+      );
     case "input":
       return (
         <InputEntry
@@ -384,12 +409,17 @@ function InputEntry({
   );
 }
 
-function Composer({ agent, connected, send }: Pick<Props, "agent" | "connected" | "send">) {
+function Composer({
+  agent,
+  connected,
+  send,
+  focusTick,
+}: Pick<Props, "agent" | "connected" | "send"> & { focusTick: number }) {
   const [text, setText] = useState("");
   const field = useRef<HTMLTextAreaElement>(null);
 
-  // Nouvel agent affiché : la saisie prend le focus.
-  useEffect(() => field.current?.focus(), []);
+  // Nouvel agent affiché, ou « Répondre » : la saisie prend le focus.
+  useEffect(() => field.current?.focus(), [focusTick]);
 
   const submit = (event?: FormEvent) => {
     event?.preventDefault();

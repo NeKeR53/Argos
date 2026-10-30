@@ -1,14 +1,15 @@
-// Arbre des agents : chacun sous son parent (Assistant → Agents → Workers).
+// Arbre des agents : chacun sous son parent (Assistant → Agents → Workers). Le nom
+// seulement, une pastille quand l'agent travaille et une pastille d'escalade ; le reste
+// (moteur, modèle, état) est dans les réglages de l'agent.
 
-import type { AgentId, AgentStatus } from "../protocol";
-import { displayName, shortId, type TreeNode } from "../state";
-import { engineLabel, levelLabel, stateLabel } from "../format";
-import { StatusDot } from "./StatusDot";
+import type { AgentId } from "../protocol";
+import { displayName, type TreeNode } from "../state";
+import { levelLabel } from "../format";
 
 interface Props {
   roots: TreeNode[];
   selected: AgentId | null;
-  /** Escalades non lues, par agent qui les a reçues (l'Assistant). */
+  /** Escalades non vues, par agent (voir `attention`). */
   alerts: Record<AgentId, number>;
   onSelect: (agent: AgentId) => void;
 }
@@ -36,27 +37,22 @@ function Branch({ node, depth, selected, alerts, onSelect }: BranchProps) {
         className="tree-row"
         data-level={agent.level}
         data-selected={isSelected || undefined}
-        style={{ paddingLeft: `${10 + depth * 16}px` }}
+        style={{ paddingLeft: `${8 + depth * 16}px` }}
         onClick={() => onSelect(agent.id)}
         title={`${levelLabel[agent.level]} ${agent.id}`}
       >
-        <StatusDot agent={agent} />
-        <span className="tree-text">
-          <span className="tree-name">
-            {displayName(agent)}
-            {agent.level !== "worker" && <span className="tree-id">{shortId(agent.id)}</span>}
-            {alert > 0 && (
-              <span className="alert-badge" title={`${alert} escalade(s) non lue(s)`}>
-                {alert}
-              </span>
-            )}
+        <span className="tree-name">{displayName(agent)}</span>
+        {agent.busy && <span className="tree-working" role="img" aria-label="au travail" title="Au travail" />}
+        {alert > 0 && (
+          <span
+            className="alert-badge"
+            role="img"
+            aria-label={`${alert} escalade${alert > 1 ? "s" : ""} non vue${alert > 1 ? "s" : ""}`}
+            title={`${alert} escalade${alert > 1 ? "s" : ""} : cet agent a besoin de vous`}
+          >
+            {alert > 1 ? alert : ""}
           </span>
-          <span className="tree-meta">
-            {levelLabel[agent.level]} · {engineLabel(agent)}
-            {agent.node && <span title={`Nœud ${agent.node}`}> · @{agent.node}</span>}
-          </span>
-        </span>
-        <AgentFlags agent={agent} />
+        )}
       </button>
       {children.length > 0 && (
         <ul role="group">
@@ -73,21 +69,5 @@ function Branch({ node, depth, selected, alerts, onSelect }: BranchProps) {
         </ul>
       )}
     </li>
-  );
-}
-
-/** État du registre (`active` / `parked`) et tour en cours, en étiquettes courtes. */
-export function AgentFlags({ agent }: { agent: AgentStatus }) {
-  return (
-    <span className="flags">
-      {agent.busy && (
-        <span className="flag flag-busy" title="Un tour est en cours (busy)">
-          tour
-        </span>
-      )}
-      <span className="flag" data-state={agent.state} title={`État du registre : ${agent.state}`}>
-        {stateLabel[agent.state]}
-      </span>
-    </span>
   );
 }

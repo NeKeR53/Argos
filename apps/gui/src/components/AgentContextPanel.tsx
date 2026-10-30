@@ -1,66 +1,228 @@
-import { useEffect, useState } from "react";
-import type { AgentId, AgentStatus, Capabilities, Command, ProfileInfo, Reply, Trigger } from "../protocol";
-import { displayName } from "../state";
-import { engineLabel } from "../format";
+// Réglages et contexte de l'agent affiché, ouverts depuis le « ⋯ » de sa conversation :
+// modèle, détails techniques, board, déclencheurs, skills, MCP et actions. Chaque section
+// est repliée sur une ligne de résumé ; rien de tout ça n'encombre la conversation.
+
+import { useEffect, useState, type ReactNode } from "react";
+import type { AgentId, AgentStatus, Board, Capabilities, Command, ProfileInfo, Reply, Trigger } from "../protocol";
+import { displayName, isAddressable, isRetirable } from "../state";
+import { formatCost, levelLabel } from "../format";
+import { modelLabel } from "../models";
+import { BoardSection } from "./BoardSection";
 import { ModelPicker } from "./ModelPicker";
-import { TriggerPanel, triggerKindLabel } from "./TriggerPanel";
+import { TriggerPanel } from "./TriggerPanel";
+import { WorkspacePicker } from "./WorkspacePicker";
 
 interface Props {
-  profiles: ProfileInfo[] | null; agent: AgentStatus; triggers: Trigger[] | undefined; revision: number; hooksBase: string | null;
-  connected: boolean; send: (command: Command) => boolean; request: (command: Command) => Promise<Reply>;
+  agent: AgentStatus;
+  /** Agent d'un Worker, pour le rappeler dans les détails. */
+  parent: AgentStatus | null;
+  spent: number | undefined;
+  board: Board | undefined;
+  boardRevision: number;
+  profiles: ProfileInfo[] | null;
+  triggers: Trigger[] | undefined;
+  revision: number;
+  hooksBase: string | null;
+  connected: boolean;
+  send: (command: Command) => boolean;
+  request: (command: Command) => Promise<Reply>;
   nameOf: (id: AgentId) => string;
+  isLiving: (id: AgentId) => boolean;
+  onSelect: (id: AgentId) => void;
+  onRetire: (agent: AgentStatus) => void;
+  onClose: () => void;
 }
+
 function skillName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   const last = parts[parts.length - 1];
   return (last?.toLowerCase() === "skill.md" ? parts[parts.length - 2] : last) || path;
 }
 
+/** Section repliable : un titre et un résumé d'une ligne, le détail au clic. */
+function Section(props: { title: string; summary?: string; open?: boolean; children: ReactNode }) {
+  return (
+    <details className="section" open={props.open}>
+      <summary>
+        <span className="section-title">{props.title}</span>
+        {props.summary && <span className="section-summary">{props.summary}</span>}
+      </summary>
+      <div className="section-body">{props.children}</div>
+    </details>
+  );
+}
+
 export function AgentContextPanel(props: Props) {
-  const { agent, triggers, revision, connected, send, request } = props;
-  const [selectedTrigger, setSelectedTrigger] = useState<string | null>(null);
-  const [modelOpen, setModelOpen] = useState(false);
+  const { agent, parent, spent, board, triggers, revision, connected, send, request } = props;
+  const addressable = isAddressable(agent);
+  const [boardOpen, setBoardOpen] = useState(true);
+  const [triggersOpen, setTriggersOpen] = useState(false);
   const [capabilities, setCapabilities] = useState<{ config: Capabilities; argosEnabled: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selected = triggers?.find((trigger) => trigger.id === selectedTrigger);
-  useEffect(() => {
-    if (!connected || agent.level === "worker") return;
-    const timer = setTimeout(() => send({ command: "triggers", agent: agent.id }), 250);
-    return () => clearTimeout(timer);
-  }, [agent.id, agent.level, revision, connected, send]);
+
   useEffect(() => {
     if (!connected) return;
     let cancelled = false;
-    setCapabilities(null); setError(null);
-    request({ command: "capabilities", agent: agent.id }).then((reply) => {
-      if (cancelled) return;
-      if (reply.kind === "capabilities") setCapabilities({ config: reply.config, argosEnabled: reply.argos_enabled });
-      else setError(reply.kind === "error" ? reply.message : "Réponse indisponible.");
-    }).catch((reason: unknown) => { if (!cancelled) setError(String(reason)); });
-    return () => { cancelled = true; };
+    setCapabilities(null);
+    setError(null);
+    request({ command: "capabilities", agent: agent.id })
+      .then((reply) => {
+        if (cancelled) return;
+        if (reply.kind === "capabilities") setCapabilities({ config: reply.config, argosEnabled: reply.argos_enabled });
+        else setError(reply.kind === "error" ? reply.message : "Réponse indisponible.");
+      })
+      .catch((reason: unknown) => {
+        if (!cancelled) setError(String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [agent.id, connected, request]);
-  useEffect(() => { if (selectedTrigger && triggers && !selected) setSelectedTrigger(null); }, [selectedTrigger, selected, triggers]);
-  return <aside className="context-area" aria-label={`Informations de ${displayName(agent)}`}>
-    <div className="context-overview">
-      <header className="context-title">{displayName(agent)}</header>
-      <section className="context-section"><h2>Mission</h2><p>{agent.charter?.scope || (agent.level === "assistant" ? "Coordonner les agents et vous accompagner dans vos demandes." : agent.level === "worker" ? "Ce Worker intervient pour son agent." : "Aucun rôle renseigné.")}</p></section>
-      {agent.level !== "worker" && <section className="context-section"><h2>Déclencheurs <span>{triggers?.length ?? ""}</span></h2>
-        {!triggers ? <p>{connected ? "Chargement…" : "Hors connexion"}</p> : triggers.length === 0 ? <p>Aucun déclencheur.</p> : <ul className="context-triggers">{triggers.map((trigger) => <li key={trigger.id}><button type="button" aria-pressed={selectedTrigger === trigger.id} onClick={() => { setModelOpen(false); setSelectedTrigger(trigger.id); }}><span><strong>{trigger.name}</strong><small>{triggerKindLabel[trigger.kind]} · {trigger.enabled ? "actif" : "suspendu"}</small></span><span aria-hidden="true">›</span></button></li>)}</ul>}
-      </section>}
-      <section className="context-section context-model"><h2>Modèle</h2>{agent.level !== "worker" ? <button type="button" className="context-model-open" aria-expanded={modelOpen} onClick={() => { setSelectedTrigger(null); setModelOpen(true); }}><span>{engineLabel(agent)}</span><span aria-hidden="true">›</span></button> : <p>{engineLabel(agent)}</p>}</section>
-      <section className="context-section"><h2>Skills</h2>
-        {!connected && !capabilities ? <p>Hors connexion</p> : error ? <p role="status">Impossible de charger les capacités : {error}</p> : !capabilities ? <p>Chargement…</p> : capabilities.config.skills.length ? <ul className="context-tags">{capabilities.config.skills.map((skill) => <li key={skill} title={skill}>{skillName(skill)}</li>)}</ul> : <p>Aucun skill configuré.</p>}
-      </section>
-      <section className="context-section"><h2>MCP</h2>
-        {!connected && !capabilities ? <p>Hors connexion</p> : error ? <p>Impossible de charger les capacités.</p> : !capabilities ? <p>Chargement…</p> : <>{capabilities.argosEnabled || capabilities.config.mcp.length ? <ul className="context-tags">{capabilities.argosEnabled && <li>Argos</li>}{capabilities.config.mcp.map((server) => <li key={server.name}>{server.name}</li>)}</ul> : <p>Aucun serveur MCP configuré.</p>}<p className="context-hint">Serveurs configurés au démarrage.</p></>}
-      </section>
-    </div>
-    {modelOpen && <div className="context-detail context-model-detail" aria-label="Choix du modèle"><header><div><span>MODÈLE</span><h2>Changer de modèle</h2></div><button type="button" aria-label="Fermer le choix du modèle" onClick={() => setModelOpen(false)}>×</button></header>
-      {!connected && <p className="context-model-offline">Hors connexion</p>}
-      {connected && <ModelPicker inline agent={agent} profiles={props.profiles} connected={connected} send={send} onChoose={() => setModelOpen(false)} />}
-    </div>}
-    {selected && <div className="context-detail" aria-label={`Détail du déclencheur ${selected.name}`}><header><div><span>DÉCLENCHEUR</span><h2>{selected.name}</h2></div><button type="button" aria-label="Fermer le détail du déclencheur" onClick={() => setSelectedTrigger(null)}>×</button></header>
-      <TriggerPanel {...props} triggers={[selected]} open={true} onToggle={() => {}} />
-    </div>}
-  </aside>;
+
+  const mcpCount = capabilities ? capabilities.config.mcp.length + (capabilities.argosEnabled ? 1 : 0) : null;
+  const status = agent.running ? (agent.busy ? "au travail" : "prêt") : "en pause";
+
+  const rows: [string, string][] = [
+    ["Moteur", agent.engine],
+    ["Modèle", agent.model ?? "par défaut"],
+    ...(agent.profile ? ([["Profil", agent.profile]] as [string, string][]) : []),
+    ...(agent.charter?.scope ? ([["Périmètre", agent.charter.scope]] as [string, string][]) : []),
+    ...(parent && agent.level === "worker" ? ([["Agent", displayName(parent)]] as [string, string][]) : []),
+    ["Nœud", agent.node ?? "ce Mac"],
+    ["État", status],
+    ["Coût", spent != null ? `${formatCost(spent)} depuis l'ouverture` : "rien depuis l'ouverture"],
+    ["Identifiant", agent.id],
+  ];
+
+  return (
+    <aside className="context-area" aria-label={`Réglages de ${displayName(agent)}`}>
+      <header className="context-head">
+        <h2>Réglages de {displayName(agent)}</h2>
+        <button type="button" className="icon-button" aria-label="Fermer les réglages" onClick={props.onClose}>
+          ×
+        </button>
+      </header>
+      <div className="context-body">
+        {addressable && (
+          <Section title="Modèle" summary={agent.model ? modelLabel(agent.model) : "par défaut"}>
+            {connected ? (
+              <ModelPicker agent={agent} profiles={props.profiles} connected={connected} send={send} />
+            ) : (
+              <p className="muted">Hors connexion</p>
+            )}
+          </Section>
+        )}
+        <Section title="Détails" summary={`${levelLabel[agent.level]} · ${status}`}>
+          <dl className="facts">
+            {rows.map(([label, value]) => (
+              <div key={label} className="fact">
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
+          </dl>
+          {agent.level !== "worker" && <WorkspacePicker agent={agent} connected={connected} request={request} />}
+        </Section>
+        {agent.level === "agent" && (
+          <BoardSection
+            agent={agent}
+            board={board}
+            revision={props.boardRevision}
+            connected={connected}
+            open={boardOpen}
+            onToggle={setBoardOpen}
+            send={send}
+            isLiving={props.isLiving}
+            onSelect={(id) => {
+              props.onClose();
+              props.onSelect(id);
+            }}
+          />
+        )}
+        {agent.level !== "worker" && (
+          <TriggerPanel
+            agent={agent}
+            triggers={triggers}
+            revision={revision}
+            hooksBase={props.hooksBase}
+            connected={connected}
+            open={triggersOpen}
+            onToggle={setTriggersOpen}
+            send={send}
+            nameOf={props.nameOf}
+          />
+        )}
+        <Section
+          title="Skills"
+          summary={capabilities ? `${capabilities.config.skills.length}` : error ? "indisponible" : connected ? "…" : "hors connexion"}
+        >
+          {error ? (
+            <p role="status">Impossible de charger les capacités : {error}</p>
+          ) : !capabilities ? (
+            <p className="muted">{connected ? "Chargement…" : "Hors connexion"}</p>
+          ) : capabilities.config.skills.length ? (
+            <ul className="context-tags">
+              {capabilities.config.skills.map((skill) => (
+                <li key={skill} title={skill}>
+                  {skillName(skill)}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">Aucun skill configuré.</p>
+          )}
+        </Section>
+        <Section title="MCP" summary={mcpCount != null ? `${mcpCount}` : error ? "indisponible" : connected ? "…" : "hors connexion"}>
+          {error ? (
+            <p>Impossible de charger les capacités.</p>
+          ) : !capabilities ? (
+            <p className="muted">{connected ? "Chargement…" : "Hors connexion"}</p>
+          ) : (
+            <>
+              {mcpCount ? (
+                <ul className="context-tags">
+                  {capabilities.argosEnabled && <li>Argos</li>}
+                  {capabilities.config.mcp.map((server) => (
+                    <li key={server.name}>{server.name}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="muted">Aucun serveur MCP configuré.</p>
+              )}
+              <p className="context-hint">Serveurs configurés au démarrage.</p>
+            </>
+          )}
+        </Section>
+        {addressable ? (
+          <div className="context-actions">
+            <button
+              type="button"
+              className="button"
+              disabled={!connected || !agent.running}
+              onClick={() => send({ command: "park", agent: agent.id })}
+              title="Arrêt propre du process ; l'agent reprend sa session au prochain message"
+            >
+              Mettre en pause
+            </button>
+            <button
+              type="button"
+              className="button"
+              disabled={!connected}
+              onClick={() => send({ command: "stop", agent: agent.id })}
+              title="Arrêt dur de l'agent et de tout son sous-arbre"
+            >
+              Arrêter
+            </button>
+            {isRetirable(agent) && (
+              <button type="button" className="button button-danger-quiet" disabled={!connected} onClick={() => props.onRetire(agent)}>
+                Retirer…
+              </button>
+            )}
+          </div>
+        ) : (
+          <p className="context-hint">Un Worker exécute une tâche pour son Agent ; on ne lui parle pas directement.</p>
+        )}
+      </div>
+    </aside>
+  );
 }

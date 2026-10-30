@@ -28,7 +28,7 @@ voice = "Thomas"                    # voix de `say` (`say -v '?'` pour la liste)
 partial_interval_ms = 700
 ```
 
-Les raccourcis se changent aussi depuis la console (bouton « Raccourcis ») : on clique
+Les raccourcis se changent aussi depuis la console (⚙ Réglages → Raccourcis) : on clique
 « Changer », on appuie la nouvelle combinaison, elle est active tout de suite et réécrite
 dans `[gui]` sans toucher au reste du fichier. Une combinaison déjà prise par une autre app
 est refusée et l'ancienne reste. Une lettre seule est refusée (elle volerait la frappe
@@ -47,7 +47,7 @@ badge de la console).
   place » : retour à la place par défaut (en bas au milieu de l'écran principal).
 - La position est gardée dans `$ARGOS_HOME/gui-state.json`, et ramenée dans un écran si
   l'écran a changé.
-- Sur macOS : bouton **Globe** dans la console → **Globe animé dans le Dock**, ou clic
+- Sur macOS : ⚙ **Réglages → Globe** dans la console → **Globe animé dans le Dock**, ou clic
   droit sur l'orbe → **Placer dans le Dock**. Le globe animé remplace la pastille flottante
   et suit le repos, la réflexion, l'écoute et la parole, avec un badge pour les escalades
   et le panic stop. L'animation native reste active même quand la console est fermée.

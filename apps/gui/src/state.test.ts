@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { AgentStatus, Origin, ServerMessage, Trigger } from "./protocol";
 import { parseServerMessage } from "./protocol";
 import {
+  attention,
   initialState,
   reduce,
   selectedAgent,
@@ -213,24 +214,31 @@ describe("fil des messages", () => {
 describe("escalades", () => {
   const escalation = "[Escalade pour l'utilisateur de l'Agent « DOM » (dom)]\nFaut-il couper le chauffage ?";
 
-  it("se signalent quand l'utilisateur regarde un autre agent, jusqu'à consulter l'Assistant", () => {
-    let state = run(tree, { type: "select", agent: "dom" }, input("a0", escalation));
+  it("mettent une pastille sur l'Agent et l'Assistant, effacée quand on ouvre chacun", () => {
+    let state = run(tree, { type: "select", agent: "w1" }, input("a0", escalation));
     expect(state.escalations).toEqual([
       { id: expect.any(Number), name: "DOM", agent: "dom", text: "Faut-il couper le chauffage ?" },
     ]);
-    expect(state.unseenEscalations).toBe(1);
+    expect(attention(state)).toEqual({ dom: 1, a0: 1 });
 
     state = reduce(state, { type: "select", agent: "a0" });
-    expect(state.unseenEscalations).toBe(0);
-    // Le bandeau reste jusqu'à ce qu'on le ferme ou qu'on ouvre l'Agent.
-    state = reduce(state, { type: "dismiss_escalation", escalation: state.escalations[0].id });
-    expect(state.escalations).toEqual([]);
+    expect(attention(state)).toEqual({ dom: 1 });
+    state = reduce(state, { type: "select", agent: "dom" });
+    expect(attention(state)).toEqual({});
   });
 
-  it("sont vues d'emblée si l'Assistant est affiché", () => {
+  it("vont dans le fil de l'Agent concerné, pour y répondre", () => {
     const state = run(tree, input("a0", escalation));
-    expect(state.escalations).toHaveLength(1);
-    expect(state.unseenEscalations).toBe(0);
+    expect(thread(state, "dom")).toEqual([{ kind: "escalation", text: "Faut-il couper le chauffage ?" }]);
+  });
+
+  it("comptent plusieurs escalades, et sont vues d'emblée chez l'agent affiché", () => {
+    const twice = run(tree, { type: "select", agent: "w1" }, input("a0", escalation), input("a0", escalation));
+    expect(attention(twice)).toEqual({ dom: 2, a0: 2 });
+    const shown = run(tree, { type: "select", agent: "dom" }, input("a0", escalation));
+    expect(attention(shown)).toEqual({ a0: 1 });
+    const onAssistant = run(tree, input("a0", escalation));
+    expect(attention(onAssistant)).toEqual({ dom: 1 });
   });
 
   it("ne viennent que des inputs de l'Assistant", () => {

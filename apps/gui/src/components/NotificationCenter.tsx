@@ -1,32 +1,29 @@
+// Avis et erreurs de la console en toasts discrets, qui ne s'empilent pas : un seul à la
+// fois, qui disparaît seul (les erreurs restent un peu plus longtemps). Une escalade n'est
+// pas un avis : elle se voit par la pastille de l'agent et dans son fil.
+
 import { useEffect, useRef } from "react";
 import { Toaster, toast } from "sonner";
 import type { AgentId, AgentStatus } from "../protocol";
-import { displayName, type Escalation, type Notice } from "../state";
+import { displayName, type Notice } from "../state";
 
-export function NotificationCenter({ notices, escalations, agents, onOpenNotice, onOpenEscalation, onDismissNotice, onDismissEscalation }: {
-  notices: Notice[]; escalations: Escalation[]; agents: Record<AgentId, AgentStatus>;
-  onOpenNotice: (agent: AgentId) => void; onOpenEscalation: (escalation: Escalation) => void;
-  onDismissNotice: (id: number) => void; onDismissEscalation: (id: number) => void;
+/** Durée d'affichage selon le ton (ms). */
+const TOAST_MS: Record<Notice["tone"], number> = { info: 4000, warning: 6000, error: 8000 };
+
+export function NotificationCenter({ notices, agents, onOpenNotice, onDismissNotice }: {
+  notices: Notice[]; agents: Record<AgentId, AgentStatus>;
+  onOpenNotice: (agent: AgentId) => void; onDismissNotice: (id: number) => void;
 }) {
-  const seen = useRef(new Set<string>());
+  const seen = useRef(new Set<number>());
   useEffect(() => {
-    for (const item of escalations) {
-      const key = `escalation-${item.id}`;
-      if (seen.current.has(key)) continue;
-      seen.current.add(key);
-      toast.warning(`L'Agent ${item.name} a besoin de vous`, {
-        id: key, description: item.text, duration: Infinity,
-        action: { label: "Ouvrir", onClick: () => onOpenEscalation(item) },
-        onDismiss: () => onDismissEscalation(item.id),
-      });
-    }
     for (const item of notices) {
-      const key = `notice-${item.id}`;
-      if (seen.current.has(key)) continue;
-      seen.current.add(key);
+      if (seen.current.has(item.id)) continue;
+      seen.current.add(item.id);
       const agent = item.agent && agents[item.agent];
+      // Même identifiant pour tous : un nouvel avis remplace le précédent au lieu de s'empiler.
       const options = {
-        id: key,
+        id: "notice",
+        duration: TOAST_MS[item.tone],
         ...(agent ? { action: { label: `Ouvrir ${displayName(agent)}`, onClick: () => onOpenNotice(agent.id) } } : {}),
         onDismiss: () => onDismissNotice(item.id),
         onAutoClose: () => onDismissNotice(item.id),
@@ -35,6 +32,6 @@ export function NotificationCenter({ notices, escalations, agents, onOpenNotice,
       else if (item.tone === "warning") toast.warning(item.text, options);
       else toast(item.text, options);
     }
-  }, [notices, escalations, agents, onOpenNotice, onOpenEscalation, onDismissNotice, onDismissEscalation]);
-  return <Toaster position="bottom-right" theme="system" visibleToasts={3} closeButton />;
+  }, [notices, agents, onOpenNotice, onDismissNotice]);
+  return <Toaster position="bottom-right" theme="system" visibleToasts={1} />;
 }

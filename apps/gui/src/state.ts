@@ -67,7 +67,9 @@ export type ThreadEntry =
   | { seq: number; kind: "streaming"; text: string }
   | { seq: number; kind: "tool"; name: string; id?: string; input?: string | null; output?: string | null; finished?: boolean }
   | { seq: number; kind: "turn"; outcome: TurnOutcome; usage: Usage | null }
-  | { seq: number; kind: "exited"; code: number | null };
+  | { seq: number; kind: "exited"; code: number | null }
+  /** L'agent a besoin de l'utilisateur (escalade relayée par l'Assistant, D12). */
+  | { seq: number; kind: "escalation"; text: string };
 
 export interface Notice {
   id: number;
@@ -149,7 +151,7 @@ export interface AppState {
   nodes: NodeStatus[] | null;
   /** Profils de la politique de modèles, pour choisir le modèle d'un agent. */
   profiles: ProfileInfo[] | null;
-  /** Escalades encore affichées dans le bandeau. */
+  /** Escalades pas encore vues chez l'Agent concerné (pastille dans l'arbre). */
   escalations: Escalation[];
   /** Escalades arrivées depuis la dernière consultation de l'Assistant. */
   unseenEscalations: number;
@@ -232,8 +234,12 @@ export function reduce(state: AppState, action: Action): AppState {
       });
     }
     case "select": {
-      const next = { ...state, selected: action.agent };
-      // Consulter l'Assistant, c'est voir les escalades qu'il a reçues.
+      // Ouvrir un agent, c'est voir ses escalades ; ouvrir l'Assistant, celles qu'il a relayées.
+      const next = {
+        ...state,
+        selected: action.agent,
+        escalations: state.escalations.filter((escalation) => escalation.agent !== action.agent),
+      };
       return state.agents[action.agent]?.level === "assistant" ? { ...next, unseenEscalations: 0 } : next;
     }
     case "dismiss":
@@ -531,14 +537,36 @@ function withEscalation(state: AppState, text: string): AppState {
   const { tag, body } = classifyInput(text);
   const source = escalationSource(tag);
   if (!source) return state;
-  const seq = state.seq + 1;
-  const assistantShown = selectedAgent(state)?.level === "assistant";
+  const shown = selectedAgent(state);
+  const assistantShown = shown?.level === "assistant";
+  // Le message va aussi dans le fil de l'Agent qui a besoin de l'utilisateur, où l'on
+  // répond ; sa pastille reste tant qu'on ne l'a pas ouvert.
+  const agent = source.agent && source.agent in state.agents ? source.agent : null;
+  const next = agent ? append(state, agent, { kind: "escalation", text: body }) : state;
+  const seq = next.seq + 1;
+  const pending = agent !== null && shown?.id !== agent;
   return {
-    ...state,
+    ...next,
     seq,
-    escalations: [...state.escalations, { id: seq, ...source, text: body }].slice(-ESCALATION_LIMIT),
-    unseenEscalations: assistantShown ? 0 : state.unseenEscalations + 1,
+    escalations: pending
+      ? [...next.escalations, { id: seq, ...source, text: body }].slice(-ESCALATION_LIMIT)
+      : next.escalations,
+    unseenEscalations: assistantShown ? 0 : next.unseenEscalations + 1,
   };
+}
+
+/**
+ * Pastilles de l'arbre : escalades non vues, par agent. L'Agent qui a besoin de
+ * l'utilisateur, et l'Assistant qui l'a relayée tant qu'on ne l'a pas ouvert.
+ */
+export function attention(state: AppState): Record<AgentId, number> {
+  const counts: Record<AgentId, number> = {};
+  for (const escalation of state.escalations) {
+    if (escalation.agent) counts[escalation.agent] = (counts[escalation.agent] ?? 0) + 1;
+  }
+  const assistant = assistantOf(state);
+  if (assistant && state.unseenEscalations > 0) counts[assistant.id] = state.unseenEscalations;
+  return counts;
 }
 
 /** Marque à relire le board de l'Agent concerné par l'événement (lui ou son Worker). */
