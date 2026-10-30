@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Argos — Compact</title>
+<style>
+/* Plan : système SF, monochrome + un accent indigo. Ambre réservé à « a besoin de vous ».
+   Grille 4/8 px. Corps 13/20, secondaire 12/16. Filets de 1 px à faible opacité. */
+:root{
+  color-scheme: light dark;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  --bg: #ffffff;
+  --rail: #f5f5f4;
+  --pop: #ffffff;
+  --ink: #1c1c1e;
+  --ink2: #5e5e66;
+  --ink3: #96969e;
+  --line: rgba(0,0,0,.07);
+  --line2: rgba(0,0,0,.13);
+  --hover: rgba(0,0,0,.045);
+  --sel: rgba(0,0,0,.075);
+  --bubble: #f2f2f1;
+  --accent: #4651e0;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(70,81,224,.10);
+  --amber: #d98a0b;
+  --amber-ink: #8f5a05;
+  --amber-soft: rgba(217,138,11,.09);
+  --amber-line: rgba(217,138,11,.30);
+  --shadow-pop: 0 0 0 .5px rgba(0,0,0,.1), 0 2px 6px rgba(0,0,0,.06), 0 12px 32px rgba(0,0,0,.14);
+  --scrim: rgba(20,20,24,.16);
+  --toast: #1c1c1e;
+  --toast-ink: #f4f4f5;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#1b1b1d; --rail:#232326; --pop:#2a2a2e;
+    --ink:#ececee; --ink2:#a2a2aa; --ink3:#6f6f78;
+    --line:rgba(255,255,255,.07); --line2:rgba(255,255,255,.14);
+    --hover:rgba(255,255,255,.05); --sel:rgba(255,255,255,.09); --bubble:#27272a;
+    --accent:#8c96ff; --accent-ink:#13131a; --accent-soft:rgba(140,150,255,.14);
+    --amber:#f0a62c; --amber-ink:#f3b758; --amber-soft:rgba(240,166,44,.10); --amber-line:rgba(240,166,44,.32);
+    --shadow-pop:0 0 0 .5px rgba(255,255,255,.12), 0 2px 6px rgba(0,0,0,.3), 0 16px 40px rgba(0,0,0,.5);
+    --scrim:rgba(0,0,0,.45); --toast:#ececee; --toast-ink:#1b1b1d;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#1b1b1d; --rail:#232326; --pop:#2a2a2e;
+  --ink:#ececee; --ink2:#a2a2aa; --ink3:#6f6f78;
+  --line:rgba(255,255,255,.07); --line2:rgba(255,255,255,.14);
+  --hover:rgba(255,255,255,.05); --sel:rgba(255,255,255,.09); --bubble:#27272a;
+  --accent:#8c96ff; --accent-ink:#13131a; --accent-soft:rgba(140,150,255,.14);
+  --amber:#f0a62c; --amber-ink:#f3b758; --amber-soft:rgba(240,166,44,.10); --amber-line:rgba(240,166,44,.32);
+  --shadow-pop:0 0 0 .5px rgba(255,255,255,.12), 0 2px 6px rgba(0,0,0,.3), 0 16px 40px rgba(0,0,0,.5);
+  --scrim:rgba(0,0,0,.45); --toast:#ececee; --toast-ink:#1b1b1d;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:13px/20px var(--font);-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;overflow:hidden;font-feature-settings:"tnum" 1}
+button,input,textarea{font:inherit;color:inherit}
+button{background:none;border:0;padding:0;cursor:default;text-align:left}
+ul{list-style:none;margin:0;padding:0}
+p{margin:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px;border-radius:6px}
+kbd{font:500 11px/16px var(--font);color:var(--ink3);border:1px solid var(--line2);border-radius:4px;min-width:16px;padding:0 4px;text-align:center;display:inline-block;background:none}
+
+/* ——— Structure ——— */
+.app{display:grid;grid-template-columns:208px 1fr;height:100vh;min-width:960px;min-height:600px}
+
+/* ——— Rail ——— */
+.rail{background:var(--rail);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.titlebar{height:44px;display:flex;align-items:center;gap:8px;padding:0 16px;flex:none}
+.tl{width:12px;height:12px;border-radius:50%;display:block}
+.tl.r{background:#ff5f57}.tl.y{background:#febc2e}.tl.g{background:#28c840}
+.search{margin:0 8px 8px;height:28px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:6px;background:var(--hover);color:var(--ink3);flex:none;transition:background .12s}
+.search:hover{background:var(--sel)}
+.search span{flex:1}
+.search svg{flex:none}
+.list{padding:0 8px;overflow:auto;flex:1}
+.item{width:100%;height:28px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:6px;font-weight:450;color:var(--ink);position:relative;transition:background .12s}
+.item:hover{background:var(--hover)}
+.item.sel{background:var(--sel);font-weight:560}
+.item .gl{width:16px;height:16px;flex:none;display:grid;place-items:center}
+.item .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .k{display:none;border-color:transparent}
+.item:hover .k{display:inline-block}
+.grp{font-size:11px;line-height:16px;font-weight:560;color:var(--ink3);padding:16px 8px 4px;letter-spacing:.01em}
+.gl svg{width:16px;height:16px;display:block}
+.gl .spin{color:var(--accent);animation:turn .9s linear infinite}
+.gl .trk{stroke:currentColor;opacity:.22}
+.gl .idle{color:var(--ink3)}
+.gl .need{color:var(--amber)}
+.gl .star{color:var(--accent)}
+@keyframes turn{to{transform:rotate(360deg)}}
+@keyframes halo{0%,100%{opacity:.35;transform:scale(1)}50%{opacity:.12;transform:scale(1.35)}}
+.gl .halo{transform-origin:8px 8px;animation:halo 2.4s ease-in-out infinite}
+
+/* ——— Principal ——— */
+.main{display:flex;flex-direction:column;min-width:0;min-height:0;position:relative}
+.head{height:44px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 16px 0 12px;border-bottom:1px solid var(--line);position:relative;z-index:30}
+.namebtn{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;font-weight:600;font-size:13px;transition:background .12s}
+.namebtn:hover,.namebtn[aria-expanded="true"]{background:var(--hover)}
+.namebtn .gl{width:16px;height:16px;display:grid;place-items:center}
+.namebtn .chev{color:var(--ink3);transition:transform .16s}
+.namebtn[aria-expanded="true"] .chev{transform:rotate(180deg)}
+.head-r{display:flex;align-items:center;gap:12px;min-width:0}
+.status{display:flex;align-items:center;gap:8px;color:var(--ink2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.status .gl{width:12px;height:12px}
+.status .gl svg{width:12px;height:12px}
+.status.need{color:var(--amber-ink)}
+.kbtn{display:flex;align-items:center;gap:8px;height:24px;padding:0 8px;border-radius:6px;color:var(--ink2);font-size:12px;border:1px solid var(--line2);transition:background .12s}
+.kbtn:hover{background:var(--hover)}
+.kbtn kbd{border:0;padding:0;min-width:0}
+
+/* ——— Fil ——— */
+.thread{flex:1;overflow:auto;min-height:0;scroll-behavior:smooth}
+.col{max-width:664px;margin:0 auto;padding:24px 24px 24px;display:flex;flex-direction:column;gap:16px}
+.day{display:flex;align-items:center;gap:12px;color:var(--ink3);font-size:11px;line-height:16px;font-weight:500}
+.day::before,.day::after{content:"";flex:1;height:1px;background:var(--line)}
+.msg.user{display:flex;justify-content:flex-end}
+.bub{background:var(--bubble);padding:4px 12px;border-radius:12px 12px 4px 12px;max-width:78%}
+.who{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+.who b{font-weight:600;font-size:12px}
+.who time{font-size:11px;color:var(--ink3)}
+.txt{color:var(--ink)}
+.txt b{font-weight:600}
+.msg.agent.cont{margin-top:-8px}
+
+.tools{margin-top:4px}
+.tbtn{display:inline-flex;align-items:center;gap:4px;height:20px;color:var(--ink3);font-size:12px;border-radius:4px;padding:0 4px 0 0;transition:color .12s}
+.tbtn:hover{color:var(--ink2)}
+.tbtn .arr{font-size:12px;width:12px;text-align:center}
+.tbtn .ch{opacity:.7;transition:transform .16s}
+.tools.open .tbtn .ch{transform:rotate(90deg)}
+.tbtn .mini{width:12px;height:12px;color:var(--accent);animation:turn .9s linear infinite;margin-left:2px}
+.tbtn .live{color:var(--ink2)}
+.tbody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}
+.tools.open .tbody{grid-template-rows:1fr}
+.tin{overflow:hidden}
+.tin ul{margin:4px 0 0 5px;padding:0 0 0 12px;border-left:1px solid var(--line2)}
+.tin li{font-size:12px;line-height:16px;color:var(--ink3);padding:2px 0}
+.tin li i{font-style:normal;color:var(--ink2)}
+
+.draft{margin-top:8px;border:1px solid var(--line2);border-radius:8px;padding:8px 12px;font-size:12px;line-height:16px;color:var(--ink2)}
+.draft .sub{color:var(--ink);font-weight:560;padding-bottom:4px;margin-bottom:4px;border-bottom:1px solid var(--line)}
+.draft p+p{margin-top:4px}
+
+.esc{display:grid;grid-template-columns:16px 1fr auto;column-gap:12px;align-items:start;padding:12px;border-radius:8px;background:var(--amber-soft);border:1px solid var(--amber-line);position:relative}
+.esc .dot{width:16px;height:20px;display:grid;place-items:center}
+.esc .dot i{width:8px;height:8px;border-radius:50%;background:var(--amber);display:block;box-shadow:0 0 0 3px var(--amber-soft)}
+.esc .etx p{font-weight:520}
+.esc .etx .by{font-size:11px;line-height:16px;color:var(--amber-ink);margin-bottom:2px;font-weight:560}
+.esc ul{margin-top:8px;border-top:1px solid var(--amber-line);padding-top:4px}
+.esc li{font-size:12px;line-height:16px;color:var(--ink2);padding:2px 0}
+.reply{align-self:center;display:flex;align-items:center;gap:8px;height:24px;padding:0 4px 0 12px;border-radius:6px;background:var(--accent);color:var(--accent-ink);font-weight:560;font-size:12px;transition:filter .12s,transform .12s}
+.reply:hover{filter:brightness(1.08)}
+.reply:active{transform:scale(.97)}
+.reply kbd{border-color:rgba(255,255,255,.35);color:inherit;opacity:.85;height:16px;line-height:14px;margin:0}
+:root[data-theme="dark"] .reply kbd{border-color:rgba(0,0,0,.3)}
+.esc.done{display:flex;align-items:center;gap:8px;background:none;border:0;border-top:1px solid var(--line);border-bottom:1px solid var(--line);border-radius:0;padding:8px 0;color:var(--ink3);font-size:12px;line-height:16px}
+.esc.done svg{color:var(--accent);flex:none}
+
+.typing{display:flex;gap:4px;padding:8px 0}
+.typing i{width:4px;height:4px;border-radius:50%;background:var(--ink3);animation:blip 1.1s infinite ease-in-out}
+.typing i:nth-child(2){animation-delay:.15s}.typing i:nth-child(3){animation-delay:.3s}
+@keyframes blip{0%,60%,100%{opacity:.25}30%{opacity:1}}
+
+/* ——— Zone de saisie ——— */
+.composer{padding:0 24px 16px;flex:none}
+.box{max-width:664px;margin:0 auto;border:1px solid var(--line2);border-radius:10px;background:var(--bg);box-shadow:0 1px 2px rgba(0,0,0,.04);transition:border-color .12s,box-shadow .12s}
+.box:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.box textarea{display:block;width:100%;border:0;outline:0;background:none;resize:none;padding:8px 12px 0;height:28px;max-height:120px;line-height:20px}
+.box textarea::placeholder{color:var(--ink3)}
+.bar{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px 0 12px;color:var(--ink3);font-size:12px}
+.bar .sp{flex:1}
+.chip{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 8px;border-radius:10px;background:var(--hover);color:var(--ink2);font-size:12px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .12s}
+button.chip:hover{background:var(--sel)}
+.chip.ctx{background:var(--amber-soft);color:var(--amber-ink)}
+.chip.go{background:var(--accent-soft);color:var(--accent);font-weight:540}
+.chip .x{opacity:.7;margin-left:2px}
+
+/* ——— Carte de détails ——— */
+.pop{position:absolute;left:12px;top:40px;width:344px;background:var(--pop);border-radius:12px;box-shadow:var(--shadow-pop);padding:8px;opacity:0;transform:translateY(-4px) scale(.985);transform-origin:20px 0;pointer-events:none;transition:opacity .14s,transform .14s}
+.pop.open{opacity:1;transform:none;pointer-events:auto}
+.props{display:grid;grid-template-columns:84px 1fr;row-gap:8px;padding:8px 8px 12px;border-bottom:1px solid var(--line)}
+.props .k{color:var(--ink3);font-size:12px}
+.props .v{font-size:13px}
+.props .v .st{display:flex;align-items:center;gap:8px}
+.props .v .st .gl{width:12px;height:12px}.props .v .st .gl svg{width:12px;height:12px}
+.sub-l{font-size:11px;line-height:16px;font-weight:560;color:var(--ink3);padding:12px 8px 4px}
+.models li button{width:100%;height:28px;display:flex;align-items:center;gap:8px;padding:0 8px;border-radius:6px;transition:background .1s}
+.models li button:hover{background:var(--hover)}
+.models .ck{width:12px;color:var(--accent);flex:none;display:grid;place-items:center}
+.models .nm{flex:1}
+.models .hint{color:var(--ink3);font-size:12px}
+.models .on .nm{font-weight:560}
+.histb{width:100%;height:28px;margin-top:4px;border-top:1px solid var(--line);padding:0 8px;display:flex;align-items:center;gap:8px;color:var(--ink2);font-size:12px;border-radius:0 0 6px 6px;padding-top:4px;height:32px}
+.histb:hover{color:var(--ink)}
+.histb .n{color:var(--ink3);flex:1}
+.histb .ch{transition:transform .16s;color:var(--ink3)}
+.histb[aria-expanded="true"] .ch{transform:rotate(90deg)}
+.histw{display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease}
+.histw.open{grid-template-rows:1fr}
+.histw>div{overflow:hidden}
+.hist li{display:flex;gap:12px;padding:4px 8px;font-size:12px;line-height:16px;color:var(--ink2)}
+.hist li span:first-child{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hist li span:last-child{color:var(--ink3);flex:none}
+
+/* ——— Palette ——— */
+.scrim{position:fixed;inset:0;background:var(--scrim);z-index:50;display:none;-webkit-backdrop-filter:blur(2px);backdrop-filter:blur(2px)}
+.scrim.open{display:block;animation:fade .12s}
+@keyframes fade{from{opacity:0}}
+.pal{width:560px;margin:104px auto 0;background:var(--pop);border-radius:14px;box-shadow:var(--shadow-pop);overflow:hidden;animation:pal .16s cubic-bezier(.2,.8,.2,1)}
+@keyframes pal{from{opacity:0;transform:translateY(-6px) scale(.985)}}
+.pal-in{display:flex;align-items:center;gap:12px;height:48px;padding:0 16px;border-bottom:1px solid var(--line);color:var(--ink3)}
+.pal-in input{flex:1;border:0;outline:0;background:none;font-size:15px;color:var(--ink)}
+.pal-in input::placeholder{color:var(--ink3)}
+.pal-list{max-height:416px;overflow:auto;padding:4px 8px 8px}
+.pal-sec{font-size:11px;line-height:16px;font-weight:560;color:var(--ink3);padding:12px 8px 4px}
+.pal-it{width:100%;height:32px;display:flex;align-items:center;gap:12px;padding:0 8px;border-radius:6px}
+.pal-it .ic{width:16px;height:16px;color:var(--ink3);display:grid;place-items:center;flex:none}
+.pal-it .ic svg{width:16px;height:16px}
+.pal-it .lb{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pal-it .lb b{font-weight:600}
+.pal-it .lb em{font-style:normal;color:var(--ink3);margin-left:8px;font-size:12px}
+.pal-it.act{background:var(--accent-soft)}
+.pal-it.act .ic{color:var(--accent)}
+.pal-it.danger .ic,.pal-it.danger .lb{color:#d1453b}
+:root[data-theme="dark"] .pal-it.danger .ic,:root[data-theme="dark"] .pal-it.danger .lb{color:#ff7a6e}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) .pal-it.danger .ic,:root:not([data-theme="light"]) .pal-it.danger .lb{color:#ff7a6e}}
+.pal-it .ck{color:var(--accent);width:16px;flex:none;display:grid;place-items:center}
+.pal-empty{padding:24px 16px;text-align:center;color:var(--ink3)}
+.pal-ft{display:flex;gap:16px;align-items:center;height:36px;padding:0 16px;border-top:1px solid var(--line);color:var(--ink3);font-size:11.5px}
+.pal-ft span{display:flex;gap:4px;align-items:center}
+.pal-ft kbd{font-size:10.5px;min-width:0;height:16px;padding:0 4px}
+
+/* ——— Raccourcis ——— */
+.sc{width:400px;margin:128px auto 0;background:var(--pop);border-radius:14px;box-shadow:var(--shadow-pop);padding:16px;animation:pal .16s cubic-bezier(.2,.8,.2,1)}
+.sc h2{margin:0 0 8px;font-size:13px;font-weight:600}
+.sc li{display:flex;justify-content:space-between;align-items:center;height:28px;border-top:1px solid var(--line);color:var(--ink2)}
+.sc li:first-child{border-top:0}
+.sc .keys{display:flex;gap:4px}
+
+.toast{position:fixed;left:50%;bottom:96px;transform:translate(-50%,8px);background:var(--toast);color:var(--toast-ink);padding:4px 12px;border-radius:8px;font-size:12px;line-height:20px;opacity:0;pointer-events:none;transition:opacity .16s,transform .16s;z-index:80;box-shadow:0 4px 16px rgba(0,0,0,.2)}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+
+@media (prefers-reduced-motion: reduce){
+  *{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}
+  .gl .spin{animation:none}
+}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <aside class="rail" aria-label="Assistant et agents">
+    <div class="titlebar" aria-hidden="true"><i class="tl r"></i><i class="tl y"></i><i class="tl g"></i></div>
+    <button class="search" id="searchBtn" aria-label="Ouvrir la palette de commandes">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.75"/><path d="M10.6 10.6 14 14"/></svg>
+      <span>Rechercher</span><kbd>⌘K</kbd>
+    </button>
+    <nav class="list" id="railList"></nav>
+  </aside>
+
+  <main class="main">
+    <header class="head">
+      <button class="namebtn" id="nameBtn" aria-haspopup="true" aria-expanded="false" aria-controls="pop" title="Détails de l’agent (⌘I)"></button>
+      <div class="head-r">
+        <div class="status" id="status"></div>
+        <button class="kbtn" id="paletteBtn" aria-label="Palette de commandes">Commandes <kbd>⌘K</kbd></button>
+      </div>
+      <div class="pop" id="pop" role="dialog" aria-label="Détails de l’agent"></div>
+    </header>
+
+    <section class="thread" id="thread" aria-live="polite"><div class="col" id="col"></div></section>
+
+    <footer class="composer">
+      <div class="box">
+        <textarea id="input" rows="1" aria-label="Message"></textarea>
+        <div class="bar" id="bar"></div>
+      </div>
+    </footer>
+  </main>
+</div>
+
+<div class="scrim" id="palette" aria-hidden="true">
+  <div class="pal" role="dialog" aria-label="Palette de commandes">
+    <div class="pal-in">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.75"/><path d="M10.6 10.6 14 14"/></svg>
+      <input id="palInput" autocomplete="off" spellcheck="false" aria-label="Rechercher une commande">
+    </div>
+    <div class="pal-list" id="palList"></div>
+    <div class="pal-ft"><span><kbd>↑</kbd><kbd>↓</kbd> naviguer</span><span><kbd>↵</kbd> choisir</span><span><kbd>esc</kbd> fermer</span></div>
+  </div>
+</div>
+
+<div class="scrim" id="shortcuts" aria-hidden="true">
+  <div class="sc" role="dialog" aria-label="Raccourcis">
+    <h2>Raccourcis</h2>
+    <ul id="scList"></ul>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const norm = s => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+  /* ——— Données ——— */
+  const MODELS = [
+    { id:'opus',   name:'Claude Opus 5.5',   hint:'puissant' },
+    { id:'sonnet', name:'Claude Sonnet 5.5', hint:'équilibré' },
+    { id:'haiku',  name:'Claude Haiku 5.5',  hint:'économique' },
+    { id:'sol',    name:'GPT‑6.1 Sol',       hint:'' },
+    { id:'luna',   name:'GPT‑6 Luna',        hint:'' },
+  ];
+
+  const A = [
+    { id:'assistant', name:'Assistant', state:'idle', model:'opus',
+      role:'Vous répond, confie le travail aux agents et garde le fil de la journée.',
+      now:'Rien en cours',
+      history:[['Point du matin','aujourd’hui'],['Organiser la semaine du 3 novembre','hier'],['Résumer les dépenses d’octobre','lun.'],['Préparer le voyage à Lyon','ven.']],
+      msgs:[
+        {t:'day', label:'Aujourd’hui'},
+        {t:'user', text:'Salut. Où en est-on ce matin ?'},
+        {t:'agent', time:'08:42', text:'Bonjour Alexandre. Trois choses à savoir. <b>Entretien Mac</b> fait de la place sur le disque (6&nbsp;Go déjà libérés). <b>Maison</b> a remis le chauffage à 19&nbsp;°C à 7&nbsp;h, rien d’autre. Et <b>Courrier Alexandre</b> a besoin de vous.',
+          tools:{ lines:[['Demandé','l’état aux 4 agents'],['Lu','12 nouveaux mails triés par Courrier Alexandre'],['Lu','le journal du chauffage depuis hier soir'],['Vérifié','l’espace libre sur le disque : 38 Go']] }},
+        {t:'esc', id:'bank', agent:'courrier-alexandre', show:'Courrier Alexandre', time:'08:36'},
+        {t:'user', text:'Dis à Courrier professionnel de relancer Vincent pour le devis, mais je veux voir le message avant.'},
+        {t:'agent', time:'08:44', text:'Transmis. Courrier professionnel prépare la relance et vous la montrera avant tout envoi. Je vous préviens dès que le brouillon est prêt.',
+          tools:{ lines:[['Écrit à','Courrier professionnel'],['Précisé','« ne rien envoyer sans validation »']] }},
+        {t:'user', text:'Et le chauffage du bureau à 18, quand je pars à 9 h.'},
+        {t:'agent', time:'08:51', text:'C’est noté, Maison s’en occupe : 18&nbsp;°C dans le bureau dès 9&nbsp;h, du lundi au vendredi. Retour à 20&nbsp;°C à 17&nbsp;h&nbsp;30.',
+          tools:{ lines:[['Écrit à','Maison'],['Confirmé','la règle « Bureau, départ »']] }},
+      ]},
+
+    { id:'courrier-alexandre', name:'Courrier Alexandre', state:'needs', model:'sonnet',
+      role:'Trie ma boîte personnelle, classe, et prépare les réponses. N’envoie jamais rien sans mon accord.',
+      now:'Attend votre réponse sur deux mails de la banque',
+      history:[['Classer les factures de septembre','hier'],['Désabonner 14 newsletters','lun.'],['Retrouver le mail du notaire','ven.'],['Résumer les mails du week-end','sam.']],
+      msgs:[
+        {t:'day', label:'Hier'},
+        {t:'user', text:'Surveille ma boîte perso et dis-moi seulement ce qui demande une action de ma part.'},
+        {t:'agent', time:'18:20', text:'C’est en place. Je trie par urgence, je classe le reste et je ne réponds à rien sans vous.'},
+        {t:'day', label:'Aujourd’hui'},
+        {t:'agent', time:'08:30', text:'12 nouveaux mails depuis hier soir. 8 newsletters archivées, 2 factures classées, et 2 mails de la banque à traiter.',
+          tools:{ lines:[['Lu','12 messages'],['Archivé','8 newsletters'],['Classé','2 factures dans « Factures 2026 »'],['Marqué','2 messages de la banque comme prioritaires'],['Lu','les pièces jointes de la banque']] }},
+        {t:'esc', id:'bank', agent:'courrier-alexandre', time:'08:36'},
+      ]},
+
+    { id:'courrier-pro', name:'Courrier professionnel', state:'idle', model:'haiku',
+      role:'Suit la boîte pro, résume les longs fils et prépare les relances.',
+      now:'Rien en cours',
+      history:[['Relancer Vincent pour le devis','aujourd’hui'],['Résumer le fil « Devis refonte site »','hier'],['Répondre à l’invitation du 14 nov.','lun.']],
+      msgs:[
+        {t:'day', label:'Hier'},
+        {t:'user', text:'Résume-moi le fil avec Vincent sur le devis.'},
+        {t:'agent', time:'17:03', text:'Vincent a envoyé un devis révisé lundi : 4&nbsp;200&nbsp;€ HT, délai de 3 semaines. Vous n’avez pas encore répondu. Le fil compte 7 messages, rien d’urgent.',
+          tools:{ lines:[['Lu','le fil « Devis refonte site » (7 messages)'],['Comparé','les deux versions du devis']] }},
+        {t:'day', label:'Aujourd’hui'},
+        {t:'user', text:'Prépare une relance pour Vincent. Ne l’envoie pas.'},
+        {t:'agent', time:'08:46', text:'Voici le brouillon, ton cordial et rappel du délai de 3 semaines. Je ne l’envoie pas.',
+          draft:{ sub:'Re : Devis refonte site', body:['Bonjour Vincent,','Je reviens vers vous au sujet du devis révisé de lundi. Pouvez-vous me confirmer que le délai de 3 semaines tient toujours ?','Bonne journée,<br>Alexandre'] },
+          tools:{ lines:[['Rédigé','1 brouillon'],['Enregistré','dans Brouillons, sans envoi']] }},
+      ]},
+
+    { id:'entretien-mac', name:'Entretien Mac', state:'working', model:'haiku',
+      role:'Garde le Mac propre et à jour : disque, sauvegardes, mises à jour.',
+      now:'Nettoie les caches de Xcode',
+      history:[['Libérer de la place sur le disque','aujourd’hui'],['Vérifier la sauvegarde Time Machine','lun.'],['Mettre à jour Homebrew','ven.']],
+      msgs:[
+        {t:'day', label:'Aujourd’hui'},
+        {t:'user', text:'Fais de la place sur le disque, il me reste moins de 40 Go.'},
+        {t:'agent', time:'07:55', text:'Je regarde ce qui prend de la place et je ne supprime que ce qui est sans risque. Vos documents ne sont pas touchés.',
+          tools:{ lines:[['Analysé','le disque (212 Go utilisés)'],['Trouvé','31 Go de caches et fichiers temporaires'],['Classé','14 Go sans aucun risque']] }},
+        {t:'agent', time:'08:10', text:'Corbeille et anciens simulateurs : <b>6&nbsp;Go</b> libérés. Je passe aux caches de Xcode.',
+          tools:{ live:true, lines:[['Vidé','la corbeille (2,1 Go)'],['Supprimé','3 anciens simulateurs iOS (3,9 Go)'],['Mesuré','les caches de Xcode : 8,2 Go'],['Supprimé','DerivedData du projet Argos'],['Supprimé','les archives de plus d’un an'],['En cours','caches de modules Swift…']] }},
+      ]},
+
+    { id:'maison', name:'Maison', state:'idle', model:'sonnet',
+      role:'Pilote la maison : chauffage, lumières, volets et présence.',
+      now:'Rien en cours',
+      history:[['Règle « Bureau, départ »','aujourd’hui'],['Éteindre les lumières à minuit','lun.'],['Baisser le chauffage pendant le voyage','ven.']],
+      msgs:[
+        {t:'day', label:'Aujourd’hui'},
+        {t:'user', text:'Baisse le chauffage du bureau à 18 °C quand je pars à 9 h.'},
+        {t:'agent', time:'08:52', text:'C’est programmé. Le bureau passe à 18&nbsp;°C à 9&nbsp;h du lundi au vendredi, puis revient à 20&nbsp;°C à 17&nbsp;h&nbsp;30. Le salon et les chambres ne changent pas.',
+          tools:{ lines:[['Lu','le planning du thermostat'],['Créé','la règle « Bureau, départ »']] }},
+      ]},
+  ];
+
+  const ESC = { bank:{
+    title:'Deux mails de la banque attendent une réponse aujourd’hui&nbsp;: je prépare les brouillons&nbsp;?',
+    items:['Re : Justificatif de domicile, avant 18&nbsp;h','Assurance emprunteur, signature à confirmer'],
+    resolved:false, outcome:'' } };
+
+  const ui = { cur:'assistant', popOpen:false, histOpen:false, replyTo:null, toolsOpen:new Set(), pal:{open:false,q:'',sel:0,step:null}, clock:[9,2] };
+  const by = id => A.find(a => a.id === id);
+  const cur = () => by(ui.cur);
+  const dn = a => a.id === 'assistant' ? 'l’Assistant' : a.name;
+  const tick = () => { ui.clock[1] += 1 + Math.floor(Math.random()*2); if (ui.clock[1] >= 60){ ui.clock[1]-=60; ui.clock[0]++; } return String(ui.clock[0]).padStart(2,'0')+':'+String(ui.clock[1]).padStart(2,'0'); };
+
+  /* ——— Icônes ——— */
+  const I = {
+    chev:'<svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.75 5 6.25l2.5-2.5"/></svg>',
+    chevR:'<svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.75 2.5 6.25 5l-2.5 2.5"/></svg>',
+    check:'<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.3 5 8.8l4.5-5.3"/></svg>',
+    model:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 5h6M11.5 5h2M2.5 11h2M7.5 11h6"/><circle cx="10" cy="5" r="1.5"/><circle cx="6" cy="11" r="1.5"/></svg>',
+    pause:'<svg viewBox="0 0 16 16" fill="currentColor"><rect x="4.5" y="3.5" width="2.5" height="9" rx="1"/><rect x="9" y="3.5" width="2.5" height="9" rx="1"/></svg>',
+    play:'<svg viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.4v9.2a.6.6 0 0 0 .9.5l7.3-4.6a.6.6 0 0 0 0-1L5.9 2.9a.6.6 0 0 0-.9.5z"/></svg>',
+    gear:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/></svg>',
+    keys:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.8" y="3.8" width="12.4" height="8.4" rx="2"/><path d="M4.8 7h.01M7.2 7h.01M9.6 7h.01M11.4 7h.01M5 9.7h6"/></svg>',
+    stop:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M5.4 2h5.2L14 5.4v5.2L10.6 14H5.4L2 10.6V5.4z"/><path d="M5.8 8h4.4" stroke-linecap="round"/></svg>',
+    go:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h9M8.5 4.5 12 8l-3.5 3.5"/></svg>',
+  };
+  const glyph = (a, small) => {
+    if (a.state === 'working') return '<svg class="spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle class="trk" cx="8" cy="8" r="5.5"/><path d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5"/></svg>';
+    if (a.state === 'needs') return '<svg class="need" viewBox="0 0 16 16"><circle class="halo" cx="8" cy="8" r="6" fill="currentColor" opacity=".25"/><circle cx="8" cy="8" r="3.5" fill="currentColor"/></svg>';
+    if (a.state === 'paused') return '<svg class="idle" viewBox="0 0 16 16" fill="currentColor"><rect x="5" y="4.5" width="2" height="7" rx=".8"/><rect x="9" y="4.5" width="2" height="7" rx=".8"/></svg>';
+    if (a.id === 'assistant') return '<svg class="star" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.8c.5 3.4 1.5 5 5.4 6.2-3.9 1.2-4.9 2.8-5.4 6.2-.5-3.4-1.5-5-5.4-6.2C6.500 6.800 7.500 5.200 8 1.800z"/></svg>';
+    return '<svg class="idle" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="3.25"/></svg>';
+  };
+
+  /* ——— Rail ——— */
+  function renderRail(){
+    const row = (a, i) => `<button class="item ${a.id===ui.cur?'sel':''}" data-id="${a.id}" ${a.id===ui.cur?'aria-current="true"':''}><span class="gl">${glyph(a)}</span><span class="nm">${a.name}</span><kbd class="k">⌘${i+1}</kbd></button>`;
+    $('#railList').innerHTML = row(A[0],0) + '<div class="grp">Agents</div>' + A.slice(1).map((a,i)=>row(a,i+1)).join('');
+  }
+
+  /* ——— En-tête + carte ——— */
+  function statusText(a){
+    if (a.state === 'working') return `<span class="gl">${glyph(a)}</span>${a.now}`;
+    if (a.state === 'needs')   return `<span class="gl">${glyph(a)}</span>Attend votre réponse`;
+    if (a.state === 'paused')  return `<span class="gl">${glyph(a)}</span>En pause`;
+    return '';
+  }
+  function renderHead(){
+    const a = cur();
+    $('#nameBtn').innerHTML = `<span class="gl">${glyph(a)}</span><span>${a.name}</span><span class="chev">${I.chev}</span>`;
+    const st = $('#status'); st.innerHTML = statusText(a); st.className = 'status' + (a.state==='needs'?' need':'');
+    renderPop();
+  }
+  function nowLine(a){
+    if (a.state === 'idle') return `<span style="color:var(--ink3)">Rien en cours</span>`;
+    if (a.state === 'paused') return `<div class="st"><span class="gl">${glyph(a)}</span>En pause</div>`;
+    return `<div class="st"><span class="gl">${glyph(a)}</span>${a.now}</div>`;
+  }
+  function renderPop(){
+    const a = cur();
+    $('#pop').innerHTML = `
+      <div class="props">
+        <div class="k">Rôle</div><div class="v">${a.role}</div>
+        <div class="k">En ce moment</div><div class="v">${nowLine(a)}</div>
+      </div>
+      <div class="sub-l">Modèle</div>
+      <ul class="models">${MODELS.map(m=>`<li><button data-model="${m.id}" class="${m.id===a.model?'on':''}"><span class="ck">${m.id===a.model?I.check:''}</span><span class="nm">${m.name}</span><span class="hint">${m.hint}</span></button></li>`).join('')}</ul>
+      <button class="histb" id="histBtn" aria-expanded="${ui.histOpen}"><span class="ch">${I.chevR}</span><span>Historique</span><span class="n">${a.history.length} demandes</span></button>
+      <div class="histw ${ui.histOpen?'open':''}"><div><ul class="hist">${a.history.map(h=>`<li><span>${h[0]}</span><span>${h[1]}</span></li>`).join('')}</ul></div></div>`;
+  }
+  function setPop(open){
+    ui.popOpen = open; if (!open) ui.histOpen = false;
+    $('#pop').classList.toggle('open', open);
+    $('#nameBtn').setAttribute('aria-expanded', open);
+    if (!open) renderPop();
+  }
+
+  /* ——— Fil ——— */
+  const toolsHtml = (t, key) => {
+    if (!t) return '';
+    const open = ui.toolsOpen.has(key) || (t.live && !ui.toolsOpen.has('x'+key));
+    const n = t.lines.length;
+    const label = t.live ? `${n} actions <span class="live">· en cours</span>` : `${n} action${n>1?'s':''}`;
+    const mini = t.live ? '<svg class="mini" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="8" cy="8" r="5.5" opacity=".22"/><path d="M8 2.5a5.5 5.5 0 0 1 5.5 5.5"/></svg>' : '';
+    return `<div class="tools ${open?'open':''}" data-key="${key}" data-live="${t.live?1:0}"><button class="tbtn" aria-expanded="${open}"><span class="arr">↳</span>${label}${mini}<span class="ch">${I.chevR}</span></button><div class="tbody"><div class="tin"><ul>${t.lines.map(l=>`<li><i>${l[0]}</i> ${l[1]}</li>`).join('')}</ul></div></div></div>`;
+  };
+  function renderThread(stick){
+    const a = cur();
+    let html = '';
+    a.msgs.forEach((m, i) => {
+      const prev = a.msgs[i-1];
+      if (m.t === 'day') html += `<div class="day"><span>${m.label}</span></div>`;
+      else if (m.t === 'user') html += `<div class="msg user"><div class="bub">${m.text}</div></div>`;
+      else if (m.t === 'typing') html += `<div class="msg agent"><div class="typing" aria-label="Rédaction en cours"><i></i><i></i><i></i></div></div>`;
+      else if (m.t === 'agent') {
+        const cont = prev && prev.t === 'agent';
+        html += `<div class="msg agent ${cont?'cont':''}">${cont?'':`<div class="who"><b>${a.id==='assistant'?'Assistant':a.name}</b><time>${m.time}</time></div>`}<div class="txt">${m.text}</div>${m.draft?`<div class="draft"><div class="sub">${m.draft.sub}</div>${m.draft.body.map(p=>`<p>${p}</p>`).join('')}</div>`:''}${toolsHtml(m.tools, a.id+':'+i)}</div>`;
+      }
+      else if (m.t === 'esc') {
+        const e = ESC[m.id];
+        if (e.resolved) html += `<div class="esc done">${I.check}<span>Vous avez répondu : ${e.outcome}</span></div>`;
+        else html += `<div class="esc" data-esc="${m.id}"><span class="dot"><i></i></span><div class="etx">${m.show?`<div class="by">${m.show}</div>`:''}<p>${e.title}</p><ul>${e.items.map(x=>`<li>${x}</li>`).join('')}</ul></div><button class="reply" data-reply="${m.id}">Répondre <kbd>↵</kbd></button></div>`;
+      }
+    });
+    $('#col').innerHTML = html;
+    if (stick !== false) { const th = $('#thread'); th.style.scrollBehavior = 'auto'; th.scrollTop = th.scrollHeight; th.style.scrollBehavior = ''; }
+  }
+
+  /* ——— Saisie ——— */
+  function renderComposer(){
+    const a = cur(), inp = $('#input');
+    const e = ui.replyTo && ESC[ui.replyTo];
+    inp.placeholder = e ? `Répondre à ${a.name}…` : `Écrire à ${a.id==='assistant'?'l’Assistant':a.name}…`;
+    $('#bar').innerHTML = e
+      ? `<span class="chip ctx" title="Réponse à la question en attente">↳ Deux mails de la banque<button class="x" id="unreply" aria-label="Annuler la réponse">×</button></span><button class="chip go" data-quick="Oui, prépare-les">Oui, prépare-les</button><button class="chip" data-quick="Pas maintenant">Pas maintenant</button><span class="sp"></span><kbd>↵</kbd>`
+      : `<span class="sp"></span><span>⇧↵ nouvelle ligne</span><kbd>↵</kbd>`;
+  }
+  function grow(){ const i=$('#input'); i.style.height='28px'; i.style.height=Math.min(i.scrollHeight,120)+'px'; }
+
+  function pending(a){ const m = a.msgs.find(m => m.t==='esc' && !ESC[m.id].resolved && m.agent === a.id) ; return m ? m.id : null; }
+  function startReply(escId){
+    const e = ESC[escId]; if (!e || e.resolved) return;
+    const owner = A.find(a => a.msgs.some(m => m.t==='esc' && m.id===escId && m.agent===a.id));
+    select(owner.id); ui.replyTo = escId; renderComposer(); $('#input').focus();
+  }
+
+  function agentSays(a, text, tools, after){
+    a.msgs.push({t:'typing'}); if (a.id===ui.cur) renderThread();
+    setTimeout(() => {
+      a.msgs = a.msgs.filter(m => m.t !== 'typing');
+      a.msgs.push({t:'agent', time:tick(), text, tools});
+      if (after) after();
+      renderRail(); if (a.id===ui.cur) { renderThread(); renderHead(); }
+    }, 1000);
+  }
+  function send(text){
+    text = (text || '').trim(); if (!text) return;
+    const a = cur();
+    a.msgs.push({t:'user', text: text.replace(/</g,'&lt;')});
+    if (ui.replyTo) {
+      const id = ui.replyTo; ui.replyTo = null;
+      const later = /^pas maintenant/i.test(text);
+      ESC[id].resolved = true; ESC[id].outcome = later ? '« Pas maintenant »' : '« Oui, prépare-les »';
+      if (!/^(oui, prépare-les|pas maintenant)$/i.test(text)) ESC[id].outcome = '« ' + text.replace(/</g,'&lt;') + ' »';
+      a.state = later ? 'idle' : 'working'; a.now = later ? 'Rien en cours' : 'Prépare 2 brouillons de réponse';
+      renderRail(); renderHead(); renderComposer(); renderThread();
+      agentSays(a, later ? 'D’accord, je laisse les deux mails de côté et je vous les rappelle à 17&nbsp;h.' : 'Compris. Je prépare les deux brouillons et je vous les montre ici. Rien ne part sans votre accord.',
+        later ? null : { lines:[['Lu','« Justificatif de domicile »'],['Lu','« Assurance emprunteur »'],['En cours','rédaction de 2 brouillons…']] });
+    } else {
+      renderThread();
+      agentSays(a, a.id==='assistant' ? 'C’est noté. Je transmets à l’agent concerné et je vous dis dès que c’est fait.' : 'Bien reçu, je m’en occupe.', { lines:[['Pris en compte','votre demande']] });
+    }
+    $('#input').value = ''; grow();
+  }
+
+  /* ——— Sélection ——— */
+  function select(id){
+    if (!by(id)) return;
+    if (id !== ui.cur) { ui.cur = id; ui.replyTo = null; setPop(false); }
+    renderRail(); renderHead(); renderThread(); renderComposer();
+  }
+
+  /* ——— Toast ——— */
+  let tt; function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('on'); clearTimeout(tt); tt=setTimeout(()=>t.classList.remove('on'),2200); }
+
+  /* ——— Actions ——— */
+  function setModel(a, id){ a.model = id; const m = MODELS.find(x=>x.id===id); renderPop(); toast(`${a.name} utilise maintenant ${m.name}`); }
+  function togglePause(a){
+    if (a.state === 'paused') { a.state = a._prev || 'idle'; toast(`${a.name} reprend`); }
+    else { a._prev = a.state; a.state = 'paused'; toast(`${a.name} est en pause`); }
+    renderRail(); renderHead(); renderThread(false);
+  }
+  function stopAll(){ A.forEach(a => { if (a.state!=='paused'){ a._prev = a.state==='needs'?'needs':'idle'; a.state='paused'; } }); renderRail(); renderHead(); toast('Arrêt d’urgence : tous les agents sont en pause'); }
+
+  /* ——— Palette ——— */
+  function palItems(){
+    const q = norm(ui.pal.q.trim()), c = cur(), out = [];
+    const modelIt = (a, sec) => ({ sec, ic:I.model, lb:`Changer le modèle de <b>${dn(a)}</b>…`, kw:'modele changer '+norm(a.name), run:() => enterModels(a) });
+    const pauseIt = (a, sec) => ({ sec, ic:a.state==='paused'?I.play:I.pause, lb:a.state==='paused'?`Reprendre <b>${dn(a)}</b>`:`Mettre <b>${dn(a)}</b> en pause…`, kw:'pause reprendre '+norm(a.name), run:() => { closePal(); togglePause(a); } });
+    if (!q) { out.push(modelIt(c,'Suggestions'), pauseIt(c,'Suggestions')); }
+    else A.forEach(a => { out.push(modelIt(a,'Actions'), pauseIt(a,'Actions')); });
+    A.forEach((a,i) => { if (!q && a.id===ui.cur) return; out.push({ sec:'Aller à', ic:I.go, lb:a.name, kw:norm(a.name)+' aller', kbd:'⌘'+(i+1), run:() => { closePal(); select(a.id); } }); });
+    out.push(
+      { sec:'Général', ic:I.gear, lb:'Réglages', kw:'reglages preferences', kbd:'⌘,', run:() => { closePal(); toast('Les réglages s’ouvrent dans une fenêtre à part'); } },
+      { sec:'Général', ic:I.keys, lb:'Raccourcis', kw:'raccourcis clavier', kbd:'⌘/', run:() => { closePal(); openShortcuts(); } },
+      { sec:'Général', ic:I.stop, lb:'Arrêt d’urgence', kw:'arret urgence stop', kbd:'⇧⌘.', danger:true, run:() => enterStop() });
+    if (!q) return out;
+    const words = q.split(/\s+/);
+    return out.filter(it => { const hay = norm(it.lb.replace(/<[^>]+>/g,'')) + ' ' + it.kw; return words.every(w => hay.includes(w)); });
+  }
+  function enterModels(a){
+    ui.pal.step = { ph:`Choisir un modèle pour ${a.name}`, items: MODELS.map(m => ({ ic:'', lb:m.name+(m.hint?`<em>${m.hint}</em>`:''), kw:norm(m.name), cur:m.id===a.model, run:() => { closePal(); setModel(a, m.id); } })) };
+    ui.pal.q = ''; ui.pal.sel = Math.max(0, MODELS.findIndex(m=>m.id===a.model)); $('#palInput').value=''; renderPal();
+  }
+  function enterStop(){
+    ui.pal.step = { ph:'Arrêter les 5 agents ?', items:[ { ic:I.stop, lb:'Tout arrêter maintenant', kw:'arreter', danger:true, run:() => { closePal(); stopAll(); } }, { ic:I.go, lb:'Annuler', kw:'annuler', run:() => closePal() } ] };
+    ui.pal.q = ''; ui.pal.sel = 1; $('#palInput').value=''; renderPal();
+  }
+  function stepItems(){ const q = norm(ui.pal.q.trim()); return ui.pal.step.items.filter(it => !q || norm(it.lb.replace(/<[^>]+>/g,'')).includes(q)); }
+  let flat = [];
+  function renderPal(){
+    const p = ui.pal; const inp = $('#palInput');
+    inp.placeholder = p.step ? p.step.ph : 'Que voulez-vous faire ?';
+    flat = p.step ? stepItems() : palItems();
+    p.sel = Math.min(Math.max(p.sel,0), Math.max(flat.length-1,0));
+    if (!flat.length) { $('#palList').innerHTML = `<div class="pal-empty">Aucune commande pour « ${ui.pal.q.replace(/</g,'&lt;')} »</div>`; return; }
+    let html = '', last = null;
+    flat.forEach((it, i) => {
+      if (it.sec && it.sec !== last) { html += `<div class="pal-sec">${it.sec}</div>`; last = it.sec; }
+      html += `<button class="pal-it ${i===p.sel?'act':''} ${it.danger?'danger':''}" data-i="${i}"><span class="ic">${it.ic||''}</span><span class="lb">${it.lb}</span>${it.cur?`<span class="ck">${I.check}</span>`:''}${it.kbd?`<kbd>${it.kbd}</kbd>`:''}</button>`;
+    });
+    $('#palList').innerHTML = html;
+    const act = $('#palList .act'); if (act) act.scrollIntoView({block:'nearest'});
+  }
+  function openPal(){
+    setPop(false);
+    Object.assign(ui.pal, {open:true, q:'', sel:0, step:null});
+    const s = $('#palette'); s.classList.add('open'); s.setAttribute('aria-hidden','false');
+    $('#palInput').value = ''; renderPal(); setTimeout(()=>$('#palInput').focus(), 0);
+  }
+  function closePal(){ ui.pal.open = false; const s=$('#palette'); s.classList.remove('open'); s.setAttribute('aria-hidden','true'); }
+
+  /* ——— Raccourcis ——— */
+  const SC = [['Palette de commandes',['⌘','K']],['Aller à l’Assistant ou à un agent',['⌘','1–5']],['Agent précédent ou suivant',['⌥','↑ ↓']],['Détails de l’agent',['⌘','I']],['Répondre à la question en attente',['↵']],['Réglages',['⌘',',']],['Arrêt d’urgence',['⇧','⌘','.']]];
+  function openShortcuts(){ $('#scList').innerHTML = SC.map(s=>`<li><span>${s[0]}</span><span class="keys">${s[1].map(k=>`<kbd>${k}</kbd>`).join('')}</span></li>`).join(''); const s=$('#shortcuts'); s.classList.add('open'); s.setAttribute('aria-hidden','false'); }
+  function closeShortcuts(){ const s=$('#shortcuts'); s.classList.remove('open'); s.setAttribute('aria-hidden','true'); }
+
+  /* ——— Événements ——— */
+  $('#railList').addEventListener('click', e => { const b = e.target.closest('[data-id]'); if (b) select(b.dataset.id); });
+  $('#searchBtn').addEventListener('click', openPal);
+  $('#paletteBtn').addEventListener('click', openPal);
+  $('#nameBtn').addEventListener('click', e => { e.stopPropagation(); setPop(!ui.popOpen); });
+  $('#pop').addEventListener('click', e => {
+    e.stopPropagation();
+    const m = e.target.closest('[data-model]'); if (m) return setModel(cur(), m.dataset.model);
+    if (e.target.closest('#histBtn')) { ui.histOpen = !ui.histOpen; $('#histBtn').setAttribute('aria-expanded', ui.histOpen); document.querySelector('.histw').classList.toggle('open', ui.histOpen); }
+  });
+  document.addEventListener('click', e => { if (ui.popOpen && !e.target.closest('#pop')) setPop(false); });
+
+  $('#col').addEventListener('click', e => {
+    const tb = e.target.closest('.tbtn');
+    if (tb) {
+      const box = tb.parentElement, key = box.dataset.key, live = box.dataset.live === '1';
+      const open = !box.classList.contains('open'); box.classList.toggle('open', open); tb.setAttribute('aria-expanded', open);
+      if (live) { open ? ui.toolsOpen.delete('x'+key) : ui.toolsOpen.add('x'+key); } else { open ? ui.toolsOpen.add(key) : ui.toolsOpen.delete(key); }
+      return;
+    }
+    const r = e.target.closest('[data-reply]'); if (r) startReply(r.dataset.reply);
+  });
+
+  $('#bar').addEventListener('click', e => {
+    if (e.target.closest('#unreply')) { ui.replyTo = null; renderComposer(); $('#input').focus(); return; }
+    const q = e.target.closest('[data-quick]'); if (q) send(q.dataset.quick);
+  });
+  $('#input').addEventListener('input', grow);
+  $('#input').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(e.target.value); } if (e.key === 'Escape') { e.target.blur(); } });
+
+  $('#palInput').addEventListener('input', e => { ui.pal.q = e.target.value; ui.pal.sel = 0; renderPal(); });
+  $('#palInput').addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); ui.pal.sel = (ui.pal.sel + 1) % Math.max(flat.length,1); renderPal(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); ui.pal.sel = (ui.pal.sel - 1 + flat.length) % Math.max(flat.length,1); renderPal(); }
+    else if (e.key === 'Enter') { e.preventDefault(); const it = flat[ui.pal.sel]; if (it) it.run(); }
+    else if (e.key === 'Backspace' && !e.target.value && ui.pal.step) { ui.pal.step = null; ui.pal.sel = 0; renderPal(); }
+  });
+  $('#palList').addEventListener('mousemove', e => { const b = e.target.closest('[data-i]'); if (b && +b.dataset.i !== ui.pal.sel) { ui.pal.sel = +b.dataset.i; document.querySelectorAll('#palList .pal-it').forEach(x => x.classList.toggle('act', x === b)); } });
+  $('#palList').addEventListener('click', e => { const b = e.target.closest('[data-i]'); if (b) flat[+b.dataset.i].run(); });
+  $('#palette').addEventListener('mousedown', e => { if (e.target === $('#palette')) closePal(); });
+  $('#shortcuts').addEventListener('mousedown', e => { if (e.target === $('#shortcuts')) closeShortcuts(); });
+
+  document.addEventListener('keydown', e => {
+    const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+    if (mod && k === 'k') { e.preventDefault(); ui.pal.open ? closePal() : openPal(); return; }
+    if (e.key === 'Escape') { if (ui.pal.open) closePal(); else if ($('#shortcuts').classList.contains('open')) closeShortcuts(); else if (ui.popOpen) setPop(false); return; }
+    if (ui.pal.open) return;
+    if (mod && k === 'i') { e.preventDefault(); setPop(!ui.popOpen); return; }
+    if (mod && k === '/') { e.preventDefault(); openShortcuts(); return; }
+    if (mod && e.shiftKey && k === '.') { e.preventDefault(); openPal(); enterStop(); return; }
+    if (mod && /^[1-5]$/.test(e.key)) { e.preventDefault(); select(A[+e.key-1].id); return; }
+    if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) { e.preventDefault(); const i = A.findIndex(a=>a.id===ui.cur); select(A[(i + (e.key==='ArrowDown'?1:-1) + A.length) % A.length].id); return; }
+    const typing = /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName);
+    if (e.key === 'Enter' && !typing && !mod) { const id = pending(cur()); if (id) { e.preventDefault(); startReply(id); } }
+  });
+
+  /* ——— Démarrage ——— */
+  const hash = location.hash.slice(1).split(',');
+  const th = new URLSearchParams(location.search).get('theme') || (hash.includes('dark') ? 'dark' : hash.includes('light') ? 'light' : '');
+  if (th) document.documentElement.dataset.theme = th;
+  const ag = hash.find(h => h.startsWith('a=')); if (ag && by(ag.slice(2))) ui.cur = ag.slice(2);
+  select(ui.cur);
+  if (hash.includes('details')) setTimeout(() => setPop(true), 50);
+  if (hash.includes('palette')) setTimeout(openPal, 50);
+})();
+</script>
+</body>
+</html>

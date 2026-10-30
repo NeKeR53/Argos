@@ -39,17 +39,17 @@ export function BoardSection(props: Props) {
   return (
     <details className="board" open={open} onToggle={(event) => onToggle(event.currentTarget.open)}>
       <summary>
-        <span className="board-title">Board</span>
+        <span className="board-title">Demandes en cours</span>
         <span className="muted">
-          {board ? `${plural(missions.length, "mission ouverte", "missions ouvertes")} · ${plural(tasks.length, "tâche", "tâches")}` : "lecture…"}
+          {board ? missions.length === 0 && tasks.length === 0 ? "aucune" : `${plural(missions.length, "demande", "demandes")} · ${plural(tasks.length, "tâche", "tâches")}` : "lecture…"}
         </span>
       </summary>
       <div className="board-body">
-        {board && missions.length === 0 && tasks.length === 0 && <p className="muted">Aucune mission en cours.</p>}
+        {board && missions.length === 0 && tasks.length === 0 && <p className="muted">Rien en cours.</p>}
         {missions.map((mission) => (
           <section key={mission.id} className="board-mission">
             <header>
-              <span className="mission-kicker">Mission</span>
+              <span className="mission-kicker">Demande</span>
               <details className="mission-description"><summary><span className="board-mission-text">{mission.text}</span><span className="mission-more" aria-hidden="true" /></summary></details>
             </header>
             <TaskList tasks={tasks.filter((task) => task.mission === mission.id)} isLiving={props.isLiving} onSelect={props.onSelect} />

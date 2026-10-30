@@ -1,8 +1,9 @@
-// Visage de l'Assistant quand il parle : deux yeux qui clignent et une bouche qui articule
+// Visage de l'Assistant quand il parle : la pieuvre, qui cligne des yeux et articule
 // le texte que `say` prononce (synchronisation labiale procédurale, voir `mouth.ts`).
 // Entre deux phrases, la bouche respire à peine ; à la fin du discours, elle se ferme.
 
 import { useEffect, useRef, useState } from "react";
+import { Octopus } from "../components/Octopus";
 import { idleMouth, mouthAt, SHAPES, timeline, type MouthShape, type Segment } from "./mouth";
 
 /** Phrase en cours : son texte, et le moment (performance.now) où `say` l'a lancée. */
@@ -96,12 +97,6 @@ export function Face({ utterance, speaking, still = false, frozenAt }: Props) {
     return () => clearTimeout(timer);
   }, [still]);
 
-  const eye = blink ? 0.25 : 1;
-  return (
-    <svg className="orb-face" viewBox="0 0 64 40" width={64} height={40} aria-hidden>
-      <ellipse cx={22} cy={13} rx={2.3} ry={2.6 * eye} className="orb-eye" />
-      <ellipse cx={42} cy={13} rx={2.3} ry={2.6 * eye} className="orb-eye" />
-      <path d={lipsPath(shape)} className="orb-mouth" />
-    </svg>
-  );
+  // L'Assistant est une pieuvre : c'est elle qui parle (même visage que dans la console).
+  return <Octopus className="orb-face" size={34} mouth={shape} blink={blink} />;
 }

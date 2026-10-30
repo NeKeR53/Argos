@@ -15,6 +15,7 @@ import {
 import { formatUsage, outcomeLabel } from "../format";
 import { classifyInput } from "../inputs";
 import { threadItems, toolsSummary, type ToolEntry } from "../threadView";
+import { Avatar } from "./Avatar";
 import { SurfaceView } from "./SurfaceView";
 
 interface Props {
@@ -38,6 +39,17 @@ interface Props {
   /** Panneau des réglages de l'agent (bouton « ⋯ »). */
   panelOpen: boolean;
   onTogglePanel: () => void;
+  onOpenSettings: () => void;
+}
+
+/** Sous-titre de la conversation : ce que fait l'agent, sinon son rôle. */
+function subtitle(agent: AgentStatus, thread: ThreadEntry[]): string {
+  if (agent.busy) {
+    const tool = [...thread].reverse().find((entry) => entry.kind === "tool");
+    return tool && tool.kind === "tool" ? `En ce moment : ${tool.name}…` : "En train de répondre…";
+  }
+  if (agent.level === "assistant") return "Reçoit tes demandes et les confie aux bons agents.";
+  return agent.charter?.scope ?? "";
 }
 
 export function ChatPanel(props: Props) {
@@ -62,24 +74,28 @@ export function ChatPanel(props: Props) {
   return (
     <section className="chat" aria-label={`Fil de ${displayName(agent)}`}>
       <header className="chat-header">
-        <div className="chat-title">
-          <h1>{displayName(agent)}</h1>
-          {agent.busy && (
-            <span className="working" role="status">
-              <span className="working-dot" aria-hidden="true" />
-              au travail
-            </span>
-          )}
-        </div>
+        <Avatar agent={agent} size="sm" />
         <button
           type="button"
-          className="icon-button"
-          aria-label={`Réglages de ${displayName(agent)}`}
+          className="chat-who"
           aria-expanded={props.panelOpen}
-          title="Réglages et détails de l'agent"
+          title="Fiche de l'agent : rôle, modèle, historique"
           onClick={props.onTogglePanel}
         >
-          ⋯
+          <span className="chat-name">
+            {displayName(agent)}
+            <svg className="chevron" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m7 10 5 5 5-5" />
+            </svg>
+          </span>
+          <span className="chat-sub">{subtitle(agent, thread)}</span>
+        </button>
+        <span className="spacer" />
+        <button type="button" className="icon-button" aria-label="Réglages" title="Réglages" onClick={props.onOpenSettings}>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M10.3 3.5h3.4l.5 2.1a6.8 6.8 0 0 1 1.7 1l2.1-.7 1.7 2.9-1.6 1.5a6.8 6.8 0 0 1 0 2l1.6 1.5-1.7 2.9-2.1-.7a6.8 6.8 0 0 1-1.7 1l-.5 2.1h-3.4l-.5-2.1a6.8 6.8 0 0 1-1.7-1l-2.1.7-1.7-2.9 1.6-1.5a6.8 6.8 0 0 1 0-2L4.4 8.8l1.7-2.9 2.1.7a6.8 6.8 0 0 1 1.7-1z" />
+            <circle cx="12" cy="12" r="2.6" />
+          </svg>
         </button>
       </header>
 
@@ -438,7 +454,7 @@ function Composer({
       <textarea
         ref={field}
         value={text}
-        rows={2}
+        rows={1}
         placeholder={connected ? `Message à ${displayName(agent)}…` : "Hors connexion"}
         aria-label={`Message à ${displayName(agent)}`}
         disabled={!connected}

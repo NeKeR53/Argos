@@ -11,6 +11,7 @@ import { BoardSection } from "./BoardSection";
 import { ModelPicker } from "./ModelPicker";
 import { TriggerPanel } from "./TriggerPanel";
 import { WorkspacePicker } from "./WorkspacePicker";
+import { Avatar } from "./Avatar";
 
 interface Props {
   agent: AgentStatus;
@@ -55,7 +56,7 @@ function Section(props: { title: string; summary?: string; open?: boolean; child
 export function AgentContextPanel(props: Props) {
   const { agent, parent, spent, board, triggers, revision, connected, send, request } = props;
   const addressable = isAddressable(agent);
-  const [boardOpen, setBoardOpen] = useState(true);
+  const [boardOpen, setBoardOpen] = useState(false);
   const [triggersOpen, setTriggersOpen] = useState(false);
   const [capabilities, setCapabilities] = useState<{ config: Capabilities; argosEnabled: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +80,15 @@ export function AgentContextPanel(props: Props) {
     };
   }, [agent.id, connected, request]);
 
+  const { onClose } = props;
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const mcpCount = capabilities ? capabilities.config.mcp.length + (capabilities.argosEnabled ? 1 : 0) : null;
   const status = agent.running ? (agent.busy ? "au travail" : "prêt") : "en pause";
 
@@ -95,10 +105,27 @@ export function AgentContextPanel(props: Props) {
   ];
 
   return (
-    <aside className="context-area" aria-label={`Réglages de ${displayName(agent)}`}>
-      <header className="context-head">
-        <h2>Réglages de {displayName(agent)}</h2>
-        <button type="button" className="icon-button" aria-label="Fermer les réglages" onClick={props.onClose}>
+    <div className="sheet-scrim" onMouseDown={props.onClose}>
+    <aside
+      className="sheet"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Fiche de ${displayName(agent)}`}
+      onMouseDown={(event) => event.stopPropagation()}
+    >
+      <header className="sheet-head">
+        <Avatar agent={agent} size="lg" />
+        <div className="sheet-who">
+          <h2>{displayName(agent)}</h2>
+          <p className="sheet-role">
+            {agent.level === "assistant" ? "Reçoit tes demandes et les confie aux bons agents." : (agent.charter?.scope ?? "")}
+          </p>
+          <p className="sheet-now">
+            <span className="sheet-dot" data-busy={agent.busy || undefined} aria-hidden="true" />
+            {agent.busy ? "Au travail" : agent.running ? "Disponible" : "Au repos"}
+          </p>
+        </div>
+        <button type="button" className="icon-button sheet-close" aria-label="Fermer la fiche" onClick={props.onClose}>
           ×
         </button>
       </header>
@@ -224,5 +251,6 @@ export function AgentContextPanel(props: Props) {
         )}
       </div>
     </aside>
+    </div>
   );
 }

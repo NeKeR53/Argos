@@ -5,13 +5,13 @@ import { useCallback, useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import { resolveHooksBase } from "./hooks";
 import "./App.css";
+import "./messagerie.css";
 import type { AgentId, AgentStatus, SurfaceMeta } from "./protocol";
 import {
   attention,
   displayName,
   selectedAgent,
   shortId,
-  treeOf,
   type Connection,
 } from "./state";
 import { useDaemon } from "./useDaemon";
@@ -19,7 +19,7 @@ import { useVoiceView } from "./useVoiceView";
 import { voiceReason } from "./voice";
 import { NotificationCenter } from "./components/NotificationCenter";
 import { AgentContextPanel } from "./components/AgentContextPanel";
-import { AgentTree } from "./components/AgentTree";
+import { ConversationList } from "./components/ConversationList";
 import { ChatPanel } from "./components/ChatPanel";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { ShortcutsDialog } from "./components/ShortcutsDialog";
@@ -56,7 +56,8 @@ export default function App() {
   const [retiring, setRetiring] = useState<AgentStatus | null>(null);
   const connected = state.connection.status === "connected";
   const agent = selectedAgent(state);
-  const roots = treeOf(state);
+  // Conversations : l'Assistant et les Agents, dans l'ordre du registre.
+  const agents = state.order.map((id) => state.agents[id]).filter((candidate): candidate is AgentStatus => !!candidate);
 
   // Le daemon ne signale pas les changements d'état des nœuds : on les relit.
   useEffect(() => {
@@ -89,6 +90,7 @@ export default function App() {
 
   const select = (id: AgentId) => {
     setSettingsOpen(false);
+    setPanelOpen(false);
     dispatch({ type: "select", agent: id });
   };
   const isLiving = (id: AgentId) => id in state.agents;
@@ -99,35 +101,6 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <span className="brand">Argos</span>
-        <span className="spacer" />
-        <ConnectionStatus connection={state.connection} compact />
-        {voiceStatus?.status === "failed" && (
-          <span className="voice-badge" data-status="failed" title={voiceReason(voiceStatus) ?? undefined}>
-            Voix en panne
-          </span>
-        )}
-        <button
-          type="button"
-          className="icon-button"
-          aria-label="Réglages"
-          aria-pressed={settingsOpen}
-          title="Réglages"
-          onClick={() => setSettingsOpen((open) => !open)}
-        >
-          <svg className="topbar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10.4 3.4h3.2l.5 2a7 7 0 0 1 1.6.9l2-.6 1.6 2.7-1.5 1.4a7 7 0 0 1 0 1.9l1.5 1.4-1.6 2.7-2-.6a7 7 0 0 1-1.6.9l-.5 2h-3.2l-.5-2a7 7 0 0 1-1.6-.9l-2 .6-1.6-2.7 1.5-1.4a7 7 0 0 1 0-1.9L4.7 8.4l1.6-2.7 2 .6a7 7 0 0 1 1.6-.9z" transform="translate(0 1)"/><circle cx="12" cy="12" r="2.5" /></svg>
-        </button>
-        <button
-          type="button"
-          className="panic"
-          disabled={!connected}
-          onClick={() => setPanicAsked(true)}
-          title={`Arrêt dur de tout l'arbre (${panicLabel})`}
-        >
-          Panic stop
-        </button>
-      </header>
       <NotificationCenter
         notices={state.notices}
         agents={state.agents}
@@ -136,11 +109,34 @@ export default function App() {
       />
       <div className="body">
         <aside className="sidebar" aria-label="Agents">
-          {roots.length > 0 ? (
-            <AgentTree roots={roots} selected={agent?.id ?? null} alerts={alerts} onSelect={select} />
-          ) : (
-            <p className="sidebar-empty muted">{connected ? "Arbre vide." : "En attente du daemon…"}</p>
-          )}
+          <ConversationList
+            agents={agents}
+            threads={state.threads}
+            selected={agent?.id ?? null}
+            alerts={alerts}
+            onSelect={select}
+          />
+          <footer className="sidebar-foot">
+            {!connected && <ConnectionStatus connection={state.connection} compact />}
+            {voiceStatus?.status === "failed" && (
+              <span className="voice-badge" data-status="failed" title={voiceReason(voiceStatus) ?? undefined}>
+                Voix en panne
+              </span>
+            )}
+            <button
+              type="button"
+              className="panic-link"
+              disabled={!connected}
+              onClick={() => setPanicAsked(true)}
+              title={`Arrêt dur de tout l'arbre (${panicLabel})`}
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="8.5" />
+                <rect x="9" y="9" width="6" height="6" rx="1" />
+              </svg>
+              Arrêt d'urgence
+            </button>
+          </footer>
         </aside>
 
         <main className="main">
@@ -173,6 +169,7 @@ export default function App() {
                 onSelect={select}
                 panelOpen={panelOpen}
                 onTogglePanel={() => setPanelOpen((open) => !open)}
+                onOpenSettings={() => setSettingsOpen(true)}
               />
               {panelOpen && (
                 <AgentContextPanel
