@@ -173,11 +173,24 @@ impl Speaker for KokoroSpeaker {
                 .lock()
                 .expect("verrou Kokoro empoisonné")
                 .take();
-            let mut worker = match taken {
-                Some(worker) => worker,
-                None => KokoroWorker::start(&speaker).await?,
+            // Un processus resté en réserve a pu mourir pendant la pause : la phrase est
+            // alors redite par un neuf plutôt que perdue.
+            let reused = match taken {
+                Some(mut worker) => match worker.say(&text).await {
+                    Ok(reply) => Some((worker, reply)),
+                    Err(_) => None,
+                },
+                None => None,
             };
-            match worker.say(&text).await? {
+            let (worker, reply) = match reused {
+                Some(done) => done,
+                None => {
+                    let mut fresh = KokoroWorker::start(&speaker).await?;
+                    let reply = fresh.say(&text).await?;
+                    (fresh, reply)
+                }
+            };
+            match reply {
                 Ok(()) => {
                     *speaker.worker.lock().expect("verrou Kokoro empoisonné") = Some(worker);
                     Ok(())
@@ -516,6 +529,31 @@ pub(crate) mod tests {
                 utterance("Nouveau départ."),
                 VoiceEvent::SpeechFinished { interrupted: false }
             ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_kokoro_worker_that_died_while_idle_is_replaced_without_losing_the_sentence() {
+        use std::os::unix::fs::PermissionsExt;
+        // Faux Python : répond « ok » à chaque phrase, comme le vrai worker.
+        let dir = tempfile::tempdir().unwrap();
+        let python = dir.path().join("python");
+        std::fs::write(&python, "#!/bin/sh\nwhile read -r line; do echo ok; done\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let speaker = KokoroSpeaker::new(python, "m".into(), "v".into(), "ff_siwis".into());
+
+        speaker.speak("Première.".into()).await.unwrap();
+        // Le processus en réserve meurt pendant la pause.
+        let mut idle = speaker.worker.lock().unwrap().take().unwrap();
+        idle.child.kill().await.unwrap();
+        *speaker.worker.lock().unwrap() = Some(idle);
+
+        speaker.speak("Après la pause.".into()).await.unwrap();
+        let worker = speaker.worker.lock().unwrap().take().unwrap();
+        assert!(
+            worker.child.id().is_some(),
+            "un processus neuf a pris le relais"
         );
     }
 
