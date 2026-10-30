@@ -3,22 +3,22 @@ $root = $PSScriptRoot
 $env:ARGOS_HOME = Join-Path $env:LOCALAPPDATA 'Argos/data'
 $daemon = Join-Path $root 'argos-daemon.exe'
 $app = Join-Path $root 'Argos.exe'
-if (-not (Test-Path $daemon) -or -not (Test-Path $app)) { throw 'Extrayez toute l’archive ZIP avant de lancer Argos.' }
+if (-not (Test-Path $daemon) -or -not (Test-Path $app)) { throw 'Extrayez toute l''archive ZIP avant de lancer Argos.' }
 
 # Une instance issue de ce même dossier peut être réutilisée, jamais arrêtée ici.
 $running = @(Get-CimInstance Win32_Process -Filter "Name='argos-daemon.exe'" | Where-Object { $_.ExecutablePath -eq $daemon })
 if ($running.Count -eq 0) {
     $occupied = @(Get-NetTCPConnection -State Listen -LocalPort 7878 -ErrorAction SilentlyContinue)
-    if ($occupied.Count -gt 0) { throw 'Le port 7878 est déjà utilisé. Fermez l’autre daemon Argos avant de continuer.' }
+    if ($occupied.Count -gt 0) { throw 'Le port 7878 est déjà utilisé. Fermez l''autre daemon Argos avant de continuer.' }
     $process = Start-Process -FilePath $daemon -ArgumentList 'hub' -WorkingDirectory $root -WindowStyle Hidden -PassThru
 }
 $config = Join-Path $env:ARGOS_HOME 'config.toml'
 $token = Join-Path $env:ARGOS_HOME 'token'
 for ($i = 0; $i -lt 120 -and (-not (Test-Path $config) -or -not (Test-Path $token)); $i++) {
-    if ($process -and $process.HasExited) { throw 'Le daemon Argos ne démarre pas. Lancez argos-daemon.exe hub dans un terminal pour voir l’erreur.' }
+    if ($process -and $process.HasExited) { throw 'Le daemon Argos ne démarre pas. Lancez argos-daemon.exe hub dans un terminal pour voir l''erreur.' }
     Start-Sleep -Milliseconds 250
 }
-if (-not (Test-Path $config) -or -not (Test-Path $token)) { throw 'Le daemon Argos ne s’est pas initialisé.' }
+if (-not (Test-Path $config) -or -not (Test-Path $token)) { throw 'Le daemon Argos ne s''est pas initialisé.' }
 
 # Ne jamais remplacer une configuration vocale existante.
 $existing = [IO.File]::ReadAllText($config)

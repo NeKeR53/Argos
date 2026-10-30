@@ -14,7 +14,7 @@ try {
     npm ci
     if ($LASTEXITCODE -ne 0) { throw 'npm ci a échoué.' }
     npm run tauri build -- --bundles nsis
-    if ($LASTEXITCODE -ne 0) { throw 'La compilation de l’application a échoué.' }
+    if ($LASTEXITCODE -ne 0) { throw 'La compilation de l''application a échoué.' }
 } finally { Pop-Location }
 
 $out = Join-Path $root 'target/distribution/windows-x64'
