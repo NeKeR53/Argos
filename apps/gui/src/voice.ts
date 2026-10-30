@@ -67,9 +67,13 @@ export const IDLE_PLAN: SpeechPlan = { awaiting: [], speaking: false, streamed: 
 
 export type SpeechAction = { type: "speak"; text: string } | { type: "finish" } | { type: "stop" };
 
-/** Une transcription vient de partir vers l'Assistant. */
+/**
+ * Une transcription vient de partir vers l'Assistant : sa réponse sera lue. Le tour est
+ * marqué tout de suite, sans attendre l'écho `input` : si cet écho n'arrive pas (connexion
+ * de l'orbe pas encore établie au premier usage), la première réponse serait muette.
+ */
 export function voiceSent(plan: SpeechPlan, text: string): SpeechPlan {
-  return { ...plan, awaiting: [...plan.awaiting, text] };
+  return { ...plan, awaiting: [...plan.awaiting, text], speaking: true, streamed: false };
 }
 
 /** Nouvel appui du push-to-talk : la lecture en cours est coupée, la suite du tour aussi. */
@@ -96,7 +100,8 @@ export function onAssistantEvent(
       const index = event.from.kind === "user" ? plan.awaiting.indexOf(event.text) : -1;
       if (index < 0) return speakAll
         ? { plan: { ...plan, speaking: true, streamed: false }, actions: [{ type: "stop" }] }
-        : { plan, actions: [] };
+        // Une demande tapée : son tour n'est pas lu, même si une demande vocale attend.
+        : { plan: { ...plan, speaking: false, streamed: false }, actions: [] };
       const awaiting = plan.awaiting.filter((_, at) => at !== index);
       return { plan: { ...plan, awaiting, speaking: true, streamed: false }, actions: [{ type: "stop" }] };
     }

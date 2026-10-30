@@ -140,3 +140,13 @@ describe("la voix dans la console", () => {
     });
   });
 });
+
+describe("réponse à une demande vocale sans écho", () => {
+  it("est lue même si l'écho `input` n'arrive jamais", () => {
+    const sent = voiceSent(IDLE_PLAN, "Allô");
+    const reply = onAssistantEvent(sent, { type: "message_delta", agent: "a0", text: "Bonjour." } as never, false);
+    expect(reply.actions).toEqual([{ type: "speak", text: "Bonjour." }]);
+    const end = onAssistantEvent(reply.plan, { type: "turn_completed", agent: "a0" } as never, false);
+    expect(end.actions).toEqual([{ type: "finish" }]);
+  });
+});
