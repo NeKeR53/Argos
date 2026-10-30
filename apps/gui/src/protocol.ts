@@ -238,7 +238,7 @@ export type Reply =
   | { kind: "function_result"; result: Json }
   | { kind: "triggers"; triggers: Trigger[] }
   | { kind: "nodes"; nodes: NodeStatus[] }
-  | { kind: "models"; profiles: ProfileInfo[] }
+  | { kind: "models"; profiles: ProfileInfo[]; models: { engine: EngineKind; model: string }[] }
   | { kind: "done"; affected: AgentId[] }
   | { kind: "error"; message: string };
 
@@ -386,6 +386,11 @@ function checkReply(reply: Record<string, unknown>) {
       });
       break;
     case "models":
+      array(reply.models, "reply.models").forEach((choice) => {
+        const model = object(choice, "model");
+        string(model.model, "model.model");
+        if (model.engine !== "claude" && model.engine !== "codex") throw new ProtocolError(`moteur inconnu : ${String(model.engine)}`);
+      });
       array(reply.profiles, "reply.profiles").forEach((value) => {
         const profile = object(value, "profile");
         string(profile.name, "profile.name");

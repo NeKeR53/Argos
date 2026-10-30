@@ -20,12 +20,12 @@ describe("profils reçus du daemon", () => {
     const profiles = [
       { name: "léger", description: "Par défaut", models: [{ engine: "claude", model: "claude-haiku-5-5" }] },
     ];
-    const message = parseServerMessage(JSON.stringify({ type: "reply", id: 1, reply: { kind: "models", profiles } }));
+    const message = parseServerMessage(JSON.stringify({ type: "reply", id: 1, reply: { kind: "models", profiles, models: profiles[0].models } }));
     const state = reduce(initialState, { type: "server", message });
-    expect(state.profiles).toEqual(profiles);
+    expect(state.profiles?.[0].models).toEqual(profiles[0].models);
     expect(() =>
       parseServerMessage(
-        JSON.stringify({ type: "reply", id: 1, reply: { kind: "models", profiles: [{ name: "x", description: "", models: [{ engine: "gemini", model: "y" }] }] } }),
+        JSON.stringify({ type: "reply", id: 1, reply: { kind: "models", models: [], profiles: [{ name: "x", description: "", models: [{ engine: "gemini", model: "y" }] }] } }),
       ),
     ).toThrow();
   });

@@ -233,6 +233,7 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         },
         Command::Models => Reply::Models {
             profiles: supervisor.policy().profiles_info(),
+            models: supervisor.discover_models().await,
         },
         Command::SetWorkspace { agent, workdir } => {
             supervisor

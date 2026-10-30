@@ -168,6 +168,7 @@ pub enum Reply {
     },
     Models {
         profiles: Vec<ProfileInfo>,
+        models: Vec<ModelRef>,
     },
     /// Commande exécutée ; `affected` liste les agents touchés (stop, retrait…).
     Done {

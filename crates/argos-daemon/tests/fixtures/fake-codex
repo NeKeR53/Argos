@@ -24,6 +24,8 @@ while IFS= read -r line; do
     *'"method":"initialize"'*)
       printf '{"id":%s,"result":{"userAgent":"fake"}}\n' "$id" ;;
     *'"method":"initialized"'*) ;;
+    *'"method":"model/list"'*)
+      printf '{"id":%s,"result":{"data":[{"model":"other/model"}],"nextCursor":null}}\n' "$id" ;;
     *'"method":"thread/start"'*)
       printf '{"method":"mcpServer/startupStatus/updated","params":{}}\n'
       printf '{"id":%s,"result":{"thread":{"id":"%s"}}}\n' "$id" "$thread" ;;

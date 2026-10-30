@@ -30,6 +30,8 @@ while IFS= read -r line; do
     initialized=1
   fi
   case "$line" in
+    *'"request_id":"models"'*)
+      printf '{"type":"control_response","response":{"request_id":"models","response":{"models":[{"value":"custom","resolvedModel":"vendor/model"}]}}}\n' ;;
     *'"control_request"'*) ;; # aucune tâche en cours : rien à interrompre
     *SLOW*)
       turn=$((turn + 1))

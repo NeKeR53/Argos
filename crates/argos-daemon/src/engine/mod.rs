@@ -1,6 +1,7 @@
 //! Adaptateurs de moteur : une session `claude` ou `codex` pilotée en subprocess,
 //! exposée derrière une interface unique (docs/PHASE-1.md, tranche T1).
 
+pub mod catalog;
 mod claude;
 mod codex;
 mod process;

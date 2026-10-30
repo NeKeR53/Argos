@@ -438,10 +438,12 @@ async fn the_user_changes_the_model_of_an_agent() {
     let mut client = connect(&serve(&w).await).await;
     let agent = w.agent.id.clone();
 
-    let Reply::Models { profiles } = ask(&mut client, 1, Command::Models).await else {
+    let Reply::Models { profiles, models } = ask(&mut client, 1, Command::Models).await else {
         panic!("profils attendus");
     };
     assert!(profiles.iter().any(|profile| profile.name == "léger"));
+    assert!(models.iter().any(|model| model.model == "vendor/model"));
+    assert!(models.iter().any(|model| model.model == "other/model"));
 
     // L'agent tourne : il est parké, puis reprend sur le nouveau modèle.
     w.supervisor.send(&agent, "bonjour").await.unwrap();

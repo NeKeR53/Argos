@@ -391,3 +391,32 @@ async fn streamed_speech_is_cut_by_stop() {
         (total - audio) * 1_000.0
     );
 }
+
+/// Kokoro réel, via le même processus persistant que l'app : deux phrases d'affilée.
+#[tokio::test]
+#[ignore = "Kokoro réel : chemins dans ARGOS_KOKORO_* ; joue du son"]
+async fn kokoro_speaks_two_sentences_through_one_worker() {
+    use argos_voice::tts::{KokoroSpeaker, Speaker};
+    let var = |name: &str| std::env::var(name).expect(name);
+    let speaker = KokoroSpeaker::new(
+        var("ARGOS_KOKORO_PYTHON").into(),
+        var("ARGOS_KOKORO_MODEL").into(),
+        var("ARGOS_KOKORO_VOICES").into(),
+        "ff_siwis".into(),
+    );
+    let started = std::time::Instant::now();
+    speaker
+        .speak("Bonjour, je suis là.".into())
+        .await
+        .expect("première phrase");
+    let first = started.elapsed();
+    let second_started = std::time::Instant::now();
+    speaker
+        .speak("Deuxième phrase.".into())
+        .await
+        .expect("deuxième phrase");
+    println!(
+        "première : {first:?}, deuxième : {:?}",
+        second_started.elapsed()
+    );
+}

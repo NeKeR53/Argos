@@ -102,6 +102,8 @@ struct Inner {
     /// Appels HTTP déterministes en cours ; le stop les annule même sans session LLM.
     function_calls: Mutex<HashMap<u64, FunctionCall>>,
     memory: Memory,
+    /// Modèles lus auprès des harnais, et quand (voir `discover_models`).
+    catalog: Mutex<Option<(Instant, Vec<argos_core::protocol::ModelRef>)>>,
     events: broadcast::Sender<DaemonEvent>,
     generations: AtomicU64,
     settings: SupervisorSettings,
@@ -129,6 +131,7 @@ impl Supervisor {
                 lateral: Mutex::default(),
                 function_calls: Mutex::default(),
                 memory: Memory::new(settings.home.join("memory")),
+                catalog: Mutex::default(),
                 events,
                 generations: AtomicU64::new(0),
                 settings,
@@ -173,6 +176,20 @@ impl Supervisor {
 
     pub fn policy(&self) -> &ModelPolicy {
         &self.inner.settings.policy
+    }
+
+    /// Modèles que les harnais proposent, lus auprès d'eux et gardés dix minutes : ouvrir le
+    /// menu ne relance pas deux CLI à chaque fois.
+    pub async fn discover_models(&self) -> Vec<argos_core::protocol::ModelRef> {
+        const TTL: Duration = Duration::from_secs(600);
+        if let Some((at, models)) = locked(&self.inner.catalog).as_ref()
+            && at.elapsed() < TTL
+        {
+            return models.clone();
+        }
+        let models = crate::engine::catalog::discover(&self.inner.settings.programs).await;
+        *locked(&self.inner.catalog) = Some((Instant::now(), models.clone()));
+        models
     }
 
     pub fn nodes(&self) -> &Nodes {

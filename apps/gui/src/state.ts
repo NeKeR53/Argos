@@ -312,7 +312,7 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
     case "nodes":
       return { ...next, nodes: reply.nodes };
     case "models":
-      return { ...next, profiles: reply.profiles };
+      return { ...next, profiles: [{ name: "harnais", description: "", models: reply.models }] };
     case "capabilities":
       return next;
     case "function_result":

@@ -1,6 +1,6 @@
 // Choix du modèle d'un agent, tel que l'utilisateur le voit : une liste de modèles aux noms
 // lisibles (« Claude Opus 5.5 »), sans profils ni descriptions. La liste vient des profils
-// de la politique (réponse `models`), dédoublonnée sur la paire (moteur, modèle).
+// des harnais (réponse `models`), dédoublonnée sur la paire (moteur, modèle).
 
 import type { EngineKind, ProfileInfo } from "./protocol";
 
