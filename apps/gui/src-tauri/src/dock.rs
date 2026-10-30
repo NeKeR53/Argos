@@ -141,7 +141,7 @@ pub fn start(app: &AppHandle) {
 mod native {
     use super::{Mode, View};
     use objc2::{AnyThread, MainThreadMarker, MainThreadOnly};
-    use objc2_app_kit::{NSApplication, NSBezierPath, NSColor, NSGradient, NSImage, NSImageView};
+    use objc2_app_kit::{NSApplication, NSBezierPath, NSColor, NSImage, NSImageView};
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
 
     fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
@@ -156,6 +156,102 @@ mod native {
         tile.setBadgeLabel(None);
         tile.display();
         Ok(())
+    }
+
+    /// Coordonnées de la pieuvre (grille 64×64, origine en haut à gauche) vers la tuile
+    /// de 128 points (origine en bas à gauche) : même dessin que la console.
+    fn at(x: f64, y: f64) -> NSPoint {
+        NSPoint::new(x * 2.0, 128.0 - y * 2.0)
+    }
+
+    /// Ovale centré sur (cx, cy) de demi-axes (rx, ry), en coordonnées de la grille.
+    fn oval(cx: f64, cy: f64, rx: f64, ry: f64) -> NSRect {
+        rect((cx - rx) * 2.0, 128.0 - (cy + ry) * 2.0, rx * 4.0, ry * 4.0)
+    }
+
+    /// La pieuvre : tête, tentacules, yeux qui clignent, bouche qui articule quand elle
+    /// parle. La couleur de la lueur (et la pastille) disent toujours l'état.
+    fn draw_octopus(view: View, t: f64, r: f64, g: f64, b: f64) {
+        let speaking = matches!(view.mode, Mode::Speaking) && !view.armed && !view.stopped;
+        let skin = NSColor::colorWithSRGBRed_green_blue_alpha(0.56, 0.47, 0.95, 1.0);
+        let ink = NSColor::colorWithSRGBRed_green_blue_alpha(0.11, 0.10, 0.20, 1.0);
+        let tentacles = [
+            ([19.0, 40.0], [10.0, 46.0], [11.0, 54.0], [15.0, 57.0]),
+            ([25.0, 44.0], [22.0, 50.0], [23.0, 55.0], [26.0, 58.0]),
+            ([32.0, 45.0], [32.0, 50.0], [31.0, 54.0], [33.0, 58.0]),
+            ([39.0, 44.0], [42.0, 50.0], [41.0, 55.0], [38.0, 58.0]),
+            ([45.0, 40.0], [54.0, 46.0], [53.0, 54.0], [49.0, 57.0]),
+        ];
+        skin.setStroke();
+        skin.setFill();
+        for (start, c1, c2, end) in tentacles {
+            let path = NSBezierPath::bezierPath();
+            path.moveToPoint(at(start[0], start[1]));
+            path.curveToPoint_controlPoint1_controlPoint2(
+                at(end[0], end[1]),
+                at(c1[0], c1[1]),
+                at(c2[0], c2[1]),
+            );
+            path.setLineWidth(9.0);
+            path.stroke();
+            NSBezierPath::bezierPathWithOvalInRect(rect(
+                at(end[0], end[1]).x - 4.5,
+                at(end[0], end[1]).y - 4.5,
+                9.0,
+                9.0,
+            ))
+            .fill();
+        }
+        NSBezierPath::bezierPathWithOvalInRect(oval(32.0, 25.5, 22.0, 19.5)).fill();
+
+        // Yeux : ils clignent deux fois par période de 4,2 s, sauf figés (`still`).
+        let blink = !view.still && t % 4.2 > 4.05;
+        let eye_ry = if blink { 0.6 } else { 3.8 };
+        ink.setFill();
+        for cx in [25.0, 39.0] {
+            NSBezierPath::bezierPathWithOvalInRect(oval(cx, 28.0, 3.4, eye_ry)).fill();
+        }
+        if !blink {
+            NSColor::whiteColor().setFill();
+            for cx in [26.2, 40.2] {
+                NSBezierPath::bezierPathWithOvalInRect(oval(cx, 26.6, 1.2, 1.2)).fill();
+            }
+        }
+
+        // Bouche : une lèvre ouverte quand elle parle, un petit sourire sinon.
+        ink.setFill();
+        ink.setStroke();
+        let mouth = NSBezierPath::bezierPath();
+        if speaking {
+            let open = 2.0 + 8.0 * (t * 8.0).sin().abs();
+            mouth.moveToPoint(at(27.0, 36.5));
+            mouth.curveToPoint_controlPoint1_controlPoint2(
+                at(37.0, 36.5),
+                at(30.0, 36.5 - open),
+                at(34.0, 36.5 - open),
+            );
+            mouth.curveToPoint_controlPoint1_controlPoint2(
+                at(27.0, 36.5),
+                at(34.0, 36.5 + open),
+                at(30.0, 36.5 + open),
+            );
+            mouth.fill();
+        } else {
+            mouth.moveToPoint(at(28.4, 36.1));
+            mouth.curveToPoint_controlPoint1_controlPoint2(
+                at(35.6, 36.1),
+                at(30.5, 39.0),
+                at(33.5, 39.0),
+            );
+            mouth.setLineWidth(3.0);
+            mouth.stroke();
+        }
+
+        // Contour de la tête à la couleur de l'état.
+        NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 0.85).setStroke();
+        let outline = NSBezierPath::bezierPathWithOvalInRect(oval(32.0, 25.5, 22.0, 19.5));
+        outline.setLineWidth(1.5);
+        outline.stroke();
     }
 
     // AppKit ne redessine pas automatiquement une tuile du Dock personnalisée.
@@ -188,49 +284,7 @@ mod native {
         ));
         NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 0.16).setFill();
         glow.fill();
-        let ball = NSBezierPath::bezierPathWithOvalInRect(rect(12.0, 12.0, 104.0, 104.0));
-        let light = NSColor::colorWithSRGBRed_green_blue_alpha(r * 0.65, g * 0.65, b * 0.65, 1.0);
-        let dark = NSColor::colorWithSRGBRed_green_blue_alpha(0.055, 0.065, 0.11, 1.0);
-        if let Some(gradient) =
-            NSGradient::initWithStartingColor_endingColor(NSGradient::alloc(), &light, &dark)
-        {
-            gradient.drawInBezierPath_angle(&ball, -65.0);
-        }
-        NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 0.85).setStroke();
-        ball.setLineWidth(1.5);
-        ball.stroke();
-        NSColor::colorWithSRGBRed_green_blue_alpha(0.80, 0.95, 1.0, 1.0).setFill();
-        if matches!(view.mode, Mode::Speaking) && !view.armed && !view.stopped {
-            let blink = if !view.still && t % 4.2 > 4.05 {
-                1.0
-            } else {
-                5.0
-            };
-            for x in [43.0, 77.0] {
-                NSBezierPath::bezierPathWithOvalInRect(rect(x, 72.0, 7.0, blink)).fill();
-            }
-            let opening = 4.0 + 13.0 * (t * 8.0).sin().abs();
-            NSBezierPath::bezierPathWithOvalInRect(rect(48.0, 43.0 - opening / 2.0, 32.0, opening))
-                .fill();
-        } else {
-            for i in 0..9 {
-                let x = 34.0 + i as f64 * 7.0;
-                let wave = (t * 4.0 + i as f64 * 0.7).sin().abs();
-                let amplitude = match view.mode {
-                    Mode::Listening => 6.0 + 42.0 * view.level,
-                    Mode::Thinking => 24.0,
-                    Mode::Offline => 0.0,
-                    _ => 9.0,
-                };
-                let height = 5.0 + amplitude * wave;
-                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(
-                    rect(x, 64.0 - height / 2.0, 4.0, height),
-                    2.0,
-                    2.0,
-                )
-                .fill();
-            }
-        }
+        draw_octopus(view, t, r, g, b);
         image.unlockFocus();
         let content = NSImageView::initWithFrame(
             NSImageView::alloc(mtm),
