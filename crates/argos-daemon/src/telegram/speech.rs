@@ -76,7 +76,8 @@ impl Speech {
                     );
                 };
                 let mut child = Command::new(python)
-                    .arg("-c")
+                    // Mode UTF-8 : sous Windows, stdin suivrait sinon la page de code locale.
+                    .args(["-X", "utf8", "-c"])
                     .arg(include_str!("kokoro_file.py"))
                     .arg(model)
                     .arg(voices)

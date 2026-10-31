@@ -110,7 +110,9 @@ impl KokoroWorker {
     async fn start(speaker: &KokoroSpeaker) -> Result<Self, VoiceError> {
         let program = speaker.python.display().to_string();
         let mut child = Command::new(&speaker.python)
-            .arg("-c")
+            // Mode UTF-8 : sous Windows, stdin et stdout suivraient sinon la page de code
+            // locale (cp1252) — accents écorchés à l'aller, réponses non UTF-8 au retour.
+            .args(["-X", "utf8", "-c"])
             .arg(include_str!("kokoro_worker.py"))
             .arg(&speaker.model)
             .arg(&speaker.voices)
@@ -538,10 +540,14 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_kokoro_worker_that_died_while_idle_is_replaced_without_losing_the_sentence() {
         use std::os::unix::fs::PermissionsExt;
-        // Faux Python : répond « ok » à chaque phrase, comme le vrai worker.
+        // Faux Python : exige le mode UTF-8, puis répond « ok » à chaque phrase comme le vrai worker.
         let dir = tempfile::tempdir().unwrap();
         let python = dir.path().join("python");
-        std::fs::write(&python, "#!/bin/sh\nwhile read -r line; do echo ok; done\n").unwrap();
+        std::fs::write(
+            &python,
+            "#!/bin/sh\n[ \"$1 $2\" = \"-X utf8\" ] || exit 1\nwhile read -r line; do echo ok; done\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
         let speaker = KokoroSpeaker::new(python, "m".into(), "v".into(), "ff_siwis".into());
 
