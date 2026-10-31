@@ -271,6 +271,9 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         Command::Nodes => Reply::Nodes {
             nodes: supervisor.nodes().status(),
         },
+        Command::Channels => Reply::Channels {
+            channels: supervisor.channels().list(),
+        },
         Command::Syncs => Reply::Syncs {
             syncs: supervisor.syncs().list(),
         },

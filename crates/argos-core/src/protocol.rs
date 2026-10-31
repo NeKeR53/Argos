@@ -124,6 +124,8 @@ pub enum Command {
     },
     /// Les nœuds déclarés et l'état de leur connexion (D32).
     Nodes,
+    /// Les canaux de discussion configurés et leur état (D45).
+    Channels,
     /// Les profils de la politique de modèles et leurs modèles, pour choisir.
     Models,
     /// Change le moteur et le modèle d'un agent (override de l'utilisateur, D21). Sa
@@ -204,6 +206,9 @@ pub enum Reply {
     Nodes {
         nodes: Vec<NodeStatus>,
     },
+    Channels {
+        channels: Vec<ChannelStatus>,
+    },
     Syncs {
         syncs: Vec<SyncStatus>,
     },
@@ -255,6 +260,36 @@ pub struct NodeStatus {
     pub connected: bool,
     /// Dernière erreur de connexion, tant que le nœud est injoignable.
     pub error: Option<String>,
+}
+
+/// Ce qu'un type de canal de discussion sait faire (D45).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelCapabilities {
+    pub text: bool,
+    pub voice_in: bool,
+    pub voice_out: bool,
+    pub buttons: bool,
+    pub attachments: bool,
+}
+
+/// Un canal de discussion configuré (`[channels.<id>]`) et son état.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChannelStatus {
+    pub id: String,
+    /// Son type : `telegram`…
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub capabilities: ChannelCapabilities,
+    /// Démarré et prêt à servir.
+    pub active: bool,
+    /// Pourquoi il ne sert pas : démarrage en échec, interlocuteur pas encore configuré…
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
+    /// Le daemon y annonce lui-même les escalades.
+    pub escalations: bool,
+    pub max_per_hour: u32,
+    /// Envois de l'Assistant dans l'heure glissante.
+    pub sent_last_hour: u32,
 }
 
 /// Une synchro de workspace (D44) et où elle en est.

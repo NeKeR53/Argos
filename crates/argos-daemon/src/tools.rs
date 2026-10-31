@@ -33,6 +33,9 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
         tools.extend(trigger_tools());
         tools.extend(function_tools(level));
     }
+    if level == Level::Assistant {
+        tools.extend(channel_tools());
+    }
     let profiles: Vec<&String> = policy.profiles.keys().collect();
     for tool in &mut tools {
         if tool.name == "escalate_to_user" {
@@ -61,6 +64,27 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
         }
     }
     tools
+}
+
+/// Canaux de discussion de l'Assistant (D45) : rien n'y part sans lui.
+fn channel_tools() -> Vec<Tool> {
+    vec![
+        tool(
+            "channel_list",
+            "Liste les canaux de discussion actifs (Telegram…) : identifiant, type, capacités (texte, vocal, boutons), plafond d'envois par heure, et ce qui manque à un canal indisponible.",
+            &[],
+            &[],
+        ),
+        Tool {
+            name: "channel_send",
+            description: "Écrit à l'utilisateur sur un canal de discussion. Rien ne part sur un canal sans cet appel : pour répondre à un message « [Canal <id>] », renvoie sur ce canal (ou un autre si c'est plus utile). Aussi pour le prévenir quand il l'a demandé ou quand un résultat attendu arrive. Texte brut, condensé pour un téléphone.",
+            schema: json!({"type":"object","properties":{
+                "channel":{"type":"string","description":"Identifiant du canal (voir channel_list), celui du préfixe « [Canal <id>] »."},
+                "text":{"type":"string","description":"Le message, en texte brut sans markdown."},
+                "voice":{"type":"boolean","description":"Envoyer en vocal, le texte en légende, si le canal sait parler. Par défaut, non ; oui en réponse à un message vocal."}
+            },"required":["channel","text"],"additionalProperties":false}),
+        },
+    ]
 }
 
 fn function_tools(level: Level) -> Vec<Tool> {
@@ -710,6 +734,22 @@ pub async fn call(
             journal(supervisor, &caller.id, &fact);
             journal(supervisor, &target.id, &fact);
             Ok(format!("{fact}."))
+        }
+        (Level::Assistant, "channel_list") => {
+            let channels = supervisor.channels().list();
+            if channels.is_empty() {
+                return Ok("Aucun canal de discussion configuré.".into());
+            }
+            Ok(json!(channels).to_string())
+        }
+        (Level::Assistant, "channel_send") => {
+            let channel = text(args, "channel")?;
+            let voice = args.get("voice").and_then(Value::as_bool).unwrap_or(false);
+            let sent = supervisor
+                .channels()
+                .send(channel, text(args, "text")?, voice)
+                .await?;
+            Ok(sent)
         }
         (Level::Assistant, "list_nodes") => {
             let nodes = supervisor.nodes().status();

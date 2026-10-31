@@ -56,14 +56,17 @@ preempt = false
 # remote = "127.0.0.1:7880"        # écoute du nœud, vue depuis cet hôte
 # token_file = "/chemin/vers/le/jeton"
 
-# Telegram (D43) : parler à l'Assistant en texte ou en vocal depuis son téléphone.
-# Créer le bot avec @BotFather, mettre son jeton dans $ARGOS_HOME/telegram-token (ou la
-# variable ARGOS_TELEGRAM_TOKEN), puis écrire au bot : il répond avec l'identifiant à
-# reporter dans chat_id. Les vocaux utilisent ffmpeg, whisper-cli et la section [voice].
-# [telegram]
+# Canaux de discussion (D45) : parler à l'Assistant hors de la console, par exemple
+# depuis son téléphone. Un canal par section ; l'Assistant choisit où il répond.
+# Telegram (D43) : créer le bot avec @BotFather, mettre son jeton dans
+# $ARGOS_HOME/<id>-token (ou la variable ARGOS_<ID>_TOKEN), puis écrire au bot : il répond
+# avec l'identifiant à reporter dans chat_id. Les vocaux utilisent ffmpeg, whisper-cli et
+# la section [voice].
+# [channels.telegram]
+# type = "telegram"
 # chat_id = 123456789
-# voice_replies = true             # un vocal reçu appelle une réponse vocale
 # escalations = true               # signaler les escalades, avec leurs réponses en boutons
+# max_per_hour = 30                # envois de l'Assistant au-delà desquels le daemon refuse
 "#;
 
 /// Configuration d'un daemon lancé en mode nœud (`$ARGOS_HOME/node.toml`).
@@ -94,11 +97,14 @@ pub struct Config {
     pub workers: WorkersConfig,
     #[serde(default)]
     pub board: BoardConfig,
-    /// Pont Telegram (D43), absent par défaut.
+    /// Canaux de discussion (D45), par identifiant.
+    #[serde(default)]
+    pub channels: BTreeMap<String, crate::channels::ChannelConfig>,
+    /// Ancienne section `[telegram]`, lue comme le canal `telegram` : voir [`Self::channels`].
     #[serde(default)]
     pub telegram: Option<crate::telegram::TelegramConfig>,
-    /// Section `[voice]`, partagée avec la GUI : le pont Telegram y lit le modèle whisper
-    /// et la voix de synthèse.
+    /// Section `[voice]`, partagée avec la GUI : les canaux qui parlent y lisent le modèle
+    /// whisper et la voix de synthèse.
     #[serde(default)]
     pub voice: Option<crate::telegram::SpeechConfig>,
 }
@@ -189,7 +195,17 @@ impl Config {
         if !path.exists() {
             fs::write(path, format!("{DEFAULT_CONFIG}{DEFAULT_MODELS}"))?;
         }
-        let config: Config = toml::from_str(&fs::read_to_string(path)?)?;
+        let mut config: Config = toml::from_str(&fs::read_to_string(path)?)?;
+        if let Some(telegram) = config.telegram.take() {
+            eprintln!(
+                "config.toml : la section [telegram] est lue comme [channels.telegram] \
+                 (type = \"telegram\") ; renomme-la, elle sera retirée"
+            );
+            config
+                .channels
+                .entry("telegram".into())
+                .or_insert_with(|| crate::channels::ChannelConfig::telegram(telegram));
+        }
         config.models.check().map_err(ConfigError::Policy)?;
         for (name, node) in &config.nodes {
             node.check(name).map_err(ConfigError::Node)?;

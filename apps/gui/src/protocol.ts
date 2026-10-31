@@ -234,6 +234,8 @@ export type Command =
   | { command: "delete_trigger"; trigger: string }
   /** Les nœuds déclarés et l'état de leur connexion (D32). */
   | { command: "nodes" }
+  /** Les canaux de discussion configurés et leur état (D45). */
+  | { command: "channels" }
   /** Les profils de la politique de modèles et leurs modèles. */
   | { command: "models" }
   /** Rattache un Agent à un dossier sur son nœud ; ouvre une nouvelle session. */
@@ -283,6 +285,32 @@ export interface NodeStatus {
   error: string | null;
 }
 
+/** Ce qu'un type de canal sait faire (`ChannelCapabilities`). */
+export interface ChannelCapabilities {
+  text: boolean;
+  voice_in: boolean;
+  voice_out: boolean;
+  buttons: boolean;
+  attachments: boolean;
+}
+
+/** Un canal de discussion configuré, `[channels.<id>]` (`ChannelStatus`, D45). */
+export interface ChannelStatus {
+  id: string;
+  /** Son type : `telegram`… */
+  type: string;
+  capabilities: ChannelCapabilities;
+  /** Démarré et prêt à servir. */
+  active: boolean;
+  /** Pourquoi il ne sert pas : démarrage en échec, interlocuteur pas encore configuré… */
+  unavailable?: string;
+  /** Le daemon y annonce lui-même les escalades. */
+  escalations: boolean;
+  max_per_hour: number;
+  /** Envois de l'Assistant dans l'heure glissante. */
+  sent_last_hour: number;
+}
+
 /** Requête complète : `Command` aplatie avec l'`id` choisi par le client. */
 export type Request = { id: number } & Command;
 
@@ -303,6 +331,7 @@ export type Reply =
   | { kind: "triggers"; triggers: Trigger[] }
   | { kind: "escalations"; escalations: Escalation[] }
   | { kind: "nodes"; nodes: NodeStatus[] }
+  | { kind: "channels"; channels: ChannelStatus[] }
   | { kind: "syncs"; syncs: SyncStatus[] }
   | { kind: "sync"; sync: SyncStatus }
   | { kind: "models"; profiles: ProfileInfo[]; models: { engine: EngineKind; model: string }[] }
@@ -443,6 +472,15 @@ function checkReply(reply: Record<string, unknown>) {
         const node = object(value, "node");
         string(node.name, "node.name");
         if (typeof node.connected !== "boolean") throw new ProtocolError("node.connected : booléen attendu");
+      });
+      break;
+    case "channels":
+      array(reply.channels, "reply.channels").forEach((value) => {
+        const channel = object(value, "channel");
+        string(channel.id, "channel.id");
+        string(channel.type, "channel.type");
+        object(channel.capabilities, "channel.capabilities");
+        if (typeof channel.active !== "boolean") throw new ProtocolError("channel.active : booléen attendu");
       });
       break;
     case "syncs":

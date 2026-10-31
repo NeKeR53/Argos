@@ -19,6 +19,7 @@ import {
   type SurfaceDoc,
   type SurfaceMeta,
   type NodeStatus,
+  type ChannelStatus,
   type SyncStatus,
   type ProfileInfo,
   type Trigger,
@@ -153,6 +154,8 @@ export interface AppState {
   voice: VoiceView;
   /** Nœuds déclarés (D32), relus régulièrement ; `null` avant la première lecture. */
   nodes: NodeStatus[] | null;
+  /** Canaux de discussion configurés (D45), relus avec les nœuds ; `null` avant lecture. */
+  channels: ChannelStatus[] | null;
   /** Synchros de workspace (D44), par id. */
   syncs: Record<string, SyncStatus>;
   /** Profils de la politique de modèles, pour choisir le modèle d'un agent. */
@@ -223,6 +226,7 @@ export const initialState: AppState = {
   triggerRevisions: {},
   voice: { status: null, dictation: null, spoken: [] },
   nodes: null,
+  channels: null,
   syncs: {},
   profiles: null,
   inbox: null,
@@ -340,6 +344,8 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
       return { ...next, triggers: { ...next.triggers, [command.agent]: reply.triggers } };
     case "nodes":
       return { ...next, nodes: reply.nodes };
+    case "channels":
+      return { ...next, channels: reply.channels };
     case "syncs":
       return { ...next, syncs: Object.fromEntries(reply.syncs.map((sync) => [sync.id, sync])) };
     case "sync":
@@ -845,6 +851,8 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `Suppression du déclencheur ${command.trigger}`;
     case "nodes":
       return "Lecture des nœuds";
+    case "channels":
+      return "Lecture des canaux";
     case "escalations":
       return "Lecture des escalades";
     case "answer_escalation":

@@ -67,16 +67,25 @@ export default function App() {
   // Conversations : l'Assistant et les Agents, dans l'ordre du registre.
   const agents = state.order.map((id) => state.agents[id]).filter((candidate): candidate is AgentStatus => !!candidate);
 
-  // Le daemon ne signale pas les changements d'état des nœuds : on les relit.
+  // Le daemon ne signale pas les changements d'état des nœuds et des canaux : on les relit.
   useEffect(() => {
     if (!connected) return;
     send({ command: "nodes" });
+    send({ command: "channels" });
     send({ command: "models" });
     send({ command: "escalations" });
     send({ command: "syncs" });
-    const timer = setInterval(() => send({ command: "nodes" }), NODES_REFRESH_MS);
+    const timer = setInterval(() => {
+      send({ command: "nodes" });
+      send({ command: "channels" });
+    }, NODES_REFRESH_MS);
     return () => clearInterval(timer);
   }, [connected, send]);
+
+  // À l'ouverture des réglages, des compteurs frais plutôt que vieux de 15 s.
+  useEffect(() => {
+    if (connected && settingsOpen) send({ command: "channels" });
+  }, [connected, settingsOpen, send]);
 
   const panic = useCallback(() => {
     setPanicAsked(false);
@@ -155,6 +164,8 @@ export default function App() {
               connection={state.connection}
               voice={voiceStatus}
               nodes={state.nodes}
+              channels={state.channels}
+              profiles={state.profiles}
               connected={connected}
               voiceTrial={VOICE_TRIAL}
               onShortcuts={() => setEditingShortcuts(true)}

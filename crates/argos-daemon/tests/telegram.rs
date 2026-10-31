@@ -1,10 +1,12 @@
-//! Pont Telegram de bout en bout, sur un faux serveur Telegram et de faux ffmpeg,
-//! whisper-cli et say : texte, vocal, inconnus, escalades. Aucun token.
+//! Canal Telegram de bout en bout, sur un faux serveur Telegram et de faux ffmpeg,
+//! whisper-cli et say : texte, vocal, envois de l'Assistant, inconnus, escalades. Aucun
+//! token.
 
 mod common;
 
 use argos_core::EscalationState;
 use argos_core::protocol::{DaemonEvent, Origin};
+use argos_daemon::channels::ChannelConfig;
 use argos_daemon::telegram::bot::Bot;
 use argos_daemon::telegram::speech::Speech;
 use argos_daemon::telegram::{SpeechConfig, Telegram, TelegramConfig};
@@ -147,20 +149,28 @@ async fn bridge(w: &World, chat_id: Option<i64>) -> FakeTelegram {
         },
         scratch: w.home.path().join("telegram"),
     };
-    Telegram::new(
+    let meta = ChannelConfig::telegram(config.clone()).meta();
+    let channel = Telegram::new(
         w.supervisor.clone(),
         w.assistant.id.clone(),
+        "telegram",
         Bot::new(&url, "TOKEN"),
         config,
         speech,
         w.home.path(),
-    )
-    .spawn();
+    );
+    channel.spawn();
+    w.supervisor.channels().register("telegram", meta, channel);
     fake
 }
 
+/// L'Assistant appelle `channel_send`, comme il le ferait par MCP.
+async fn channel_send(w: &World, args: Value) -> Result<String, String> {
+    argos_daemon::tools::call(&w.supervisor, &w.assistant, "channel_send", &args).await
+}
+
 #[tokio::test]
-async fn a_text_message_reaches_the_assistant_and_its_reply_comes_back() {
+async fn a_text_message_reaches_the_assistant_who_chooses_to_answer_there() {
     let mut w = world();
     let fake = bridge(&w, Some(CHAT)).await;
     let assistant = w.assistant.id.clone();
@@ -168,10 +178,19 @@ async fn a_text_message_reaches_the_assistant_and_its_reply_comes_back() {
     fake.push(message(1, CHAT, json!({"text": "Bonjour"})));
     until(&mut w.events, |event| {
         matches!(event, DaemonEvent::Input { agent, from: Origin::User, text }
-            if *agent == assistant && text == "[Depuis Telegram]\nBonjour")
+            if *agent == assistant && text == "[Canal telegram]\nBonjour")
     })
     .await;
-    let reply = fake.wait_for("sendMessage", "reply 1").await;
+    // La réponse de l'Assistant reste dans la console : rien ne part sans channel_send.
+    turn_completed(&mut w.events, &assistant).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(fake.sent("sendMessage").is_empty());
+
+    let sent = channel_send(&w, json!({"channel": "telegram", "text": "Bonjour à toi"}))
+        .await
+        .unwrap();
+    assert_eq!(sent, "Envoyé sur telegram.");
+    let reply = fake.wait_for("sendMessage", "Bonjour à toi").await;
     assert_eq!(
         serde_json::from_str::<Value>(&reply).unwrap()["chat_id"],
         CHAT
@@ -187,22 +206,14 @@ async fn a_text_message_reaches_the_assistant_and_its_reply_comes_back() {
     })
     .await;
 
-    // Un message tapé dans la console ramène les réponses à la console.
-    w.supervisor
-        .send(&assistant, "depuis la console")
+    let unknown = channel_send(&w, json!({"channel": "signal", "text": "salut"}))
         .await
-        .unwrap();
-    turn_completed(&mut w.events, &assistant).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(
-        fake.sent("sendMessage")
-            .iter()
-            .all(|b| !b.contains("reply 2"))
-    );
+        .unwrap_err();
+    assert!(unknown.contains("telegram"), "{unknown}");
 }
 
 #[tokio::test]
-async fn a_voice_message_is_transcribed_and_answered_by_voice() {
+async fn a_voice_message_is_transcribed_and_can_be_answered_by_voice() {
     let mut w = world();
     let fake = bridge(&w, Some(CHAT)).await;
     let assistant = w.assistant.id.clone();
@@ -215,10 +226,16 @@ async fn a_voice_message_is_transcribed_and_answered_by_voice() {
     until(&mut w.events, |event| {
         matches!(event, DaemonEvent::Input { agent, text, .. }
             if *agent == assistant
-                && text == "[Depuis Telegram, message vocal transcrit]\nAllume la lumière")
+                && text == "[Canal telegram, message vocal transcrit]\nAllume la lumière")
     })
     .await;
-    let voice = fake.wait_for("sendVoice", "reply 1").await;
+    channel_send(
+        &w,
+        json!({"channel": "telegram", "text": "Lumière allumée", "voice": true}),
+    )
+    .await
+    .unwrap();
+    let voice = fake.wait_for("sendVoice", "Lumière allumée").await;
     // Le faux ffmpeg recopie la sortie du faux say : c'est bien la synthèse qui part.
     assert!(voice.contains("AIFF"));
     assert!(voice.contains("audio/ogg"));
@@ -243,6 +260,16 @@ async fn strangers_are_ignored_and_an_unset_chat_learns_its_id() {
     fake.push(message(1, 7, json!({"text": "Salut"})));
     let reply = fake.wait_for("sendMessage", "chat_id = 7").await;
     assert!(reply.contains(r#""chat_id":7"#));
+    assert!(reply.contains("[channels.telegram]"));
+    // Sans interlocuteur, l'Assistant ne peut rien y envoyer, et le sait.
+    let listed = argos_daemon::tools::call(&w.supervisor, &w.assistant, "channel_list", &json!({}))
+        .await
+        .unwrap();
+    assert!(listed.contains("chat_id pas encore configuré"), "{listed}");
+    let refused = channel_send(&w, json!({"channel": "telegram", "text": "Salut"}))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("indisponible"), "{refused}");
 }
 
 #[tokio::test]

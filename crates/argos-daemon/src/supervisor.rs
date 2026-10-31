@@ -113,6 +113,8 @@ struct Inner {
     memory: Memory,
     /// Synchros de workspace (D44).
     syncs: crate::sync::Syncs,
+    /// Canaux de discussion actifs (D45).
+    channels: crate::channels::Channels,
     /// Modèles lus auprès des harnais, et quand (voir `discover_models`).
     catalog: Mutex<Option<(Instant, Vec<argos_core::protocol::ModelRef>)>>,
     events: broadcast::Sender<DaemonEvent>,
@@ -144,6 +146,7 @@ impl Supervisor {
                 preempted: Mutex::default(),
                 memory: Memory::new(settings.home.join("memory")),
                 syncs: crate::sync::Syncs::new(settings.home.join("sync")),
+                channels: crate::channels::Channels::default(),
                 catalog: Mutex::default(),
                 events,
                 generations: AtomicU64::new(0),
@@ -1185,6 +1188,11 @@ impl Supervisor {
 
     pub fn syncs(&self) -> &crate::sync::Syncs {
         &self.inner.syncs
+    }
+
+    /// Les canaux de discussion (D45), enregistrés au démarrage du daemon.
+    pub fn channels(&self) -> &crate::channels::Channels {
+        &self.inner.channels
     }
 
     /// Signale un événement aux consoles (synchros, avis du daemon).

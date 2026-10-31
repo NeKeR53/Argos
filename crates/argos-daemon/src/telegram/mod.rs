@@ -1,11 +1,11 @@
-//! Pont Telegram (D43) : l'utilisateur parle à l'Assistant depuis son téléphone, en texte
-//! ou en vocal, et y reçoit ses réponses et les escalades.
+//! Type de canal Telegram (D43, D45) : l'utilisateur parle à l'Assistant depuis son
+//! téléphone, en texte ou en vocal, et y reçoit ce que l'Assistant lui envoie et les
+//! escalades.
 //!
-//! Le pont relaie, il ne décide pas (D5). Un message reçu est remis à l'Assistant au nom
-//! de l'utilisateur, préfixé [`PREFIX`] ou [`VOICE_PREFIX`]. Les réponses de l'Assistant
-//! suivent le dernier canal de l'utilisateur : après un message Telegram, elles partent
-//! sur Telegram (en vocal si on lui a parlé en vocal), jusqu'au prochain message tapé
-//! dans la console. Les escalades y sont signalées avec leurs réponses en boutons.
+//! Le pont transporte, il ne décide pas (D5). Un message reçu est remis à l'Assistant au
+//! nom de l'utilisateur, préfixé par son canal ([`crate::channels::prefix`]). Rien ne
+//! repart de soi-même : l'Assistant répond avec `channel_send`. Seules les escalades sont
+//! annoncées par le pont, avec leurs réponses en boutons.
 //!
 //! Long polling (`getUpdates`) : aucun port ouvert, rien à exposer. Un seul `chat_id` est
 //! servi ; tant qu'il n'est pas configuré, le bot répond à chacun son identifiant.
@@ -13,10 +13,12 @@
 pub mod bot;
 pub mod speech;
 
+use crate::channels::Channel;
 use crate::supervisor::Supervisor;
-use argos_core::protocol::{DaemonEvent, Origin};
+use argos_core::protocol::{ChannelCapabilities, DaemonEvent, Origin};
 use argos_core::{AgentId, Escalation, EscalationState};
 use bot::{Bot, MAX_CAPTION, Update};
+use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use speech::Speech;
 use std::collections::{HashMap, HashSet};
@@ -25,28 +27,29 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 
-/// Préfixe d'un message tapé dans Telegram.
-pub const PREFIX: &str = "[Depuis Telegram]";
-/// Préfixe d'un vocal transcrit.
-pub const VOICE_PREFIX: &str = "[Depuis Telegram, message vocal transcrit]";
+/// Ce que sait faire un canal Telegram.
+pub const CAPABILITIES: ChannelCapabilities = ChannelCapabilities {
+    text: true,
+    voice_in: true,
+    voice_out: true,
+    buttons: true,
+    attachments: false,
+};
 /// Attente d'un long polling.
 const POLL_WAIT: Duration = Duration::from_secs(50);
 /// Pause après un échec réseau, avant de réessayer.
 const RETRY: Duration = Duration::from_secs(5);
 
-/// Section `[telegram]` de `config.toml`.
+/// Réglages d'un canal `type = "telegram"`, dans `[channels.<id>]`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TelegramConfig {
     /// Le seul interlocuteur servi ; absent, le bot donne son identifiant à qui lui écrit.
     #[serde(default)]
     pub chat_id: Option<i64>,
-    /// Un vocal reçu appelle une réponse vocale.
-    #[serde(default = "yes")]
-    pub voice_replies: bool,
-    /// Signaler les escalades sur Telegram.
+    /// Signaler les escalades sur ce canal.
     #[serde(default = "yes")]
     pub escalations: bool,
-    /// Fichier du jeton du bot ; par défaut `$ARGOS_HOME/telegram-token`.
+    /// Fichier du jeton du bot ; par défaut `$ARGOS_HOME/<id>-token`.
     #[serde(default)]
     pub token_file: Option<PathBuf>,
     #[serde(default = "default_api")]
@@ -133,21 +136,9 @@ fn default_kokoro_voice() -> String {
     "ff_siwis".into()
 }
 
-/// Où partent les réponses de l'Assistant : le dernier canal de l'utilisateur.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Route {
-    Console,
-    Text,
-    Voice,
-}
-
-/// Ce que le pont envoie, dans l'ordre, par une seule tâche.
-enum Outgoing {
-    Reply { text: String, voice: bool },
-    Escalation(Escalation),
-}
-
 pub struct Telegram {
+    /// Identifiant du canal, celui de `[channels.<id>]`.
+    id: String,
     bot: Bot,
     supervisor: Supervisor,
     assistant: AgentId,
@@ -155,17 +146,17 @@ pub struct Telegram {
     speech: Speech,
     /// Dernière nouveauté traitée, gardée sur disque : un redémarrage ne rejoue rien.
     offset_file: PathBuf,
-    route: Mutex<Route>,
     /// Message Telegram d'une escalade → son identifiant, pour y répondre en citant.
     escalations: Mutex<HashMap<i64, String>>,
 }
 
 impl Telegram {
-    /// Depuis `config.toml` : lit le jeton (`ARGOS_TELEGRAM_TOKEN`, sinon son fichier) et
+    /// Depuis `config.toml` : lit le jeton (`ARGOS_<ID>_TOKEN`, sinon son fichier) et
     /// trouve les programmes des vocaux.
     pub fn from_config(
         supervisor: Supervisor,
         assistant: AgentId,
+        id: &str,
         config: TelegramConfig,
         voice: Option<SpeechConfig>,
         home: &Path,
@@ -173,12 +164,13 @@ impl Telegram {
         let token_file = config
             .token_file
             .clone()
-            .map_or_else(|| home.join("telegram-token"), |p| expand_home(&p));
-        let token = match std::env::var("ARGOS_TELEGRAM_TOKEN") {
+            .map_or_else(|| home.join(format!("{id}-token")), |p| expand_home(&p));
+        let variable = token_variable(id);
+        let token = match std::env::var(&variable) {
             Ok(token) => token,
             Err(_) => std::fs::read_to_string(&token_file).map_err(|_| {
                 format!(
-                    "jeton du bot introuvable : ni ARGOS_TELEGRAM_TOKEN ni {}",
+                    "jeton du bot introuvable : ni {variable} ni {}",
                     token_file.display()
                 )
             })?,
@@ -193,34 +185,37 @@ impl Telegram {
             whisper_cli: program(&config.whisper_cli),
             say: program(Path::new("say")),
             config: voice.unwrap_or_default().expanded(),
-            scratch: home.join("telegram"),
+            scratch: home.join(id),
         };
-        Ok(Self::new(supervisor, assistant, bot, config, speech, home))
+        Ok(Self::new(
+            supervisor, assistant, id, bot, config, speech, home,
+        ))
     }
 
     pub fn new(
         supervisor: Supervisor,
         assistant: AgentId,
+        id: &str,
         bot: Bot,
         config: TelegramConfig,
         speech: Speech,
         home: &Path,
     ) -> Arc<Self> {
         Arc::new(Self {
+            id: id.to_string(),
             bot,
             supervisor,
             assistant,
             config,
             speech,
-            offset_file: home.join("telegram-offset"),
-            route: Mutex::new(Route::Console),
+            offset_file: home.join(format!("{id}-offset")),
             escalations: Mutex::default(),
         })
     }
 
-    /// Lance le relevé des messages, le suivi de l'Assistant et l'envoi.
+    /// Lance le relevé des messages, le suivi des escalades et leur annonce.
     pub fn spawn(self: &Arc<Self>) {
-        // Abonné avant tout relevé : aucune réponse ne peut passer avant lui.
+        // Abonné avant tout relevé : aucune escalade ne peut passer avant lui.
         let events = self.supervisor.subscribe();
         let (outgoing, queue) = mpsc::unbounded_channel();
         tokio::spawn(Arc::clone(self).follow(events, outgoing));
@@ -264,8 +259,9 @@ impl Telegram {
                     chat,
                     &format!(
                         "Ce bot est privé. Ton identifiant Telegram est {chat} : ajoute \
-                         « chat_id = {chat} » à la section [telegram] de config.toml, puis \
-                         relance le daemon Argos."
+                         « chat_id = {chat} » à la section [channels.{}] de config.toml, \
+                         puis relance le daemon Argos.",
+                        self.id
                     ),
                 )
                 .await;
@@ -306,7 +302,7 @@ impl Telegram {
             return self.answer(chat, &escalation, &text).await;
         }
         self.bot.action(chat, "typing").await;
-        let prefix = if voice { VOICE_PREFIX } else { PREFIX };
+        let prefix = crate::channels::prefix(&self.id, voice);
         let delivered = self
             .supervisor
             .deliver(&self.assistant, Origin::User, format!("{prefix}\n{text}"))
@@ -365,11 +361,11 @@ impl Telegram {
         locked(&self.escalations).get(&message_id).cloned()
     }
 
-    /// Suit l'Assistant : le canal de l'utilisateur, ses réponses, les escalades.
+    /// Suit les escalades ouvertes, pour les annoncer une fois chacune.
     async fn follow(
         self: Arc<Self>,
         mut events: broadcast::Receiver<DaemonEvent>,
-        outgoing: mpsc::UnboundedSender<Outgoing>,
+        outgoing: mpsc::UnboundedSender<Escalation>,
     ) {
         let mut announced = HashSet::new();
         loop {
@@ -378,73 +374,48 @@ impl Telegram {
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return,
             };
-            let next = match event {
-                DaemonEvent::Input {
-                    agent,
-                    from: Origin::User,
-                    text,
-                } if agent == self.assistant => {
-                    *locked(&self.route) = route_of(&text);
-                    None
-                }
-                DaemonEvent::Message { agent, text } if agent == self.assistant => {
-                    match *locked(&self.route) {
-                        Route::Console => None,
-                        route => Some(Outgoing::Reply {
-                            text,
-                            voice: route == Route::Voice && self.config.voice_replies,
-                        }),
-                    }
-                }
-                DaemonEvent::EscalationUpdated { escalation }
-                    if self.config.escalations
-                        && escalation.state == EscalationState::Open
-                        && announced.insert(escalation.id.clone()) =>
-                {
-                    Some(Outgoing::Escalation(escalation))
-                }
-                _ => None,
-            };
-            if let Some(next) = next
-                && outgoing.send(next).is_err()
+            if let DaemonEvent::EscalationUpdated { escalation } = event
+                && self.config.escalations
+                && escalation.state == EscalationState::Open
+                && announced.insert(escalation.id.clone())
+                && outgoing.send(escalation).is_err()
             {
                 return;
             }
         }
     }
 
-    async fn send(self: Arc<Self>, mut queue: mpsc::UnboundedReceiver<Outgoing>) {
-        while let Some(next) = queue.recv().await {
-            let Some(chat) = self.config.chat_id else {
-                continue;
-            };
-            match next {
-                Outgoing::Reply { text, voice: true } => self.speak(chat, &text).await,
-                Outgoing::Reply { text, voice: false } => self.say(chat, &text).await,
-                Outgoing::Escalation(escalation) => self.announce(chat, &escalation).await,
+    async fn send(self: Arc<Self>, mut queue: mpsc::UnboundedReceiver<Escalation>) {
+        while let Some(escalation) = queue.recv().await {
+            if let Some(chat) = self.config.chat_id {
+                self.announce(chat, &escalation).await;
             }
         }
     }
 
-    /// Répond en vocal, le texte en légende ; en texte seul si la synthèse échoue.
-    async fn speak(&self, chat: i64, text: &str) {
+    /// Envoie en vocal, le texte en légende ; en texte seul si la synthèse échoue, ce que
+    /// rend `Ok(Some(…))`.
+    async fn speak(&self, chat: i64, text: &str) -> Result<Option<String>, String> {
         self.bot.action(chat, "record_voice").await;
-        match self.speech.synthesize(text).await {
-            Ok(ogg) => {
-                let short = text.chars().count() <= MAX_CAPTION;
-                let sent = self.bot.send_voice(chat, ogg, short.then_some(text)).await;
-                match sent {
-                    Ok(()) if short => {}
-                    Ok(()) => self.say(chat, text).await,
-                    Err(error) => {
-                        eprintln!("telegram : envoi du vocal impossible : {error}");
-                        self.say(chat, text).await;
-                    }
-                }
-            }
+        let ogg = match self.speech.synthesize(text).await {
+            Ok(ogg) => ogg,
             Err(error) => {
                 eprintln!("telegram : synthèse impossible : {error}");
-                self.say(chat, text).await;
+                self.bot.send_text(chat, text).await?;
+                return Ok(Some(format!("en texte : synthèse impossible ({error})")));
+            }
+        };
+        let short = text.chars().count() <= MAX_CAPTION;
+        match self.bot.send_voice(chat, ogg, short.then_some(text)).await {
+            Ok(()) if short => Ok(None),
+            Ok(()) => {
+                self.bot.send_text(chat, text).await?;
+                Ok(None)
+            }
+            Err(error) => {
+                eprintln!("telegram : envoi du vocal impossible : {error}");
+                self.bot.send_text(chat, text).await?;
+                Ok(Some(format!("en texte : vocal refusé ({error})")))
             }
         }
     }
@@ -489,15 +460,39 @@ impl Telegram {
     }
 }
 
-/// Le canal d'un message de l'utilisateur à l'Assistant, d'après son préfixe.
-fn route_of(text: &str) -> Route {
-    if text.starts_with(VOICE_PREFIX) {
-        Route::Voice
-    } else if text.starts_with(PREFIX) {
-        Route::Text
-    } else {
-        Route::Console
+impl Channel for Telegram {
+    fn unavailable(&self) -> Option<String> {
+        self.config
+            .chat_id
+            .is_none()
+            .then(|| "chat_id pas encore configuré".to_string())
     }
+
+    fn send(&self, text: String, voice: bool) -> BoxFuture<'_, Result<Option<String>, String>> {
+        Box::pin(async move {
+            let chat = self.config.chat_id.ok_or("chat_id pas encore configuré")?;
+            if voice {
+                self.speak(chat, &text).await
+            } else {
+                self.bot.send_text(chat, &text).await.map(|_| None)
+            }
+        })
+    }
+}
+
+/// Variable d'environnement du jeton d'un canal : `ARGOS_TELEGRAM_TOKEN` pour `telegram`.
+fn token_variable(id: &str) -> String {
+    let id: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("ARGOS_{id}_TOKEN")
 }
 
 /// Un programme nommé seul est cherché dans le `PATH`, puis chez Homebrew : un daemon
@@ -532,20 +527,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_route_follows_the_last_channel() {
-        assert_eq!(route_of("[Depuis Telegram]\nsalut"), Route::Text);
-        assert_eq!(
-            route_of("[Depuis Telegram, message vocal transcrit]\nsalut"),
-            Route::Voice
-        );
-        assert_eq!(route_of("salut"), Route::Console);
+    fn each_channel_has_its_own_token_variable() {
+        assert_eq!(token_variable("telegram"), "ARGOS_TELEGRAM_TOKEN");
+        assert_eq!(token_variable("bot-perso"), "ARGOS_BOT_PERSO_TOKEN");
     }
 
     #[test]
     fn an_empty_section_turns_the_bridge_on_with_defaults() {
         let config: TelegramConfig = toml::from_str("").unwrap();
         assert_eq!(config.chat_id, None);
-        assert!(config.voice_replies && config.escalations);
+        assert!(config.escalations);
         assert_eq!(config.api, "https://api.telegram.org");
     }
 }

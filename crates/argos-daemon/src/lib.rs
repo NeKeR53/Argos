@@ -3,6 +3,7 @@
 pub mod api;
 pub mod attachments;
 pub mod capabilities;
+pub mod channels;
 pub mod config;
 pub mod contracts;
 pub mod engine;

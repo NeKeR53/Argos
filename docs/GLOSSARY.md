@@ -63,6 +63,8 @@ Vocabulaire canonique du projet. Le code, les docs et les prompts des agents uti
 - **GUI** — l'app Tauri sur le Mac : orbe, console, fenêtres de surfaces.
 - **Orbe** — la bulle vocale de l'Assistant, toujours au premier plan.
 - **Console** — panneau invocable au raccourci : arbre des Agents, état global, escalades, panic stop.
+- **Canal** — voie de discussion entre l'utilisateur et l'Assistant hors de la console et de l'orbe (D45), par exemple un bot Telegram. Instance configurée d'un type de canal, avec un seul interlocuteur. L'Assistant choisit sur quel canal il écrit.
+- **Type de canal** — connecteur de messagerie codé dans le daemon (`telegram`…), qui transporte sans décider et déclare ses capacités (texte, vocal, boutons…).
 - **Isolation** — mode d'exécution d'un agent : conteneur ou répertoire borné.
 
 - **Workspace** — répertoire de projet sur le nœud de l’Agent, partagé avec ses Workers. Son `AGENTS.md` fournit les consignes du projet. Distinct de la mémoire Argos et du `CODEX_HOME` isolé.

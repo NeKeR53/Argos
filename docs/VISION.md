@@ -123,12 +123,21 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 
 ## 13 quinquies. Messagerie
 
-- **D43 — Telegram, canal texte et vocal vers l'Assistant** (décidé le 2026-10-31). Depuis son téléphone, l'utilisateur écrit ou envoie un vocal à un bot Telegram personnel. Le daemon du hub relaie, il ne décide pas (D5) :
-  - **Vers l'Assistant seulement**, comme la voix (D2, D3) : un message est remis au nom de l'utilisateur, préfixé « [Depuis Telegram] » ou « [Depuis Telegram, message vocal transcrit] ». Jamais à un Agent ni à un Worker.
-  - **Les réponses suivent le dernier canal** : après un message Telegram, les messages de l'Assistant partent sur Telegram, en vocal si on lui a parlé en vocal, jusqu'au prochain message tapé dans la console ou dit à l'orbe.
-  - **Escalades** : signalées sur Telegram avec leurs options en boutons ; une réponse libre se donne en citant le message. Exception explicite à D2 : l'utilisateur peut répondre à un Agent escaladé depuis Telegram, sans dialogue au-delà de cette réponse.
-  - **Vocaux en local** : transcription `whisper-cli`, synthèse `say` ou Kokoro selon `[voice]`, conversions `ffmpeg`. Seul Telegram voit le son et le texte.
-  - **Un seul interlocuteur** (`chat_id`) ; un inconnu n'obtient rien. Long polling : aucun port ouvert. Jeton hors de `config.toml`.
+- **D45 — Canaux de discussion** (décidé le 2026-11-01). Un canal est une voie par laquelle l'utilisateur parle à l'Assistant hors de la console et de l'orbe : Telegram d'abord, d'autres messageries plus tard. Le daemon transporte, l'Assistant choisit où il répond (D5). Pas d'Agent intermédiaire : il ajouterait deux tours de LLM par échange, de la latence en vocal et une reformulation, alors que l'utilisateur ne parle qu'à l'Assistant (D2, D3). Les règles :
+  - **Type et canal** : un type de canal est un connecteur codé dans le daemon (`telegram`, puis d'autres), qui ne fait que transporter. Un canal est une instance configurée d'un type, nommée par son identifiant : `[channels.<id>]` dans `config.toml` avec `type = "<type>"`, son unique interlocuteur et ses secrets hors de `config.toml`. Ajouter une messagerie, c'est ajouter un type ; ajouter un compte ou un bot, c'est ajouter un canal.
+  - **Capacités déclarées par le type** : texte, vocal reçu, vocal envoyé, boutons, pièces jointes, longueur maximale d'un message. Ce que le canal ne sait pas faire est refusé ou dégradé par le daemon (vocal → texte, boutons → options numérotées), jamais ignoré en silence.
+  - **Un seul interlocuteur par canal** : l'utilisateur. Un inconnu n'obtient rien. Aucun port ouvert quand le type permet de s'en passer.
+  - **Entrée** : un message reçu est remis à l'Assistant au nom de l'utilisateur, préfixé par son canal, par exemple « [Canal telegram] » ou « [Canal telegram, message vocal transcrit] ». Jamais à un Agent ni à un Worker. Les vocaux sont transcrits en local, avec le moteur de `[voice]`.
+  - **Sortie, décidée par l'Assistant** : outil `channel_send(channel, text, voice?)`, réservé à l'Assistant, et `channel_list` pour connaître les canaux actifs et leurs capacités. Rien ne part sur un canal de lui-même : pour répondre à un message venu d'un canal, l'Assistant y renvoie explicitement, sur le même ou sur un autre. Il peut aussi y écrire de sa propre initiative : prévenir l'utilisateur qui l'a demandé, ou lui donner un résultat attendu. Il condense pour le canal. La console garde tout le fil, quel que soit le canal.
+  - **Escalades** : réglage par canal (`escalations = true`). Le daemon les y annonce lui-même, une fois chacune, avec les options en boutons si le canal en a. Exception explicite à D2 : l'utilisateur peut répondre à un Agent escaladé depuis un canal, sans dialogue au-delà de cette réponse.
+  - **Garde-fou déterministe** (D34) : un plafond d'envois par heure et par canal, au-delà duquel le daemon refuse `channel_send` et le signale à l'Assistant.
+  - **Sur le hub seulement**, comme l'Assistant.
+
+- **D43 — Telegram, premier type de canal** (décidé le 2026-10-31, rattaché à D45 le 2026-11-01). Depuis son téléphone, l'utilisateur écrit ou envoie un vocal à un bot Telegram personnel. Ce qui est propre à Telegram :
+  - **Capacités** : texte, vocal dans les deux sens, boutons. Ni photo ni document pour l'instant. Au-delà de 1 024 caractères, la légende d'un vocal est suivie d'un message texte.
+  - **Interlocuteur** : le `chat_id` configuré. Long polling `getUpdates` : aucun port ouvert. Jeton dans un fichier à part.
+  - **Vocaux** : conversion `ffmpeg`, transcription `whisper-cli`, synthèse `say` ou Kokoro selon `[voice]`, envoi en Ogg/Opus. Seul Telegram voit le son et le texte.
+  - **Réponse libre à une escalade** : en citant le message qui l'annonce, en texte ou en vocal.
   - **Limite assumée** : les conversations avec un bot ne sont pas chiffrées de bout en bout, Telegram peut les lire.
 
 ## 14. Phases

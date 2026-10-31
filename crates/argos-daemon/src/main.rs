@@ -1,4 +1,5 @@
 use argos_core::{AgentRecord, EngineKind, Level};
+use argos_daemon::channels::ChannelKind;
 use argos_daemon::config::{Config, NodeModeConfig, load_or_create_token};
 use argos_daemon::node::Nodes;
 use argos_daemon::node::runner::{self, RunnerSettings};
@@ -127,19 +128,26 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     println!("serveur MCP des agents sur {mcp_url}/mcp/<jeton de session>");
 
     tokio::spawn(events::Events::new(supervisor.clone()).run());
-    if let Some(telegram) = config.telegram.clone() {
+    for (id, channel) in &config.channels {
+        let ChannelKind::Telegram(telegram) = channel.kind.clone();
+        let meta = channel.meta();
         match Telegram::from_config(
             supervisor.clone(),
             assistant.id.clone(),
+            id,
             telegram,
             config.voice.clone(),
             &home,
         ) {
             Ok(bridge) => {
                 bridge.spawn();
-                println!("pont Telegram actif");
+                supervisor.channels().register(id, meta, bridge);
+                println!("canal {id} actif (telegram)");
             }
-            Err(error) => eprintln!("pont Telegram désactivé : {error}"),
+            Err(error) => {
+                eprintln!("canal {id} désactivé : {error}");
+                supervisor.channels().fail(id, meta, error);
+            }
         }
     }
 
