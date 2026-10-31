@@ -158,6 +158,9 @@ export function Orb() {
     const unlisten = [
       listen("voice-state", (event) => setVoice(readVoiceState(event.payload))),
       listen("panic-shortcut", () => onPanicShortcut()),
+      listen<string>("escalations-seen", (event) => dispatch({ type: "escalations_seen", agent: event.payload })),
+      // Clic sur l'icône du Dock : comme un clic sur l'orbe, la console montre l'escalade.
+      listen("console-reopened", () => dispatch({ type: "dismiss_all_escalations" })),
       listen<{ pressed: boolean }>("push-to-talk", (event) => onPushToTalk(event.payload.pressed)),
       listen<VoiceTranscript>("voice-transcript", (event) => onTranscript(event.payload)),
       listen<VoiceEvent>("voice-event", (event) => {
@@ -175,7 +178,7 @@ export function Orb() {
       }),
     ];
     return () => unlisten.forEach((pending) => void pending.then((stop) => stop()));
-  }, [onPanicShortcut, onPushToTalk, onTranscript, showCaption]);
+  }, [dispatch, onPanicShortcut, onPushToTalk, onTranscript, showCaption]);
 
   // La fenêtre suit la pastille : elle grandit tout de suite, et ne rétrécit qu'une fois
   // la transition finie, pour ne pas couper l'animation.
@@ -231,7 +234,7 @@ export function Orb() {
     clickTimer.current = setTimeout(() => {
       clickTimer.current = null;
       // Ouvrir la console, c'est voir l'escalade : la marque s'efface.
-      state.escalations.forEach((e) => dispatch({ type: "dismiss_escalation", escalation: e.id }));
+      dispatch({ type: "dismiss_all_escalations" });
       void invoke("toggle_console");
     }, DOUBLE_CLICK_MS);
   };

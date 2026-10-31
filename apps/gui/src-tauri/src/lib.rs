@@ -6,7 +6,7 @@ mod shell;
 mod voice;
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager, RunEvent, Url, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, RunEvent, Url, WindowEvent};
 
 pub use shell::{
     EVENT_PANIC_SHORTCUT, EVENT_PUSH_TO_TALK, EVENT_VOICE_STATE, VoiceMode, VoiceState,
@@ -399,6 +399,8 @@ pub fn run() {
             let _ = console.show();
             let _ = console.unminimize();
             let _ = console.set_focus();
+            // L'orbe efface sa marque d'escalade, comme à un clic sur elle.
+            let _ = app.emit(shell::EVENT_CONSOLE_REOPENED, ());
         }
         // Toute sortie (quitter, signal de fin de session…) arrête la voix, et avec elle
         // `whisper-server`. Sans effet si `quit_app` l'a déjà fait.

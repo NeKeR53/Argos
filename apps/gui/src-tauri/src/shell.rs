@@ -23,6 +23,8 @@ pub const EVENT_VOICE_STATE: &str = "voice-state";
 /// Sans charge : un appui sur le raccourci du panic stop. L'orbe compte les appuis
 /// (deux en moins de 2 s) et envoie l'arrêt au daemon.
 pub const EVENT_PANIC_SHORTCUT: &str = "panic-shortcut";
+/// Console rouverte par l'icône du Dock (orbe rangée dans le Dock).
+pub const EVENT_CONSOLE_REOPENED: &str = "console-reopened";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

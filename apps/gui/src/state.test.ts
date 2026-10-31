@@ -241,6 +241,24 @@ describe("escalades", () => {
     expect(attention(onAssistant)).toEqual({ dom: 1 });
   });
 
+  it("signalent l'Agent vu, pour que l'orbe efface aussi sa marque", () => {
+    const pending = run(tree, { type: "select", agent: "w1" }, input("a0", escalation));
+    const opened = reduce(pending, { type: "select", agent: "dom" });
+    expect(opened.seenEscalations).toEqual({ agent: "dom", seq: expect.any(Number) });
+    const again = reduce(opened, { type: "select", agent: "dom" });
+    expect(again.seenEscalations).not.toEqual(opened.seenEscalations);
+    const shown = run(tree, { type: "select", agent: "dom" }, input("a0", escalation));
+    expect(shown.seenEscalations).toMatchObject({ agent: "dom" });
+  });
+
+  it("s'effacent dans l'orbe quand la console les a vues, ou qu'on l'ouvre", () => {
+    const orb = run(tree, input("a0", escalation));
+    expect(orb.escalations).toHaveLength(1);
+    expect(reduce(orb, { type: "escalations_seen", agent: "w1" }).escalations).toHaveLength(1);
+    expect(reduce(orb, { type: "escalations_seen", agent: "dom" }).escalations).toEqual([]);
+    expect(reduce(orb, { type: "dismiss_all_escalations" }).escalations).toEqual([]);
+  });
+
   it("ne viennent que des inputs de l'Assistant", () => {
     expect(run(tree, input("dom", escalation)).escalations).toEqual([]);
     expect(run(tree, input("a0", "[Rapport de l'Agent « DOM » (dom)]\nfini")).escalations).toEqual([]);

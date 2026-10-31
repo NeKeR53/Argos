@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { resolveHooksBase } from "./hooks";
 import "./App.css";
 import "./messagerie.css";
@@ -38,6 +39,12 @@ const VOICE_TRIAL = import.meta.env.DEV && isTauri();
 export default function App() {
   const { state, dispatch, send, request } = useDaemon();
   useVoiceView(dispatch);
+  // L'orbe tient sa propre liste d'escalades (marque du Dock) : ce qui est vu ici
+  // l'efface là-bas aussi.
+  const seen = state.seenEscalations;
+  useEffect(() => {
+    if (seen && isTauri()) void emit("escalations-seen", seen.agent);
+  }, [seen]);
   const [hooksBase, setHooksBase] = useState<string | null>(null);
   useEffect(() => {
     void resolveHooksBase().then(setHooksBase);

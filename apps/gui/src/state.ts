@@ -155,6 +155,11 @@ export interface AppState {
   escalations: Escalation[];
   /** Escalades arrivées depuis la dernière consultation de l'Assistant. */
   unseenEscalations: number;
+  /**
+   * Dernier Agent dont les escalades viennent d'être vues ici (`seq` le distingue d'une
+   * fois à l'autre). La console le diffuse pour que l'orbe efface aussi sa marque.
+   */
+  seenEscalations: { agent: AgentId; seq: number } | null;
   /** Requêtes sans réponse, par id. */
   pending: Record<number, Command>;
   notices: Notice[];
@@ -171,7 +176,10 @@ export type Action =
   | { type: "requested"; id: number; command: Command }
   | { type: "select"; agent: AgentId }
   | { type: "dismiss"; notice: number }
-  | { type: "dismiss_escalation"; escalation: number }
+  /** Les escalades de cet Agent ont été vues dans une autre fenêtre. */
+  | { type: "escalations_seen"; agent: AgentId }
+  /** La console vient d'être ouverte depuis l'orbe : ses escalades sont vues. */
+  | { type: "dismiss_all_escalations" }
   /** Voix (événements du cœur Rust, voir `voice.ts`). */
   | { type: "voice_status"; status: VoiceStatus }
   | { type: "voice_partial"; text: string }
@@ -207,6 +215,7 @@ export const initialState: AppState = {
   profiles: null,
   escalations: [],
   unseenEscalations: 0,
+  seenEscalations: null,
   pending: {},
   notices: [],
   selected: null,
@@ -235,17 +244,22 @@ export function reduce(state: AppState, action: Action): AppState {
     }
     case "select": {
       // Ouvrir un agent, c'est voir ses escalades ; ouvrir l'Assistant, celles qu'il a relayées.
+      const seq = state.seq + 1;
       const next = {
         ...state,
+        seq,
         selected: action.agent,
         escalations: state.escalations.filter((escalation) => escalation.agent !== action.agent),
+        seenEscalations: { agent: action.agent, seq },
       };
       return state.agents[action.agent]?.level === "assistant" ? { ...next, unseenEscalations: 0 } : next;
     }
     case "dismiss":
       return { ...state, notices: state.notices.filter((notice) => notice.id !== action.notice) };
-    case "dismiss_escalation":
-      return { ...state, escalations: state.escalations.filter((e) => e.id !== action.escalation) };
+    case "escalations_seen":
+      return { ...state, escalations: state.escalations.filter((e) => e.agent !== action.agent) };
+    case "dismiss_all_escalations":
+      return { ...state, escalations: [] };
     case "voice_status": {
       const previous = state.voice.status;
       const next = { ...state, voice: { ...state.voice, status: action.status } };
@@ -552,6 +566,8 @@ function withEscalation(state: AppState, text: string): AppState {
       ? [...next.escalations, { id: seq, ...source, text: body }].slice(-ESCALATION_LIMIT)
       : next.escalations,
     unseenEscalations: assistantShown ? 0 : next.unseenEscalations + 1,
+    // Arrivée sous les yeux de l'utilisateur : elle est vue d'emblée.
+    seenEscalations: agent !== null && !pending ? { agent, seq } : next.seenEscalations,
   };
 }
 
