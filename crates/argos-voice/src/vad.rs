@@ -99,6 +99,14 @@ impl Vad {
         self.state = idle();
     }
 
+    /// L'énoncé en cours, pré-roulement compris ; `None` hors énoncé.
+    pub fn current(&self) -> Option<&[f32]> {
+        match &self.state {
+            State::Speaking { utterance, .. } => Some(utterance),
+            State::Idle { .. } => None,
+        }
+    }
+
     /// Analyse des échantillons 16 kHz mono. `playing` : la synthèse parle en ce moment.
     pub fn push(&mut self, samples: &[f32], playing: bool) -> Vec<VadEvent> {
         let mut events = vec![];

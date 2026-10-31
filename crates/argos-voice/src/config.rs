@@ -18,6 +18,7 @@ const MIN_PARTIAL_INTERVAL_MS: u64 = 100;
 /// voice = "Thomas"                    # voix de `say` (`say -v '?'` pour la liste)
 /// partial_interval_ms = 700           # cadence des hypothèses partielles
 /// hands_free = false                  # écoute continue au démarrage (sinon push-to-talk)
+/// wake_word = "Argos"                 # mot qui ouvre une demande en mains libres ("" : aucun)
 /// ```
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct VoiceConfig {
@@ -45,6 +46,17 @@ pub struct VoiceConfig {
     /// Écoute mains libres dès le démarrage : chaque énoncé détecté part à l'Assistant.
     #[serde(default)]
     pub hands_free: bool,
+    /// Mot de déclenchement de l'écoute mains libres ; vide, toute voix est une demande
+    /// (à réserver à un casque : sinon la réponse lue s'entend elle-même).
+    #[serde(default = "default_wake_word")]
+    pub wake_word: String,
+}
+
+/// Mot de déclenchement par défaut.
+pub const DEFAULT_WAKE_WORD: &str = "Argos";
+
+fn default_wake_word() -> String {
+    DEFAULT_WAKE_WORD.into()
 }
 
 fn default_whisper_server() -> PathBuf {
@@ -90,6 +102,7 @@ impl VoiceConfig {
             kokoro_voice: default_kokoro_voice(),
             partial_interval_ms: default_partial_interval_ms(),
             hands_free: false,
+            wake_word: default_wake_word(),
         }
     }
 

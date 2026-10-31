@@ -150,16 +150,21 @@ export function ConnectionStatus({ connection, compact = false }: { connection: 
 }
 
 /**
- * Écoute continue : le micro reste ouvert et chaque phrase détectée part à l'Assistant,
- * en coupant sa lecture. Sans casque, il faut parler plus fort que le haut-parleur.
+ * Écoute continue : le micro reste ouvert, et une phrase qui commence par le mot de
+ * déclenchement (« Argos, … ») part à l'Assistant en coupant sa lecture.
  */
 function HandsFree() {
   const [on, setOn] = useState<boolean | null>(null);
+  const [wake, setWake] = useState("");
   useEffect(() => {
-    void invoke<VoiceInfo>("voice_status").then((info) => setOn(info.hands_free ?? false));
+    void invoke<VoiceInfo>("voice_status").then((info) => {
+      setOn(info.hands_free ?? false);
+      setWake(info.wake_word ?? "");
+    });
   }, []);
+  const active = wake ? `Active : dites « ${wake}, … »` : "Active : toute voix est une demande (casque conseillé)";
   return (
-    <label className="hands-free" title="Sans casque, parlez plus fort que le haut-parleur pour couper la lecture">
+    <label className="hands-free" title="Mot de déclenchement : [voice] wake_word dans config.toml">
       <input
         type="checkbox"
         checked={on ?? false}
@@ -170,7 +175,7 @@ function HandsFree() {
           void invoke<boolean>("voice_set_hands_free", { on: wanted }).then(setOn, () => setOn(!wanted));
         }}
       />
-      {on ? "Active : parlez, l'Assistant vous écoute" : "Coupée (push-to-talk)"}
+      {on ? active : "Coupée (push-to-talk)"}
     </label>
   );
 }

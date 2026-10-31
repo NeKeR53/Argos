@@ -12,8 +12,9 @@
 //! - [`EVENT_VOICE_TRANSCRIPT`] : `{"text", "simulated"}`, transcription finale d'un appui
 //!   (ou injectée par `voice_simulate` en debug), que le front envoie à l'Assistant.
 //!
-//! En écoute mains libres, un énoncé détecté se présente au front comme un appui : un
-//! `push-to-talk` pressé à la détection (barge-in), relâché à la fin, puis sa transcription.
+//! En écoute mains libres, une demande (« Argos, … ») se présente au front comme un appui :
+//! un `push-to-talk` pressé dès le mot reconnu (barge-in), relâché à la fin, puis la
+//! transcription sans le mot.
 
 use crate::shell::{self, VoiceMode};
 use argos_voice::{VoiceConfig, VoiceEngine, VoiceError, VoiceEvent};
@@ -75,6 +76,8 @@ pub struct VoiceInfo {
     pub status: VoiceStatus,
     pub speak_typed_replies: bool,
     pub hands_free: bool,
+    /// Mot qui ouvre une demande en mains libres (vide : aucun).
+    pub wake_word: String,
 }
 
 impl Voice {
@@ -95,6 +98,10 @@ impl Voice {
             status: locked(&self.status).clone(),
             speak_typed_replies: self.speak_typed_replies,
             hands_free: *locked(&self.hands_free),
+            wake_word: self
+                .engine()
+                .map(|engine| engine.wake_word())
+                .unwrap_or_default(),
         }
     }
 

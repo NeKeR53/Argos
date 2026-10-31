@@ -313,6 +313,8 @@ fn free_port() -> Result<u16, VoiceError> {
 pub struct WhisperClient {
     addr: SocketAddr,
     language: String,
+    /// Texte soufflé au décodeur (`prompt`) : les noms propres à écrire juste.
+    prompt: Option<String>,
 }
 
 impl WhisperClient {
@@ -320,12 +322,19 @@ impl WhisperClient {
         Self {
             addr,
             language: language.to_string(),
+            prompt: None,
         }
+    }
+
+    /// Souffle `prompt` à Whisper ; vide, rien n'est soufflé.
+    pub fn with_prompt(mut self, prompt: &str) -> Self {
+        self.prompt = Some(prompt.trim().to_string()).filter(|p| !p.is_empty());
+        self
     }
 
     async fn post(&self, samples: Vec<f32>) -> Result<String, VoiceError> {
         let wav = audio::encode_wav(&audio::pad_for_whisper(&samples));
-        let (content_type, body) = inference_body(&self.language, &wav);
+        let (content_type, body) = inference_body(&self.language, self.prompt.as_deref(), &wav);
         let response = timeout(
             REQUEST_TIMEOUT,
             http::request(
@@ -350,14 +359,16 @@ impl Transcriber for WhisperClient {
     }
 }
 
-fn inference_body(language: &str, wav: &[u8]) -> (String, Vec<u8>) {
-    Multipart::new()
+fn inference_body(language: &str, prompt: Option<&str>, wav: &[u8]) -> (String, Vec<u8>) {
+    let mut body = Multipart::new()
         .text("language", language)
         .text("response_format", "json")
         // Décodage glouton : déterministe, et le plus rapide pour les partielles.
-        .text("temperature", "0.0")
-        .file("file", "audio.wav", "audio/wav", wav)
-        .finish()
+        .text("temperature", "0.0");
+    if let Some(prompt) = prompt {
+        body = body.text("prompt", prompt);
+    }
+    body.file("file", "audio.wav", "audio/wav", wav).finish()
 }
 
 fn parse_inference(status: u16, body: &[u8]) -> Result<String, VoiceError> {
@@ -401,7 +412,7 @@ mod tests {
     #[test]
     fn the_inference_request_carries_language_and_wav() {
         let wav = audio::encode_wav(&[0.0; 16]);
-        let (content_type, body) = inference_body("fr", &wav);
+        let (content_type, body) = inference_body("fr", None, &wav);
         let boundary = content_type
             .strip_prefix("multipart/form-data; boundary=")
             .unwrap();
@@ -412,6 +423,9 @@ mod tests {
         assert!(text.ends_with(&format!("--{boundary}--\r\n")));
         let start = body.windows(4).position(|w| w == b"RIFF").unwrap();
         assert_eq!(&body[start..start + wav.len()], &wav[..]);
+        assert!(!text.contains("name=\"prompt\""));
+        let (_, body) = inference_body("fr", Some("Argos"), &wav);
+        assert!(String::from_utf8_lossy(&body).contains("name=\"prompt\"\r\n\r\nArgos\r\n"));
     }
 
     #[test]

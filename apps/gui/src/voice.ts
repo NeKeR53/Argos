@@ -13,7 +13,7 @@ export type VoiceStatus =
 
 /** Réponse de la commande `voice_status`. */
 /** `voice_status` : état, lecture des réponses tapées, écoute mains libres. */
-export type VoiceInfo = VoiceStatus & { speak_typed_replies: boolean; hands_free?: boolean };
+export type VoiceInfo = VoiceStatus & { speak_typed_replies: boolean; hands_free?: boolean; wake_word?: string };
 
 /** `voice-event` : un `argos_voice::VoiceEvent`. */
 export type VoiceEvent =

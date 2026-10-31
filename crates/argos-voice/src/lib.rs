@@ -20,6 +20,7 @@ pub mod sentences;
 pub mod stt;
 pub mod tts;
 pub mod vad;
+pub mod wake;
 pub mod whisper;
 
 pub use capture::{ActiveCapture, AudioSource, CaptureSink, CpalSource};

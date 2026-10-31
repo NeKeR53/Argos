@@ -4,6 +4,7 @@ use crate::capture::{ActiveCapture, AudioSource, CaptureSink, CpalSource};
 use crate::stt::{self, Transcriber, Turn};
 use crate::tts::{KokoroSpeaker, SaySpeaker, Speaker, SpeechQueue};
 use crate::vad::{Vad, VadEvent, VadSettings};
+use crate::wake;
 use crate::whisper::WhisperServer;
 use crate::{VoiceConfig, VoiceError};
 use serde::Serialize;
@@ -20,6 +21,12 @@ const EVENT_CAPACITY: usize = 256;
 const MIN_FINAL_SAMPLES: usize = crate::audio::SAMPLE_RATE as usize * 3 / 10;
 /// Cadence à laquelle l'écoute mains libres lit le micro.
 const HANDS_FREE_TICK: Duration = Duration::from_millis(20);
+/// Début d'énoncé transcrit pour y chercher le mot de déclenchement (pré-roulement compris).
+const EARLY_WAKE_SAMPLES: usize = crate::audio::SAMPLE_RATE as usize * 3 / 2;
+/// Après « Argos » seul, délai laissé pour formuler la demande.
+const WAKE_WINDOW: Duration = Duration::from_secs(8);
+/// Ce que la synthèse a dit reste comparé à ce qu'on entend pendant ce temps.
+const ECHO_MEMORY: Duration = Duration::from_secs(20);
 
 /// Ce que le moteur publie, pour l'orbe et la console. Sérialisé tel quel vers le front
 /// (`{"type": "partial", "text": "..."}`).
@@ -48,10 +55,11 @@ pub enum VoiceEvent {
     SpeechFinished {
         interrupted: bool,
     },
-    /// Écoute mains libres : la voix de l'utilisateur vient d'être détectée. La parole en
-    /// cours est déjà coupée (barge-in).
+    /// Écoute mains libres : le mot de déclenchement vient d'être reconnu (ou, sans mot,
+    /// une voix détectée). La parole en cours est déjà coupée (barge-in).
     HandsFreeStarted,
-    /// Écoute mains libres : fin de l'énoncé et sa transcription (vide si rien de net).
+    /// Écoute mains libres : la demande, sans le mot de déclenchement (vide si rien de net).
+    /// Suit toujours un `HandsFreeStarted`.
     HandsFreeHeard {
         text: String,
     },
@@ -81,6 +89,8 @@ pub struct VoiceEngine {
     /// Push-to-talk en cours : l'écoute mains libres se tait pendant ce temps.
     pressed: Arc<AtomicBool>,
     hands_free: Mutex<Option<HandsFree>>,
+    /// Mot de déclenchement de l'écoute mains libres (vide : aucun).
+    wake_word: std::sync::Mutex<String>,
     server: Mutex<Option<WhisperServer>>,
 }
 
@@ -126,11 +136,17 @@ impl VoiceEngine {
         let engine = Self::with_backends(
             Backends {
                 source: Arc::new(CpalSource),
-                transcriber: Arc::new(server.client(&config.language)),
+                // Le nom à reconnaître, soufflé à Whisper pour qu'il l'écrive juste.
+                transcriber: Arc::new(
+                    server
+                        .client(&config.language)
+                        .with_prompt(&config.wake_word),
+                ),
                 speaker,
             },
             config.partial_interval(),
         );
+        engine.set_wake_word(&config.wake_word);
         *engine.server.lock().await = Some(server);
         Ok(engine)
     }
@@ -149,6 +165,7 @@ impl VoiceEngine {
             listening: Mutex::new(None),
             pressed: Arc::new(AtomicBool::new(false)),
             hands_free: Mutex::new(None),
+            wake_word: std::sync::Mutex::new(crate::config::DEFAULT_WAKE_WORD.into()),
             server: Mutex::new(None),
         }
     }
@@ -210,9 +227,10 @@ impl VoiceEngine {
         Ok(text)
     }
 
-    /// Active ou coupe l'écoute mains libres : le micro reste ouvert, chaque énoncé
-    /// détecté coupe la parole en cours puis est transcrit ([`VoiceEvent::HandsFreeStarted`],
-    /// [`VoiceEvent::HandsFreeHeard`]). Le push-to-talk reste utilisable à côté.
+    /// Active ou coupe l'écoute mains libres : le micro reste ouvert, et chaque énoncé qui
+    /// commence par le mot de déclenchement est une demande ([`VoiceEvent::HandsFreeStarted`]
+    /// dès le mot reconnu, qui coupe la parole en cours, puis [`VoiceEvent::HandsFreeHeard`]
+    /// avec la demande sans le mot). Le push-to-talk reste utilisable à côté.
     pub async fn set_hands_free(&self, on: bool) -> Result<(), VoiceError> {
         let mut hands_free = self.hands_free.lock().await;
         if !on {
@@ -237,9 +255,26 @@ impl VoiceEngine {
             transcriber: Arc::clone(&self.transcriber),
             pressed: Arc::clone(&self.pressed),
             vad: Vad::new(VadSettings::default()),
+            wake_word: self.wake_word(),
         }));
         *hands_free = Some(HandsFree { capture, task });
         Ok(())
+    }
+
+    /// Mot de déclenchement de l'écoute mains libres ; vide, toute voix est une demande.
+    /// Pris en compte à la prochaine activation.
+    pub fn set_wake_word(&self, word: &str) {
+        *self
+            .wake_word
+            .lock()
+            .expect("verrou du mot de déclenchement") = word.trim().to_string();
+    }
+
+    pub fn wake_word(&self) -> String {
+        self.wake_word
+            .lock()
+            .expect("verrou du mot de déclenchement")
+            .clone()
     }
 
     pub async fn hands_free(&self) -> bool {
@@ -290,21 +325,123 @@ struct HandsFreeLoop {
     transcriber: Arc<dyn Transcriber>,
     pressed: Arc<AtomicBool>,
     vad: Vad,
+    /// Mot de déclenchement ; vide : tout énoncé est une demande (casque conseillé).
+    wake_word: String,
 }
 
-/// Lit le micro toutes les 20 ms et le passe au détecteur. La synthèse est suivie par
-/// ses propres événements : pendant qu'elle parle, le détecteur compte avec l'écho.
+/// Transcription rendue à la boucle : `early` pour le début d'un énoncé encore en cours
+/// (le mot de déclenchement y est-il ?), sinon l'énoncé complet.
+struct Heard {
+    utterance: u64,
+    early: bool,
+    text: String,
+}
+
+/// Lit le micro toutes les 20 ms et le passe au détecteur de parole. Avec un mot de
+/// déclenchement, un énoncé n'est une demande que s'il commence par ce mot ; seul le mot
+/// coupe la parole en cours (vérifié sur la première seconde, sans attendre la fin), et
+/// « Argos » seul ouvre une fenêtre de quelques secondes pour la demande. Ce que la
+/// synthèse vient de dire, revenu par le micro, est écarté.
 async fn run_hands_free(mut state: HandsFreeLoop) {
     let mut own_events = state.events.subscribe();
+    let (heard_tx, mut heard_rx) = tokio::sync::mpsc::unbounded_channel::<Heard>();
     let mut playing = false;
+    // Phrases dites par la synthèse, et quand : le filtre d'écho les compare à ce qu'on entend.
+    let mut spoken: std::collections::VecDeque<(tokio::time::Instant, String)> = Default::default();
+    let mut utterance = 0u64;
+    let mut early_sent = false;
+    // `HandsFreeStarted` émis, en attente de son `HandsFreeHeard`.
+    let mut open = false;
+    // « Argos » seul : la demande suivante est attendue jusqu'à cette échéance.
+    let mut armed_until: Option<tokio::time::Instant> = None;
+    let wake = state.wake_word.trim().to_string();
     let mut tick = tokio::time::interval(HANDS_FREE_TICK);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let transcribe = |samples: Vec<f32>, utterance: u64, early: bool| {
+        let transcriber = Arc::clone(&state.transcriber);
+        let events = state.events.clone();
+        let heard_tx = heard_tx.clone();
+        tokio::spawn(async move {
+            let text = transcriber
+                .transcribe(samples)
+                .await
+                .unwrap_or_else(|error| {
+                    let _ = events.send(VoiceEvent::Error {
+                        message: error.to_string(),
+                    });
+                    String::new()
+                });
+            let _ = heard_tx.send(Heard {
+                utterance,
+                early,
+                text,
+            });
+        });
+    };
     loop {
-        tick.tick().await;
+        tokio::select! {
+            _ = tick.tick() => {}
+            Some(heard) = heard_rx.recv() => {
+                let now = tokio::time::Instant::now();
+                spoken.retain(|(at, _)| now.duration_since(*at) < ECHO_MEMORY);
+                let recent: Vec<String> = spoken.iter().map(|(_, text)| text.clone()).collect();
+                let echo = wake::is_echo(&heard.text, &recent);
+                let request = if wake.is_empty() {
+                    Some(heard.text.clone())
+                } else {
+                    wake::strip_wake_word(&heard.text, &wake)
+                };
+                let armed = armed_until.is_some_and(|until| now < until);
+                if heard.early {
+                    // Le mot au début d'un énoncé encore en cours : on coupe tout de suite.
+                    if heard.utterance == utterance && !open && !echo && request.is_some() {
+                        state.speech.stop();
+                        let _ = state.events.send(VoiceEvent::HandsFreeStarted);
+                        open = true;
+                    }
+                    continue;
+                }
+                let request = match request {
+                    Some(request) if !echo => Some(request),
+                    // Dans la fenêtre ouverte par « Argos » seul, la phrase suivante compte.
+                    _ if armed && !echo && !heard.text.trim().is_empty() => Some(heard.text.clone()),
+                    _ => None,
+                };
+                match request {
+                    Some(request) if request.is_empty() && !wake.is_empty() => {
+                        if !open {
+                            state.speech.stop();
+                            let _ = state.events.send(VoiceEvent::HandsFreeStarted);
+                            open = true;
+                        }
+                        armed_until = Some(now + WAKE_WINDOW);
+                    }
+                    Some(request) => {
+                        if !open {
+                            state.speech.stop();
+                            let _ = state.events.send(VoiceEvent::HandsFreeStarted);
+                        }
+                        let _ = state.events.send(VoiceEvent::HandsFreeHeard { text: request });
+                        open = false;
+                        armed_until = None;
+                    }
+                    // Le début semblait commencer par le mot, la fin dit le contraire.
+                    None if open && !armed => {
+                        let _ = state.events.send(VoiceEvent::HandsFreeHeard { text: String::new() });
+                        open = false;
+                    }
+                    None => {}
+                }
+                continue;
+            }
+        }
         loop {
             match own_events.try_recv() {
                 Ok(VoiceEvent::SpeechStarted) => playing = true,
                 Ok(VoiceEvent::SpeechFinished { .. }) => playing = false,
+                Ok(VoiceEvent::Utterance { text }) => {
+                    spoken.push_back((tokio::time::Instant::now(), text));
+                }
                 Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
                 Err(_) => break,
             }
@@ -312,32 +449,45 @@ async fn run_hands_free(mut state: HandsFreeLoop) {
         let samples = state.sink.take();
         if state.pressed.load(Ordering::SeqCst) {
             state.vad.reset();
+            open = false;
+            armed_until = None;
             continue;
+        }
+        if armed_until.is_some_and(|until| tokio::time::Instant::now() >= until)
+            && state.vad.current().is_none()
+        {
+            armed_until = None;
+            if open {
+                let _ = state.events.send(VoiceEvent::HandsFreeHeard {
+                    text: String::new(),
+                });
+                open = false;
+            }
         }
         for event in state.vad.push(&samples, playing) {
             match event {
                 VadEvent::Started => {
-                    state.speech.stop();
-                    let _ = state.events.send(VoiceEvent::HandsFreeStarted);
+                    utterance += 1;
+                    early_sent = false;
+                    // Sans mot de déclenchement, toute voix coupe la parole.
+                    if wake.is_empty() && !open {
+                        state.speech.stop();
+                        let _ = state.events.send(VoiceEvent::HandsFreeStarted);
+                        open = true;
+                    }
                 }
-                VadEvent::Ended { samples } => {
-                    // Transcrit à part : l'écoute continue pendant ce temps.
-                    let transcriber = Arc::clone(&state.transcriber);
-                    let events = state.events.clone();
-                    tokio::spawn(async move {
-                        let text = match transcriber.transcribe(samples).await {
-                            Ok(text) => text,
-                            Err(error) => {
-                                let _ = events.send(VoiceEvent::Error {
-                                    message: error.to_string(),
-                                });
-                                String::new()
-                            }
-                        };
-                        let _ = events.send(VoiceEvent::HandsFreeHeard { text });
-                    });
-                }
+                VadEvent::Ended { samples } => transcribe(samples, utterance, false),
             }
+        }
+        // Une seconde d'énoncé suffit pour reconnaître le mot de déclenchement.
+        if !wake.is_empty()
+            && !early_sent
+            && !open
+            && let Some(current) = state.vad.current()
+            && current.len() >= EARLY_WAKE_SAMPLES
+        {
+            early_sent = true;
+            transcribe(current[..EARLY_WAKE_SAMPLES].to_vec(), utterance, true);
         }
     }
 }
@@ -458,42 +608,186 @@ mod tests {
         }
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn hands_free_cuts_the_speech_then_transcribes_the_utterance() {
-        let mut f = fixture(Duration::from_millis(50));
-        f.engine.set_hands_free(true).await.unwrap();
-        assert!(f.engine.hands_free().await);
-        f.engine
-            .speak_delta("Une longue réponse qui parle encore. ");
-        feed(&f.source, 400, 0.002).await;
-        // Une voix franche par-dessus la synthèse : barge-in, puis la fin de l'énoncé.
-        feed(&f.source, 600, 0.3).await;
-        feed(&f.source, 1200, 0.002).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    /// Faux Whisper : rend la phrase que le test lui fait « entendre ».
+    #[derive(Default)]
+    struct Saying {
+        text: StdMutex<String>,
+    }
 
-        let events: Vec<_> = drain(&mut f.events)
+    impl Saying {
+        fn say(&self, text: &str) {
+            *self.text.lock().unwrap() = text.into();
+        }
+    }
+
+    impl Transcriber for Saying {
+        fn transcribe(&self, _: Vec<f32>) -> crate::BoxFuture<'_, Result<String, VoiceError>> {
+            let text = self.text.lock().unwrap().clone();
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                Ok(text)
+            })
+        }
+    }
+
+    struct HandsFreeFixture {
+        engine: VoiceEngine,
+        source: Arc<FakeSource>,
+        whisper: Arc<Saying>,
+        events: broadcast::Receiver<VoiceEvent>,
+    }
+
+    async fn hands_free_fixture(wake_word: &str) -> HandsFreeFixture {
+        let source = Arc::new(FakeSource::default());
+        let whisper = Arc::new(Saying::default());
+        let engine = VoiceEngine::with_backends(
+            Backends {
+                source: source.clone(),
+                transcriber: whisper.clone(),
+                speaker: Arc::new(FakeSpeaker::new(Duration::from_millis(50))),
+            },
+            Duration::from_millis(700),
+        );
+        engine.set_wake_word(wake_word);
+        let events = engine.subscribe();
+        engine.set_hands_free(true).await.unwrap();
+        HandsFreeFixture {
+            engine,
+            source,
+            whisper,
+            events,
+        }
+    }
+
+    /// Les événements utiles : sans niveaux micro ni phrases lancées.
+    fn notable(events: &mut broadcast::Receiver<VoiceEvent>) -> Vec<VoiceEvent> {
+        drain(events)
             .into_iter()
             .filter(|e| !matches!(e, VoiceEvent::Level { .. } | VoiceEvent::Utterance { .. }))
-            .collect();
-        let started = events
-            .iter()
-            .position(|e| *e == VoiceEvent::HandsFreeStarted);
-        let cut = events
-            .iter()
-            .position(|e| *e == VoiceEvent::SpeechFinished { interrupted: true });
-        assert!(started.is_some() && cut.is_some(), "{events:?}");
-        let heard = events.iter().find_map(|e| match e {
-            VoiceEvent::HandsFreeHeard { text } => Some(text.clone()),
-            _ => None,
-        });
+            .collect()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_wake_word_cuts_the_speech_and_opens_a_request() {
+        let mut f = hands_free_fixture("Argos").await;
+        assert!(f.engine.hands_free().await);
+        f.engine
+            .speak_delta("Une longue réponse qui parle encore. Et encore. ");
+        feed(&f.source, 400, 0.002).await;
+        f.whisper.say("Argos, allume le salon.");
+        // Le mot est reconnu sur la première seconde : la parole est coupée avant la fin.
+        feed(&f.source, 1600, 0.3).await;
+        let during = notable(&mut f.events);
+        assert!(during.contains(&VoiceEvent::HandsFreeStarted), "{during:?}");
         assert!(
-            heard.is_some_and(|text| text.ends_with("échantillons")),
-            "{events:?}"
+            during.contains(&VoiceEvent::SpeechFinished { interrupted: true }),
+            "{during:?}"
+        );
+        feed(&f.source, 1200, 0.002).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            notable(&mut f.events),
+            vec![VoiceEvent::HandsFreeHeard {
+                text: "allume le salon.".into()
+            }]
         );
 
         f.engine.set_hands_free(false).await.unwrap();
         assert!(!f.engine.hands_free().await);
         assert_eq!(*f.source.stops.lock().unwrap(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_the_wake_word_nothing_happens_and_the_speech_goes_on() {
+        let mut f = hands_free_fixture("Argos").await;
+        f.engine
+            .speak_delta("Une longue réponse qui parle encore. ");
+        f.whisper.say("Quelle belle journée, on sort ?");
+        feed(&f.source, 400, 0.002).await;
+        feed(&f.source, 1600, 0.3).await;
+        feed(&f.source, 1200, 0.002).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let events = notable(&mut f.events);
+        assert!(
+            !events.contains(&VoiceEvent::HandsFreeStarted),
+            "{events:?}"
+        );
+        assert!(
+            !events.contains(&VoiceEvent::SpeechFinished { interrupted: true }),
+            "{events:?}"
+        );
+    }
+
+    /// La boucle d'avant : la réponse lue, revenue par le micro, ne déclenche plus rien,
+    /// même quand elle prononce le mot de déclenchement.
+    #[tokio::test(start_paused = true)]
+    async fn the_spoken_reply_heard_by_the_microphone_is_ignored() {
+        let mut f = hands_free_fixture("Argos").await;
+        f.engine.speak_delta("Argos est prêt à vous aider. ");
+        feed(&f.source, 400, 0.002).await;
+        f.whisper.say("Argos est prêt à vous aider.");
+        feed(&f.source, 1600, 0.3).await;
+        feed(&f.source, 1200, 0.002).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let events = notable(&mut f.events);
+        assert!(
+            !events.contains(&VoiceEvent::HandsFreeStarted),
+            "{events:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_wake_word_alone_waits_for_the_request() {
+        let mut f = hands_free_fixture("Argos").await;
+        feed(&f.source, 400, 0.002).await;
+        f.whisper.say("Argos ?");
+        feed(&f.source, 500, 0.3).await;
+        feed(&f.source, 1200, 0.002).await;
+        assert_eq!(notable(&mut f.events), vec![VoiceEvent::HandsFreeStarted]);
+        // La demande suit, sans répéter le mot.
+        f.whisper.say("Quelle heure est-il ?");
+        feed(&f.source, 800, 0.3).await;
+        feed(&f.source, 1200, 0.002).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            notable(&mut f.events),
+            vec![VoiceEvent::HandsFreeHeard {
+                text: "Quelle heure est-il ?".into()
+            }]
+        );
+        // Sans suite, la fenêtre se referme et l'écoute se relâche.
+        f.whisper.say("Argos");
+        feed(&f.source, 500, 0.3).await;
+        feed(&f.source, 1200, 0.002).await;
+        feed(&f.source, 9000, 0.002).await;
+        assert_eq!(
+            notable(&mut f.events),
+            vec![
+                VoiceEvent::HandsFreeStarted,
+                VoiceEvent::HandsFreeHeard {
+                    text: String::new()
+                }
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_a_wake_word_any_voice_is_a_request() {
+        let mut f = hands_free_fixture("").await;
+        f.whisper.say("Allume le salon");
+        feed(&f.source, 400, 0.002).await;
+        feed(&f.source, 600, 0.3).await;
+        feed(&f.source, 1200, 0.002).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            notable(&mut f.events),
+            vec![
+                VoiceEvent::HandsFreeStarted,
+                VoiceEvent::HandsFreeHeard {
+                    text: "Allume le salon".into()
+                }
+            ]
+        );
     }
 
     #[tokio::test(start_paused = true)]
