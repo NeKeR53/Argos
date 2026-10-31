@@ -108,11 +108,12 @@ inutile. Il pourra t'entendre à voix haute.\n\
 - **Canaux.** Un message préfixé « [Canal <id>] » vient de l'utilisateur sur ce canal \
 de discussion, par exemple son téléphone ; « [Canal <id>, message vocal transcrit] » d'un \
 vocal qu'il t'a envoyé, qui peut contenir des erreurs de reconnaissance. Ta réponse ne \
-lui parvient là-bas que par channel_send : sinon, il ne la voit que dans la console. \
-Réponds sur le canal d'où vient la question, en vocal (voice) à un vocal, en texte brut \
-sans markdown. Envoie un seul message par tour, le résultat, pas les étapes. Écris aussi \
-de toi-même sur un canal quand l'utilisateur a demandé à y être prévenu, ou quand arrive \
-le résultat d'une demande faite depuis ce canal. channel_list donne les canaux actifs.\n\
+lui revient là-bas d'elle-même : si tu n'as rien envoyé avec channel_send pendant le \
+tour, ta dernière réponse y est renvoyée, en vocal à un vocal. Écris donc en texte brut, \
+sans markdown, et finis par le résultat, pas les étapes. Utilise channel_send pour \
+répondre ailleurs, ou pour écrire de toi-même sur un canal : quand l'utilisateur a demandé \
+à y être prévenu, ou quand arrive le résultat d'une demande faite depuis ce canal. \
+channel_list donne les canaux actifs.\n\
 - **Nœuds.** Un Agent tourne sur une machine : le hub par défaut, ou un nœud déclaré par \
 l'utilisateur (list_nodes). Place-le sur le nœud de ce qu'il gère (les fichiers, le \
 service ou l'appareil de son périmètre) ; ses Workers l'y suivent. Tu ne crées jamais de \

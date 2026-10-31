@@ -3,16 +3,21 @@
 //!
 //! Un type de canal (Telegram…) est un connecteur qui transporte, il ne décide pas (D5).
 //! Un canal est une instance configurée d'un type, `[channels.<id>]`. Un message reçu est
-//! remis à l'Assistant préfixé par son canal ([`prefix`]) ; rien ne repart sur un canal de
-//! lui-même : l'Assistant y écrit avec `channel_send`, dans la limite d'un plafond horaire.
+//! remis à l'Assistant préfixé par son canal ([`prefix`]). L'Assistant y écrit avec
+//! `channel_send`, dans la limite d'un plafond horaire. Filet de sécurité ([`follow`]) : un
+//! tour ouvert par un canal qui se termine sans aucun `channel_send` y renvoie la dernière
+//! réponse de l'Assistant, en vocal pour un vocal.
 
+use crate::supervisor::Supervisor;
 use crate::telegram::TelegramConfig;
-use argos_core::protocol::{ChannelCapabilities, ChannelStatus};
+use argos_core::AgentId;
+use argos_core::protocol::{ChannelCapabilities, ChannelStatus, DaemonEvent};
 use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio::sync::broadcast;
 
 /// Fenêtre du plafond d'envois.
 const HOUR: Duration = Duration::from_secs(3600);
@@ -80,12 +85,64 @@ pub trait Channel: Send + Sync {
     fn send(&self, text: String, voice: bool) -> BoxFuture<'_, Result<Option<String>, String>>;
 }
 
+const VOICE_MARK: &str = ", message vocal transcrit]";
+
 /// Préfixe d'un message reçu sur le canal `id`.
 pub fn prefix(id: &str, voice: bool) -> String {
     if voice {
-        format!("[Canal {id}, message vocal transcrit]")
+        format!("[Canal {id}{VOICE_MARK}")
     } else {
         format!("[Canal {id}]")
+    }
+}
+
+/// Le canal d'un message préfixé par [`prefix`], et s'il vient d'un vocal.
+fn origin(text: &str) -> Option<(String, bool)> {
+    let line = text.lines().next()?.strip_prefix("[Canal ")?;
+    match line.strip_suffix(VOICE_MARK) {
+        Some(id) => Some((id.to_string(), true)),
+        None => Some((line.strip_suffix(']')?.to_string(), false)),
+    }
+}
+
+/// Tour de l'Assistant ouvert par un message reçu sur un canal.
+struct Turn {
+    channel: String,
+    voice: bool,
+    /// Dernier message de l'Assistant pendant ce tour.
+    last: Option<String>,
+    /// L'Assistant a écrit sur un canal pendant ce tour : pas de renvoi.
+    answered: bool,
+}
+
+/// Filet de sécurité : suit les tours de l'Assistant et renvoie sur son canal la réponse
+/// d'un tour qui n'a rien envoyé nulle part.
+pub async fn follow(supervisor: Supervisor, assistant: AgentId) {
+    let mut events = supervisor.subscribe();
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+        let channels = supervisor.channels();
+        let due = match event {
+            DaemonEvent::Input { agent, text, .. } if agent == assistant => {
+                channels.opened(&text);
+                None
+            }
+            DaemonEvent::Message { agent, text } if agent == assistant => {
+                channels.said(text);
+                None
+            }
+            DaemonEvent::TurnCompleted { agent, .. } if agent == assistant => channels.completed(),
+            _ => None,
+        };
+        if let Some((channel, text, voice)) = due
+            && let Err(error) = channels.send(&channel, &text, voice).await
+        {
+            eprintln!("canal {channel} : réponse non renvoyée : {error}");
+        }
     }
 }
 
@@ -93,6 +150,7 @@ pub fn prefix(id: &str, voice: bool) -> String {
 #[derive(Default)]
 pub struct Channels {
     entries: Mutex<BTreeMap<String, Entry>>,
+    turn: Mutex<Option<Turn>>,
 }
 
 struct Entry {
@@ -126,6 +184,31 @@ impl Channels {
                 sent: VecDeque::new(),
             },
         );
+    }
+
+    /// Un message remis à l'Assistant : un tour s'ouvre, venu d'un canal ou non.
+    fn opened(&self, text: &str) {
+        *locked(&self.turn) = origin(text).map(|(channel, voice)| Turn {
+            channel,
+            voice,
+            last: None,
+            answered: false,
+        });
+    }
+
+    fn said(&self, text: String) {
+        if let Some(turn) = locked(&self.turn).as_mut() {
+            turn.last = Some(text);
+        }
+    }
+
+    /// Fin du tour : ce qu'il faut renvoyer, s'il n'a rien envoyé.
+    fn completed(&self) -> Option<(String, String, bool)> {
+        let turn = locked(&self.turn).take()?;
+        if turn.answered {
+            return None;
+        }
+        Some((turn.channel, turn.last?, turn.voice))
     }
 
     pub fn list(&self) -> Vec<ChannelStatus> {
@@ -189,6 +272,9 @@ impl Channels {
             (channel, entry.meta.capabilities.voice_out)
         };
         let degraded = channel.send(text.to_string(), voice && speaks).await?;
+        if let Some(turn) = locked(&self.turn).as_mut() {
+            turn.answered = true;
+        }
         let mut notice = format!("Envoyé sur {id}");
         if voice && !speaks {
             notice.push_str(", en texte : ce canal n'envoie pas de vocal");
@@ -282,6 +368,45 @@ mod tests {
         assert_eq!(listed[0].unavailable.as_deref(), Some("jeton introuvable"));
         let refused = channels.send("carnet", "salut", false).await.unwrap_err();
         assert!(refused.contains("jeton introuvable"), "{refused}");
+    }
+
+    #[test]
+    fn a_prefix_tells_its_channel_and_whether_it_was_spoken() {
+        assert_eq!(
+            origin("[Canal telegram]\nSalut"),
+            Some(("telegram".into(), false))
+        );
+        assert_eq!(
+            origin(&format!("{}\nSalut", prefix("bot-perso", true))),
+            Some(("bot-perso".into(), true))
+        );
+        assert_eq!(origin("Salut"), None);
+    }
+
+    #[tokio::test]
+    async fn a_turn_without_channel_send_hands_back_its_last_reply_only() {
+        let channels = Channels::default();
+        channels.register("carnet", meta(10), Arc::new(Notebook::default()));
+
+        channels.opened("[Canal carnet, message vocal transcrit]\nSalut");
+        channels.said("Je regarde.".into());
+        channels.said("C'est fait.".into());
+        assert_eq!(
+            channels.completed(),
+            Some(("carnet".into(), "C'est fait.".into(), true))
+        );
+
+        channels.opened("[Canal carnet]\nSalut");
+        channels
+            .send("carnet", "Réponse choisie", false)
+            .await
+            .unwrap();
+        channels.said("Réponse choisie".into());
+        assert_eq!(channels.completed(), None, "déjà envoyé par channel_send");
+
+        channels.opened("tapé dans la console");
+        channels.said("Bonjour".into());
+        assert_eq!(channels.completed(), None);
     }
 
     #[test]

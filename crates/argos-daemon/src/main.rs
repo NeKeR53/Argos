@@ -128,6 +128,10 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     println!("serveur MCP des agents sur {mcp_url}/mcp/<jeton de session>");
 
     tokio::spawn(events::Events::new(supervisor.clone()).run());
+    tokio::spawn(argos_daemon::channels::follow(
+        supervisor.clone(),
+        assistant.id.clone(),
+    ));
     for (id, channel) in &config.channels {
         let ChannelKind::Telegram(telegram) = channel.kind.clone();
         let meta = channel.meta();

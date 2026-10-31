@@ -97,9 +97,11 @@ fn arguments(spec: &SessionSpec, session_id: &str) -> Vec<String> {
             .mcp_servers
             .iter()
             .map(|server| {
+                // Outils d'Argos chargés d'emblée : différés, l'agent n'en voit que le nom
+                // et oublie de les charger (channel_send, notamment).
                 (
                     server.name.clone(),
-                    json!({"type": "http", "url": server.url}),
+                    json!({"type": "http", "url": server.url, "alwaysLoad": true}),
                 )
             })
             .collect();
@@ -493,7 +495,7 @@ mod tests {
             .expect("--mcp-config");
         assert_eq!(
             config,
-            json!({"mcpServers": {"argos": {"type": "http", "url": "http://127.0.0.1:7879/mcp/jeton"}}})
+            json!({"mcpServers": {"argos": {"type": "http", "url": "http://127.0.0.1:7879/mcp/jeton", "alwaysLoad": true}}})
         );
         assert!(
             args.windows(2)
