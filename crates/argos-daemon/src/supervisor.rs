@@ -111,6 +111,8 @@ struct Inner {
     /// redémarrage : l'Agent, prévenu, les reprend alors lui-même.
     preempted: Mutex<HashMap<AgentId, String>>,
     memory: Memory,
+    /// Synchros de workspace (D44).
+    syncs: crate::sync::Syncs,
     /// Modèles lus auprès des harnais, et quand (voir `discover_models`).
     catalog: Mutex<Option<(Instant, Vec<argos_core::protocol::ModelRef>)>>,
     events: broadcast::Sender<DaemonEvent>,
@@ -141,6 +143,7 @@ impl Supervisor {
                 function_calls: Mutex::default(),
                 preempted: Mutex::default(),
                 memory: Memory::new(settings.home.join("memory")),
+                syncs: crate::sync::Syncs::new(settings.home.join("sync")),
                 catalog: Mutex::default(),
                 events,
                 generations: AtomicU64::new(0),
@@ -1178,6 +1181,15 @@ impl Supervisor {
             busy: busy.is_some_and(|busy| busy.load(Ordering::SeqCst)),
             record,
         }
+    }
+
+    pub fn syncs(&self) -> &crate::sync::Syncs {
+        &self.inner.syncs
+    }
+
+    /// Signale un événement aux consoles (synchros, avis du daemon).
+    pub fn publish_event(&self, event: DaemonEvent) {
+        self.publish(event);
     }
 
     fn publish(&self, event: DaemonEvent) {

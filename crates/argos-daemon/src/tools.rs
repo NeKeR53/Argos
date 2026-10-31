@@ -318,6 +318,34 @@ fn level_tools(level: Level) -> Vec<Tool> {
                 &[],
             ),
             tool(
+                "open_sync",
+                "À la demande de l'utilisateur seulement : synchronise en continu, dans les deux sens, le workspace d'un Agent placé sur un nœud avec un dossier du hub, vide ou absent. Ni .git/, ni fichiers ignorés.",
+                &[
+                    ("agent", AGENT_REF),
+                    (
+                        "local",
+                        "Chemin absolu de la copie locale sur le hub (dossier vide ou absent).",
+                    ),
+                    (
+                        "excludes",
+                        "Motifs .gitignore à exclure en plus de ceux du projet, séparés par des virgules (ex. « dist/, *.sqlite »). Facultatif.",
+                    ),
+                ],
+                &["agent", "local"],
+            ),
+            tool(
+                "close_sync",
+                "Ferme une synchro de workspace ; les deux copies restent en place.",
+                &[("sync", "Identifiant de la synchro (s-…), voir list_syncs.")],
+                &["sync"],
+            ),
+            tool(
+                "list_syncs",
+                "Liste les synchros de workspace : Agent, nœud, copie locale, état, conflits.",
+                &[],
+                &[],
+            ),
+            tool(
                 "assign_mission",
                 "Confie une mission à l'un de tes Agents : elle s'inscrit sur son board et il est réveillé pour la découper en tâches. Son compte rendu te reviendra plus tard.",
                 &[
@@ -689,6 +717,51 @@ pub async fn call(
                 return Ok("Aucun autre nœud : tout tourne sur le hub.".into());
             }
             Ok(json!(nodes).to_string())
+        }
+        (Level::Assistant, "open_sync") => {
+            let target = child(supervisor, caller, text(args, "agent")?)?;
+            let excludes: Vec<String> = optional(args, "excludes")
+                .unwrap_or_default()
+                .split(',')
+                .map(String::from)
+                .collect();
+            let local = std::path::Path::new(text(args, "local")?);
+            let sync = supervisor
+                .syncs()
+                .open(supervisor, &target.id, local, &excludes)?;
+            journal(
+                supervisor,
+                &caller.id,
+                &format!(
+                    "synchro {} ouverte : workspace de {} copié dans {}",
+                    sync.id,
+                    label(&target),
+                    sync.local
+                ),
+            );
+            Ok(json!(sync).to_string())
+        }
+        (Level::Assistant, "close_sync") => {
+            let id = text(args, "sync")?;
+            let record = supervisor.registry().sync(id).map_err(said)?;
+            child(supervisor, caller, record.agent.as_str())?;
+            let sync = supervisor.syncs().close(supervisor, id).await?;
+            journal(
+                supervisor,
+                &caller.id,
+                &format!("synchro {} fermée", sync.id),
+            );
+            Ok(format!(
+                "Synchro {} fermée ; les deux copies restent en place.",
+                sync.id
+            ))
+        }
+        (Level::Assistant, "list_syncs") => {
+            let syncs = supervisor.syncs().list();
+            if syncs.is_empty() {
+                return Ok("Aucune synchro de workspace.".into());
+            }
+            Ok(json!(syncs).to_string())
         }
         (Level::Assistant, "assign_mission") => assign_mission(supervisor, caller, args).await,
         (Level::Assistant, "prioritize_mission") => {

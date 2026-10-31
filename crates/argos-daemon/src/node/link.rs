@@ -10,6 +10,7 @@ use super::{FromNode, NODE_PROTOCOL, RemoteSpec, ToNode};
 use crate::engine::{Command, EngineError, EngineEvent, Session};
 use crate::memory::{MemoryOp, MemoryOutput};
 use crate::supervisor::Supervisor;
+use crate::sync::{SyncRequest, SyncResponse};
 use argos_core::protocol::NodeStatus;
 use argos_core::{AgentId, FunctionRequest};
 use futures_util::{SinkExt, StreamExt};
@@ -26,6 +27,8 @@ const SPAWN_TIMEOUT: Duration = Duration::from_secs(60);
 /// Délai laissé au nœud pour une opération sur une mémoire.
 const MEMORY_TIMEOUT: Duration = Duration::from_secs(30);
 const FUNCTION_TIMEOUT: Duration = Duration::from_secs(35);
+/// Délai laissé au nœud pour une demande de synchro (un parcours complet compris).
+const SYNC_TIMEOUT: Duration = Duration::from_secs(300);
 const MAX_FUNCTIONS: usize = 32;
 /// Attente entre deux tentatives de connexion, doublée à chaque échec.
 const RETRY_FIRST: Duration = Duration::from_millis(500);
@@ -62,6 +65,7 @@ struct LinkState {
     /// Opérations sur la mémoire en attente de la réponse du nœud.
     memory: HashMap<u64, oneshot::Sender<Result<MemoryOutput, String>>>,
     functions: HashMap<u64, oneshot::Sender<Result<serde_json::Value, String>>>,
+    syncs: HashMap<u64, oneshot::Sender<Result<SyncResponse, String>>>,
 }
 
 /// Un appel abandonné ne doit laisser ni attente au hub, ni requête sur le nœud.
@@ -118,6 +122,47 @@ impl Nodes {
                 }
             })
             .collect()
+    }
+
+    pub fn is_connected(&self, name: &str) -> bool {
+        self.links
+            .get(name)
+            .is_some_and(|link| locked(&link.state).outbox.is_some())
+    }
+
+    /// Demande sur l'arbre d'une synchro de ce nœud (D44).
+    pub async fn sync(
+        &self,
+        node: &str,
+        sync: &str,
+        request: SyncRequest,
+    ) -> Result<SyncResponse, String> {
+        let link = self
+            .links
+            .get(node)
+            .ok_or_else(|| format!("nœud inconnu : {node}"))?;
+        let call = link.sessions_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        let (reply_tx, reply) = oneshot::channel();
+        let outbox = {
+            let mut state = locked(&link.state);
+            let Some(outbox) = state.outbox.clone() else {
+                return Err(unreachable(node, state.error.as_deref()).to_string());
+            };
+            state.syncs.insert(call, reply_tx);
+            outbox
+        };
+        let order = ToNode::Sync {
+            call,
+            sync: sync.into(),
+            request,
+        };
+        if outbox.send(order).is_ok()
+            && let Ok(Ok(result)) = tokio::time::timeout(SYNC_TIMEOUT, reply).await
+        {
+            return result;
+        }
+        locked(&link.state).syncs.remove(&call);
+        Err(unreachable(node, None).to_string())
     }
 
     /// Lance les connexions ; les requêtes MCP relayées par les nœuds sont servies par
@@ -337,6 +382,7 @@ impl Link {
                 }
             }
             self.disconnected();
+            supervisor.syncs().node_changed(&self.name);
             tokio::time::sleep(wait).await;
             wait = (wait * 2).min(RETRY_MAX);
         }
@@ -378,6 +424,7 @@ impl Link {
             state.error = None;
         }
         eprintln!("nœud {} connecté", self.name);
+        supervisor.syncs().node_changed(&self.name);
         let writer = tokio::spawn(async move {
             while let Some(order) = queued.recv().await {
                 let text = serde_json::to_string(&order).expect("ordre sérialisable");
@@ -445,6 +492,14 @@ impl Link {
                     state.sessions.remove(&session);
                 }
             }
+            FromNode::SyncReply { call, result } => {
+                if let Some(waiting) = locked(&self.state).syncs.remove(&call) {
+                    let _ = waiting.send(result);
+                }
+            }
+            FromNode::SyncChanged { sync, delta } => {
+                supervisor.syncs().remote_changed(&self.name, &sync, delta);
+            }
             FromNode::McpCall { call, token, body } => {
                 let supervisor = supervisor.clone();
                 let outbox = outbox.clone();
@@ -468,6 +523,7 @@ impl Link {
             // Réponses perdues : les appelants voient le nœud injoignable.
             state.memory.clear();
             state.functions.clear();
+            state.syncs.clear();
             (
                 std::mem::take(&mut state.sessions),
                 std::mem::take(&mut state.spawning),

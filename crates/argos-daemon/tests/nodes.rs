@@ -553,3 +553,239 @@ async fn an_agents_memory_lives_on_its_node_and_is_mirrored_on_the_hub() {
     })
     .await;
 }
+
+/// Attend qu'une condition sur les fichiers devienne vraie (watchers, aller-retours).
+async fn eventually(what: &str, mut probe: impl FnMut() -> bool) {
+    for _ in 0..300 {
+        if probe() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("jamais vu : {what}");
+}
+
+fn read(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+/// Un workspace de projet sur le nœud, avec ce qui ne doit pas voyager.
+fn project_on(node: &Node, name: &str) -> std::path::PathBuf {
+    let root = node.home.path().join("agents").join(name);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::create_dir_all(root.join("target/debug")).unwrap();
+    std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main").unwrap();
+    std::fs::write(root.join(".gitignore"), "target/\n").unwrap();
+    std::fs::write(root.join("target/debug/app"), "binaire").unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+    std::fs::write(root.join("notes.local"), "propre au nœud").unwrap();
+    root
+}
+
+#[tokio::test]
+async fn a_workspace_syncs_both_ways_without_git_ignored_or_excluded_files() {
+    let node = Node::start("pi");
+    let hub = hub(one("pi", &node)).await;
+    hub.connected("pi").await;
+    let dev = hub.agent_on("pi", "dev");
+    let remote = project_on(&node, "dev");
+    let copy = hub.home.path().join("copie");
+
+    let sync = hub
+        .supervisor
+        .syncs()
+        .open(&hub.supervisor, &dev.id, &copy, &["*.local".into()])
+        .unwrap();
+    eventually("la copie initiale", || {
+        read(&copy.join("src/main.rs")).as_deref() == Some("fn main() {}")
+    })
+    .await;
+    assert!(copy.join(".gitignore").exists());
+    assert!(!copy.join(".git").exists(), ".git reste sur le nœud");
+    assert!(
+        !copy.join("target").exists(),
+        "les builds restent sur leur machine"
+    );
+    assert!(
+        !copy.join("notes.local").exists(),
+        "exclusion de la synchro"
+    );
+
+    // Du hub vers le nœud : ajout, puis suppression.
+    std::fs::write(copy.join("src/lib.rs"), "pub fn hub() {}").unwrap();
+    eventually("l'ajout du hub sur le nœud", || {
+        read(&remote.join("src/lib.rs")).as_deref() == Some("pub fn hub() {}")
+    })
+    .await;
+    // Du nœud vers le hub : l'Agent modifie un fichier.
+    std::fs::write(remote.join("src/main.rs"), "fn main() { agent() }").unwrap();
+    eventually("la modification du nœud sur le hub", || {
+        read(&copy.join("src/main.rs")).as_deref() == Some("fn main() { agent() }")
+    })
+    .await;
+    std::fs::remove_file(copy.join("src/lib.rs")).unwrap();
+    eventually("la suppression du hub sur le nœud", || {
+        !remote.join("src/lib.rs").exists()
+    })
+    .await;
+    assert!(remote.join("notes.local").exists());
+    assert!(remote.join(".git/HEAD").exists());
+
+    // Rien ne fait écho : la synchro se calme, d'accord sur les fichiers suivis.
+    let syncs = hub.supervisor.syncs().clone();
+    eventually("une synchro au repos", || {
+        syncs.list().iter().any(|status| {
+            status.id == sync.id
+                && status.state == argos_core::protocol::SyncState::Idle
+                && status.files == 2
+        })
+    })
+    .await;
+
+    // Le nœud refuse d'écrire hors du workspace de l'Agent.
+    let escape = argos_daemon::sync::SyncRequest::Write {
+        ops: vec![argos_daemon::sync::WriteOp::Delete {
+            path: "../../node.toml".into(),
+            expect: None,
+        }],
+    };
+    let reply = hub
+        .supervisor
+        .nodes()
+        .sync("pi", &sync.id, escape)
+        .await
+        .unwrap();
+    let argos_daemon::sync::SyncResponse::Written { results } = reply else {
+        panic!("réponse d'écriture attendue")
+    };
+    assert!(results[0].as_deref().unwrap().contains("refusé"));
+    assert!(node.home.path().join("node.toml").exists());
+
+    // Workspace figé tant que la synchro est ouverte ; fermée, les copies restent.
+    let elsewhere = node.home.path().join("ailleurs");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    assert!(
+        hub.supervisor
+            .set_workspace(&dev.id, elsewhere.to_str().unwrap())
+            .await
+            .is_err()
+    );
+    hub.supervisor
+        .syncs()
+        .close(&hub.supervisor, &sync.id)
+        .await
+        .unwrap();
+    assert!(hub.supervisor.syncs().list().is_empty());
+    assert!(copy.join("src/main.rs").exists());
+    hub.supervisor
+        .set_workspace(&dev.id, elsewhere.to_str().unwrap())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn changes_made_while_the_node_is_away_are_reconciled_and_conflicts_keep_both() {
+    let mut node = Node::start("pi");
+    let hub = hub(one("pi", &node)).await;
+    hub.connected("pi").await;
+    let dev = hub.agent_on("pi", "dev");
+    let remote = project_on(&node, "dev");
+    std::fs::write(remote.join("both.txt"), "origine").unwrap();
+    std::fs::write(remote.join("kept.txt"), "origine").unwrap();
+    let copy = hub.home.path().join("copie");
+    hub.supervisor
+        .syncs()
+        .open(&hub.supervisor, &dev.id, &copy, &[])
+        .unwrap();
+    eventually("la copie initiale", || copy.join("kept.txt").exists()).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    node.kill();
+    let syncs = hub.supervisor.syncs().clone();
+    eventually("la synchro hors ligne", || {
+        syncs
+            .list()
+            .iter()
+            .all(|status| status.state == argos_core::protocol::SyncState::Offline)
+    })
+    .await;
+    // Pendant la coupure : chacun modifie le même fichier ; le nœud supprime un
+    // fichier que le hub modifie ; le hub ajoute un fichier.
+    std::fs::write(copy.join("both.txt"), "version du hub").unwrap();
+    std::fs::write(remote.join("both.txt"), "version du nœud").unwrap();
+    std::fs::remove_file(remote.join("kept.txt")).unwrap();
+    std::fs::write(copy.join("kept.txt"), "modifié sur le hub").unwrap();
+    std::fs::write(copy.join("new.txt"), "écrit hors ligne").unwrap();
+    node.restart();
+
+    eventually("le rapprochement au retour du nœud", || {
+        read(&remote.join("new.txt")).as_deref() == Some("écrit hors ligne")
+            && read(&remote.join("both.txt.conflit-hub")).as_deref() == Some("version du hub")
+    })
+    .await;
+    assert_eq!(
+        read(&copy.join("both.txt")).as_deref(),
+        Some("version du nœud")
+    );
+    assert_eq!(
+        read(&remote.join("both.txt")).as_deref(),
+        Some("version du nœud")
+    );
+    assert_eq!(
+        read(&copy.join("both.txt.conflit-hub")).as_deref(),
+        Some("version du hub")
+    );
+    assert_eq!(
+        read(&remote.join("kept.txt")).as_deref(),
+        Some("modifié sur le hub"),
+        "une modification l'emporte sur une suppression"
+    );
+    let escalations = hub.supervisor.registry().escalations().unwrap();
+    let conflict = escalations
+        .iter()
+        .find(|escalation| escalation.agent == dev.id)
+        .expect("conflit escaladé à l'utilisateur");
+    assert!(conflict.question.contains("both.txt.conflit-hub"));
+    let status = syncs.list().remove(0);
+    assert_eq!(status.conflicts, ["both.txt.conflit-hub"]);
+}
+
+#[tokio::test]
+async fn a_sync_needs_an_agent_on_a_node_and_an_empty_local_folder() {
+    let node = Node::start("pi");
+    let hub = hub(one("pi", &node)).await;
+    let dev = hub.agent_on("pi", "dev");
+    let local = hub
+        .supervisor
+        .create(NewAgent {
+            parent: hub.assistant.id.clone(),
+            level: Level::Agent,
+            engine: EngineKind::Claude,
+            model: None,
+            profile: None,
+            node: None,
+            workdir: hub.home.path().join("ici"),
+            charter: Some(Charter {
+                name: "ici".into(),
+                scope: "sur le hub".into(),
+            }),
+        })
+        .unwrap();
+    let syncs = hub.supervisor.syncs();
+    let error = syncs
+        .open(&hub.supervisor, &local.id, &hub.home.path().join("x"), &[])
+        .unwrap_err();
+    assert!(error.contains("déjà ici"));
+    let busy = hub.home.path().join("plein");
+    std::fs::create_dir_all(&busy).unwrap();
+    std::fs::write(busy.join("a"), "a").unwrap();
+    let error = syncs
+        .open(&hub.supervisor, &dev.id, &busy, &[])
+        .unwrap_err();
+    assert!(error.contains("n'est pas vide"));
+    let error = syncs
+        .open(&hub.supervisor, &dev.id, Path::new("relatif"), &[])
+        .unwrap_err();
+    assert!(error.contains("absolu"));
+}

@@ -239,7 +239,34 @@ export type Command =
   /** Rattache un Agent à un dossier sur son nœud ; ouvre une nouvelle session. */
   | { command: "set_workspace"; agent: AgentId; workdir: string }
   /** Override de l'utilisateur : nouveau moteur et modèle d'un agent (session parkée). */
-  | { command: "set_model"; agent: AgentId; engine: EngineKind; model: string };
+  | { command: "set_model"; agent: AgentId; engine: EngineKind; model: string }
+  /** Les synchros de workspace et leur état (D44). */
+  | { command: "syncs" }
+  /** Copie locale, sur le hub, du workspace d'un Agent placé sur un nœud. */
+  | { command: "open_sync"; agent: AgentId; local: string; excludes: string[] }
+  /** Ferme une synchro ; les deux copies restent en place. */
+  | { command: "close_sync"; sync: string };
+
+export type SyncState = "idle" | "syncing" | "offline" | "error";
+
+/** Une synchro de workspace (`SyncStatus`, D44). */
+export interface SyncStatus {
+  id: string;
+  agent: AgentId;
+  node: string;
+  /** Copie locale sur le hub. */
+  local: string;
+  state: SyncState;
+  error: string | null;
+  /** Fichiers suivis. */
+  files: number;
+  /** Versions du hub mises de côté lors des conflits (`<nom>.conflit-hub`). */
+  conflicts: string[];
+  /** Fichiers trop gros pour voyager. */
+  held: string[];
+  /** Dernière passe réussie, en secondes depuis l'époque. */
+  synced_at: number | null;
+}
 
 /** Un profil de la politique de modèles (`ProfileInfo`) : sa chaîne, premier choix d'abord. */
 export interface ProfileInfo {
@@ -276,6 +303,8 @@ export type Reply =
   | { kind: "triggers"; triggers: Trigger[] }
   | { kind: "escalations"; escalations: Escalation[] }
   | { kind: "nodes"; nodes: NodeStatus[] }
+  | { kind: "syncs"; syncs: SyncStatus[] }
+  | { kind: "sync"; sync: SyncStatus }
   | { kind: "models"; profiles: ProfileInfo[]; models: { engine: EngineKind; model: string }[] }
   | { kind: "done"; affected: AgentId[] }
   | { kind: "error"; message: string };
@@ -312,6 +341,8 @@ export type DaemonEvent =
   | { type: "agent_updated"; agent: AgentStatus }
   /** Information courte du daemon pour l'utilisateur (repli de modèle, plafond…). */
   | { type: "notice"; agent: AgentId | null; text: string }
+  /** Une synchro de workspace a changé d'état, ou a été fermée. */
+  | { type: "sync_updated"; sync: SyncStatus; closed: boolean }
   /** Une escalade a été ouverte, répondue ou écartée. */
   | { type: "escalation_updated"; escalation: Escalation }
   /** Une surface a été créée, mise à jour (nouvelle `version`) ou supprimée. */
@@ -414,6 +445,12 @@ function checkReply(reply: Record<string, unknown>) {
         if (typeof node.connected !== "boolean") throw new ProtocolError("node.connected : booléen attendu");
       });
       break;
+    case "syncs":
+      array(reply.syncs, "reply.syncs").forEach((sync) => checkSync(sync));
+      break;
+    case "sync":
+      checkSync(reply.sync);
+      break;
     case "triggers":
       array(reply.triggers, "reply.triggers").forEach((value) => {
         const trigger = object(value, "trigger");
@@ -477,6 +514,11 @@ function checkEvent(event: Record<string, unknown>) {
     checkEscalation(event.escalation);
     return;
   }
+  if (event.type === "sync_updated") {
+    checkSync(event.sync);
+    if (typeof event.closed !== "boolean") throw new ProtocolError("sync_updated.closed : booléen attendu");
+    return;
+  }
   if (event.type === "surface_data") {
     string(event.surface, "event.surface");
     if (!("data" in event)) throw new ProtocolError("surface_data sans data");
@@ -518,6 +560,17 @@ function checkEvent(event: Record<string, unknown>) {
     default:
       throw new ProtocolError(`événement inconnu : ${String(event.type)}`);
   }
+}
+
+const SYNC_STATES: SyncState[] = ["idle", "syncing", "offline", "error"];
+
+function checkSync(value: unknown) {
+  const sync = object(value, "sync");
+  string(sync.id, "sync.id");
+  string(sync.agent, "sync.agent");
+  string(sync.local, "sync.local");
+  if (!SYNC_STATES.includes(sync.state as SyncState)) throw new ProtocolError(`état de synchro inconnu : ${String(sync.state)}`);
+  array(sync.conflicts, "sync.conflicts").forEach((path) => string(path, "sync.conflict"));
 }
 
 const TASK_STATES: TaskState[] = ["pending", "in_progress", "blocked", "done", "cancelled", "interrupted"];

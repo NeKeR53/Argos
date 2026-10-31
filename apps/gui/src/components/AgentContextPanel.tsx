@@ -3,7 +3,7 @@
 // est repliée sur une ligne de résumé ; rien de tout ça n'encombre la conversation.
 
 import { useEffect, useState, type ReactNode } from "react";
-import type { AgentId, AgentStatus, Board, Capabilities, Command, ProfileInfo, Reply, Trigger } from "../protocol";
+import type { AgentId, AgentStatus, Board, Capabilities, Command, ProfileInfo, Reply, SyncStatus, Trigger } from "../protocol";
 import { displayName, isAddressable, isRetirable } from "../state";
 import { formatCost, levelLabel } from "../format";
 import { modelLabel } from "../models";
@@ -11,6 +11,7 @@ import { BoardSection } from "./BoardSection";
 import { ModelPicker } from "./ModelPicker";
 import { TriggerPanel } from "./TriggerPanel";
 import { WorkspacePicker } from "./WorkspacePicker";
+import { SyncSection, syncSummary } from "./SyncSection";
 import { Avatar } from "./Avatar";
 
 interface Props {
@@ -22,6 +23,8 @@ interface Props {
   boardRevision: number;
   profiles: ProfileInfo[] | null;
   triggers: Trigger[] | undefined;
+  /** Synchros du workspace de cet agent (D44). */
+  syncs: SyncStatus[];
   revision: number;
   hooksBase: string | null;
   connected: boolean;
@@ -150,6 +153,11 @@ export function AgentContextPanel(props: Props) {
           </dl>
           {agent.level !== "worker" && <WorkspacePicker agent={agent} connected={connected} request={request} />}
         </Section>
+        {agent.level === "agent" && agent.node && (
+          <Section title="Synchro" summary={syncSummary(props.syncs)}>
+            <SyncSection agent={agent} syncs={props.syncs} connected={connected} request={request} />
+          </Section>
+        )}
         {agent.level === "agent" && (
           <BoardSection
             agent={agent}

@@ -138,6 +138,20 @@ pub enum Command {
         agent: AgentId,
         workdir: String,
     },
+    /// Les synchros de workspace et leur état (D44).
+    Syncs,
+    /// Ouvre une synchro entre le workspace d'un Agent placé sur un nœud et un dossier du
+    /// hub, vide ou absent. `excludes` : motifs `.gitignore` en plus de ceux du projet.
+    OpenSync {
+        agent: AgentId,
+        local: String,
+        #[serde(default)]
+        excludes: Vec<String>,
+    },
+    /// Ferme une synchro ; les deux copies restent en place.
+    CloseSync {
+        sync: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -190,6 +204,12 @@ pub enum Reply {
     Nodes {
         nodes: Vec<NodeStatus>,
     },
+    Syncs {
+        syncs: Vec<SyncStatus>,
+    },
+    Sync {
+        sync: SyncStatus,
+    },
     Models {
         profiles: Vec<ProfileInfo>,
         models: Vec<ModelRef>,
@@ -235,6 +255,39 @@ pub struct NodeStatus {
     pub connected: bool,
     /// Dernière erreur de connexion, tant que le nœud est injoignable.
     pub error: Option<String>,
+}
+
+/// Une synchro de workspace (D44) et où elle en est.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncStatus {
+    pub id: String,
+    pub agent: AgentId,
+    pub node: String,
+    /// Copie locale sur le hub.
+    pub local: String,
+    pub state: SyncState,
+    /// Dernière erreur, tant qu'elle dure.
+    pub error: Option<String>,
+    /// Fichiers suivis (dans l'état commun).
+    pub files: usize,
+    /// Versions du hub mises de côté lors des derniers conflits (`<nom>.conflit-hub`).
+    pub conflicts: Vec<String>,
+    /// Fichiers qui ne voyagent pas : trop gros.
+    pub held: Vec<String>,
+    /// Dernière passe complète réussie, en secondes depuis l'époque.
+    pub synced_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncState {
+    /// Les deux côtés sont d'accord.
+    Idle,
+    /// Parcours ou copie en cours.
+    Syncing,
+    /// Nœud injoignable : la copie locale reste utilisable, rapprochement au retour.
+    Offline,
+    Error,
 }
 
 /// Un agent du registre, avec son état d'exécution.
@@ -308,6 +361,11 @@ pub enum DaemonEvent {
     /// Une escalade a été ouverte, répondue ou écartée.
     EscalationUpdated {
         escalation: Escalation,
+    },
+    /// Une synchro de workspace a changé d'état, ou a été fermée.
+    SyncUpdated {
+        sync: SyncStatus,
+        closed: bool,
     },
     /// Information courte du daemon pour l'utilisateur (repli de modèle, plafond…).
     Notice {

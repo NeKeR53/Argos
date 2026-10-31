@@ -6,11 +6,13 @@ mod board;
 mod escalations;
 mod functions;
 mod surfaces;
+mod syncs;
 mod triggers;
 
 pub use board::{Position, TaskUpdate};
 pub use escalations::MAX_OPTIONS;
 pub use surfaces::MAX_HTML;
+pub use syncs::SyncRecord;
 pub use triggers::{MIN_EVERY_SECONDS, NewTrigger};
 
 use argos_core::{AgentId, AgentRecord, AgentState, Charter, EngineKind, Level};
@@ -55,6 +57,8 @@ pub enum RegistryError {
     EscalationNotFound(String),
     #[error("escalade : {0}")]
     Escalation(String),
+    #[error("synchro : {0}")]
+    Sync(String),
 }
 
 pub type Result<T> = std::result::Result<T, RegistryError>;
@@ -104,7 +108,7 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 10] = [
+const MIGRATIONS: [&str; 11] = [
     AGENTS_SCHEMA,
     board::SCHEMA,
     PROFILE_COLUMN,
@@ -115,6 +119,7 @@ const MIGRATIONS: [&str; 10] = [
     functions::SCHEMA,
     "CREATE TABLE agent_capabilities (agent TEXT PRIMARY KEY REFERENCES agents(id), config TEXT NOT NULL);",
     escalations::SCHEMA,
+    syncs::SCHEMA,
 ];
 
 /// v3 : profil de la politique de modèles (T8).
@@ -397,6 +402,11 @@ impl Registry {
         if !self.children(id)?.is_empty() {
             return Err(RegistryError::Hierarchy(
                 "termine et retire les Workers avant de changer de workspace".into(),
+            ));
+        }
+        if self.has_sync(id)? {
+            return Err(RegistryError::Sync(
+                "ferme la synchro de son workspace avant de le changer".into(),
             ));
         }
         self.db.execute(

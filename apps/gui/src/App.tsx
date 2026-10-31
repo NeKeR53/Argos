@@ -73,6 +73,7 @@ export default function App() {
     send({ command: "nodes" });
     send({ command: "models" });
     send({ command: "escalations" });
+    send({ command: "syncs" });
     const timer = setInterval(() => send({ command: "nodes" }), NODES_REFRESH_MS);
     return () => clearInterval(timer);
   }, [connected, send]);
@@ -191,6 +192,7 @@ export default function App() {
                   boardRevision={state.boardRevisions[agent.id] ?? 0}
                   profiles={state.profiles}
                   triggers={state.triggers[agent.id]}
+                  syncs={Object.values(state.syncs).filter((sync) => sync.agent === agent.id)}
                   revision={state.triggerRevisions[agent.id] ?? 0}
                   hooksBase={hooksBase}
                   connected={connected}

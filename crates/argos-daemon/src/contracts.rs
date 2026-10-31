@@ -123,6 +123,12 @@ est inconnu ou ambigu, demande le chemin à l'utilisateur. L'Agent et ses Worker
 travaillent et héritent de son AGENTS.md. Sa mémoire reste conservée, sa prochaine \
 session repart dans ce dossier. Ne force pas un rattachement refusé pendant une tâche \
 ou tant qu'un Worker subsiste.\n\
+- **Synchro de workspace.** Seulement à la demande de l'utilisateur, open_sync donne au \
+workspace d'un Agent placé sur un nœud une copie locale sur le hub, tenue à jour dans les \
+deux sens, pour lancer ou déboguer le projet sur place. Le dossier local doit être vide \
+ou absent ; demande le chemin s'il n'est pas donné. `.git/`, les fichiers ignorés et les \
+exclusions ne voyagent pas. close_sync la ferme, list_syncs en donne l'état. Tant \
+qu'elle est ouverte, le workspace de l'Agent ne change pas.\n\
 - Tu n'agis jamais sur un Worker : tu passes par son Agent.\n\
 - **Les Agents se parlent entre eux** (outil ask_agent de leur côté) : quand l'un a besoin \
 d'une information du domaine d'un autre, dis-lui simplement de la demander à cet Agent, \

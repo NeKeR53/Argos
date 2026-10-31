@@ -1280,6 +1280,19 @@ textarea {
   gap: 8px;
 }
 
+.sync-section,
+.sync-status {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.sync-status p {
+  margin: 0;
+}
+
 /* Console : surfaces neutres et commandes discrètes. */
 :root { --bg:#fcfcfc; --surface:#fff; --surface-2:#f1f1f1; --border:#e9e9e9; --border-strong:#d9d9d9; --text:#292929; --text-muted:#777; --accent:#3d54c9; --accent-soft:#ececec; }
 @media(prefers-color-scheme:dark){:root{--bg:#212121;--surface:#212121;--surface-2:#303030;--border:#333;--border-strong:#464646;--text:#e9e9e9;--text-muted:#aaa;--accent:#aab9ff;--accent-soft:#393939}}

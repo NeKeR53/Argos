@@ -65,6 +65,36 @@ S'y ajoutent des tests unitaires : configuration des nœuds et du mode nœud, ar
 - Nœud injoignable : les lectures se font sur le miroir, les écritures sont refusées (« mémoire non modifiée : nœud … injoignable »). Les faits que le daemon ajoute au journal sont alors perdus, sans bloquer l'action qu'ils décrivent.
 - Test : `an_agents_memory_lives_on_its_node_and_is_mirrored_on_the_hub`.
 
+## Synchro de workspace (D44)
+
+Cas d'usage : un Agent développe un projet sur le Pi ou le VPS ; on lance ce projet en debug sur le Mac, et les deux copies restent à jour sans commit ni push. Code : `src/sync/` (`tree`, `plan`, `hub`), `registry/syncs.rs`, côté nœud dans `node/runner.rs`.
+
+**Modèle.**
+- Une synchro relie un Agent placé sur un nœud et un dossier absolu du hub, vide ou absent à l'ouverture. Elle est déclarée dans le registre (table `syncs`, schéma v11) et relancée au démarrage du hub.
+- Chaque côté tient un index `chemin → (empreinte blake3, taille, mtime, exécutable, lien)`. L'**état commun** est le dernier index sur lequel les deux côtés se sont accordés ; le hub l'écrit après chaque passe dans `$ARGOS_HOME/sync/<id>/base.json`.
+- Une modification se détecte par écart d'empreinte avec l'état commun, pas par l'horodatage : un `touch` ne voyage pas, et l'écho d'une écriture de la synchro se réduit à un accord.
+- Ne voyagent pas : `.git/`, les `.gitignore` de l'arbre (crate `ignore`), les exclusions de la synchro, les temporaires `.argos-sync-*`. Un fichier connu qui devient ignoré n'est pas une suppression : il est « tenu », ni copié ni supprimé. Pareil pour un fichier de plus de 100 Mo, signalé dans l'état.
+
+**Passes.**
+- À l'ouverture et à chaque reconnexion, le nœud parcourt le workspace et rend son index complet ; ensuite son watcher (`notify`, regroupé jusqu'à 300 ms de calme, 2 s au plus) envoie les écarts. Le hub regarde sa copie locale de la même façon.
+- Rapprochement à trois états (`plan::reconcile`) : un seul côté a changé → copie ou suppression de l'autre côté ; deux changements identiques → accord ; une modification contre une suppression → la modification gagne ; deux modifications → conflit.
+- Conflit : la version du hub est renommée `<nom>.conflit-hub` (ou `-2`…), celle du nœud prend le chemin, puis la version mise de côté part au nœud à la passe suivante. Une escalade est ouverte au nom de l'Agent, avec « Fusionne les deux versions » / « Garde la version du nœud ».
+- Toute écriture porte l'empreinte attendue du chemin ; si le fichier a changé entre-temps, elle est refusée et la passe suivante reprend. Écriture dans un temporaire, vérification de l'empreinte, puis `rename`.
+- Garde-fou : une passe qui supprimerait d'un coup plus de la moitié des fichiers suivis (20 au moins) est suspendue et signalée en erreur.
+- Nœud injoignable : état `offline`, la copie locale reste modifiable ; rapprochement au retour.
+
+**Protocole** (nœud v6) : `ToNode::Sync { call, sync, request }` avec `open` (workdir, exclusions, chemins connus), `read` (morceaux de 1 Mo, 4 Mo par aller-retour), `write` (`put` par morceaux, `link`, `delete`) ou `close` ; réponses `FromNode::SyncReply`, écarts spontanés `FromNode::SyncChanged`. Le hub attend chaque réponse avant la demande suivante. Le nœud n'écrit que sous le workspace de l'Agent : chemin absolu, `..` ou passage par un lien symbolique refusés.
+
+**Surfaces.**
+- Assistant : `open_sync(agent, local, excludes?)`, `close_sync(sync)`, `list_syncs` ; son contrat ne les utilise qu'à la demande de l'utilisateur.
+- API : `syncs`, `open_sync`, `close_sync` ; événement `sync_updated` (états `idle`, `syncing`, `offline`, `error`, fichiers suivis, conflits, fichiers tenus).
+- GUI : section « Synchro » dans le panneau d'un Agent placé sur un nœud (ouvrir, état, conflits, fermer).
+- Tant qu'une synchro est ouverte, le workspace de l'Agent ne change pas. La fermer laisse les deux copies en place.
+
+**Tests** : unitaires (`sync::tree`, `sync::plan`, `sync::hub`, `registry::syncs`) et dans `tests/nodes.rs`, sur nœuds simulés : synchro dans les deux sens avec `.git`, `.gitignore` et exclusions respectés, sans écho, écriture hors workspace refusée, workspace figé ; coupure du nœud avec conflit, modification contre suppression et ajout hors ligne ; refus d'ouverture. Essayé aussi dans la console, avec un hub et un nœud jetables.
+
+**Limites connues.** Fichier entier à chaque changement (pas de diff par blocs). Sur Linux, le watcher récursif pose un watch inotify par dossier, ignorés compris : un très gros `node_modules/` peut atteindre la limite du système. La synchro entre deux nœuds dont aucun n'est le hub reste à concevoir avec les vrais serveurs.
+
 ## Écarts avec la vision, à trancher
 
 1. **Pas d'autonomie des nœuds sans le hub** (D32 la prévoit, avec les escalades en file).

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentStatus, Escalation, Origin, ServerMessage, Trigger } from "./protocol";
+import type { AgentStatus, Escalation, Origin, ServerMessage, SyncStatus, Trigger } from "./protocol";
 import { parseServerMessage } from "./protocol";
 import {
   attention,
@@ -610,6 +610,39 @@ describe("escalades actionnables", () => {
 
   it("refuse un état inconnu", () => {
     const frame = { type: "event", event: { type: "escalation_updated", escalation: { ...open, state: "lost" } } };
+    expect(() => parseServerMessage(JSON.stringify(frame))).toThrow();
+  });
+});
+
+describe("synchros de workspace", () => {
+  const sync: SyncStatus = {
+    id: "s-1",
+    agent: "dom",
+    node: "pi",
+    local: "/Users/moi/copie",
+    state: "syncing",
+    error: null,
+    files: 0,
+    conflicts: [],
+    held: [],
+    synced_at: null,
+  };
+
+  it("se lisent, suivent leurs événements et disparaissent à la fermeture", () => {
+    let state = run(connected, tree, server({ type: "reply", id: 2, reply: { kind: "syncs", syncs: [sync] } }));
+    expect(state.syncs["s-1"].state).toBe("syncing");
+    state = reduce(state, server({
+      type: "event",
+      event: { type: "sync_updated", sync: { ...sync, state: "idle", files: 3, conflicts: ["a.rs.conflit-hub"] }, closed: false },
+    }));
+    expect(state.syncs["s-1"]).toMatchObject({ state: "idle", files: 3, conflicts: ["a.rs.conflit-hub"] });
+    expect(state.boardRevisions).toEqual({});
+    state = reduce(state, server({ type: "event", event: { type: "sync_updated", sync, closed: true } }));
+    expect(state.syncs).toEqual({});
+  });
+
+  it("refuse un état inconnu", () => {
+    const frame = { type: "event", event: { type: "sync_updated", sync: { ...sync, state: "perdu" }, closed: false } };
     expect(() => parseServerMessage(JSON.stringify(frame))).toThrow();
   });
 });

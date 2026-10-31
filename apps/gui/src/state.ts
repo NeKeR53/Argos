@@ -19,6 +19,7 @@ import {
   type SurfaceDoc,
   type SurfaceMeta,
   type NodeStatus,
+  type SyncStatus,
   type ProfileInfo,
   type Trigger,
   type TurnOutcome,
@@ -152,6 +153,8 @@ export interface AppState {
   voice: VoiceView;
   /** Nœuds déclarés (D32), relus régulièrement ; `null` avant la première lecture. */
   nodes: NodeStatus[] | null;
+  /** Synchros de workspace (D44), par id. */
+  syncs: Record<string, SyncStatus>;
   /** Profils de la politique de modèles, pour choisir le modèle d'un agent. */
   profiles: ProfileInfo[] | null;
   /**
@@ -220,6 +223,7 @@ export const initialState: AppState = {
   triggerRevisions: {},
   voice: { status: null, dictation: null, spoken: [] },
   nodes: null,
+  syncs: {},
   profiles: null,
   inbox: null,
   escalations: [],
@@ -336,6 +340,11 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
       return { ...next, triggers: { ...next.triggers, [command.agent]: reply.triggers } };
     case "nodes":
       return { ...next, nodes: reply.nodes };
+    case "syncs":
+      return { ...next, syncs: Object.fromEntries(reply.syncs.map((sync) => [sync.id, sync])) };
+    case "sync":
+      if (command?.command === "close_sync") return withoutSync(next, reply.sync.id);
+      return { ...next, syncs: { ...next.syncs, [reply.sync.id]: reply.sync } };
     case "escalations":
       return { ...next, inbox: Object.fromEntries(reply.escalations.map((escalation) => [escalation.id, escalation])) };
     case "models":
@@ -415,6 +424,9 @@ function onEvent(state: AppState, event: DaemonEvent): AppState {
     }
     case "notice":
       return notify(state, "info", event.text, event.agent);
+    case "sync_updated":
+      if (event.closed) return withoutSync(state, event.sync.id);
+      return { ...state, syncs: { ...state.syncs, [event.sync.id]: event.sync } };
     case "escalation_updated":
       return { ...state, inbox: { ...(state.inbox ?? {}), [event.escalation.id]: event.escalation } };
     case "surface_updated":
@@ -621,6 +633,7 @@ function touchBoard(state: AppState, event: DaemonEvent): AppState {
     event.type === "escalation_updated" ||
     event.type === "surface_updated" ||
     event.type === "surface_data" ||
+    event.type === "sync_updated" ||
     event.type === "message_delta"
   ) {
     return state;
@@ -848,5 +861,16 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `Changement de modèle (${command.model})`;
     case "set_workspace":
       return `Rattachement du workspace de ${target(command.agent)}`;
+    case "syncs":
+      return "Lecture des synchros";
+    case "open_sync":
+      return `Synchro du workspace de ${target(command.agent)}`;
+    case "close_sync":
+      return `Fermeture de la synchro ${command.sync}`;
   }
+}
+
+function withoutSync(state: AppState, id: string): AppState {
+  const { [id]: _, ...syncs } = state.syncs;
+  return { ...state, syncs };
 }

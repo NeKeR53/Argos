@@ -271,6 +271,24 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         Command::Nodes => Reply::Nodes {
             nodes: supervisor.nodes().status(),
         },
+        Command::Syncs => Reply::Syncs {
+            syncs: supervisor.syncs().list(),
+        },
+        Command::OpenSync {
+            agent,
+            local,
+            excludes,
+        } => Reply::Sync {
+            sync: supervisor.syncs().open(
+                supervisor,
+                &agent,
+                std::path::Path::new(&local),
+                &excludes,
+            )?,
+        },
+        Command::CloseSync { sync } => Reply::Sync {
+            sync: supervisor.syncs().close(supervisor, &sync).await?,
+        },
         Command::Models => Reply::Models {
             profiles: supervisor.policy().profiles_info(),
             models: supervisor.discover_models().await,

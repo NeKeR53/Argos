@@ -113,6 +113,7 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
             preempt: config.board.preempt,
         },
     );
+    supervisor.syncs().start(&supervisor);
     nodes.connect(supervisor.clone(), ssh_program());
     for node in config.nodes.keys() {
         println!("nœud déclaré : {node}");

@@ -10,6 +10,8 @@
 use super::{FromNode, NODE_PROTOCOL, RemoteSpec, ToNode, token_in};
 use crate::engine::{McpServer, Session, SessionControl, SessionSpec, prepare_codex_home};
 use crate::memory::{Memory, MemoryOp};
+use crate::sync::tree::{self, Tree};
+use crate::sync::{SyncRequest, SyncResponse};
 use argos_core::AgentId;
 use argos_core::EngineKind;
 use axum::extract::{Path, State};
@@ -158,6 +160,7 @@ impl Runner {
         });
 
         let sessions: Sessions = Arc::default();
+        let syncs: NodeSyncs = Arc::default();
         let mut functions: HashMap<u64, tokio::task::JoinHandle<()>> = HashMap::new();
         loop {
             let frame = tokio::select! {
@@ -170,7 +173,7 @@ impl Runner {
                 Some(Ok(_)) => continue,
             };
             match serde_json::from_str::<ToNode>(text.as_str()) {
-                Ok(order) => self.order(order, &sessions, &outbox, &mut functions),
+                Ok(order) => self.order(order, &sessions, &syncs, &outbox, &mut functions),
                 Err(error) => eprintln!("nœud : message du hub illisible : {error}"),
             }
         }
@@ -179,6 +182,8 @@ impl Runner {
         for function in functions.into_values() {
             function.abort();
         }
+        // Les watchers des synchros s'arrêtent avec elles ; le hub les rouvrira.
+        locked(&syncs).clear();
         {
             let mut hub = locked(&self.inner.hub);
             if hub.as_ref().is_some_and(|hub| hub.epoch == epoch) {
@@ -202,6 +207,7 @@ impl Runner {
         &self,
         order: ToNode,
         sessions: &Sessions,
+        syncs: &NodeSyncs,
         outbox: &Outbox,
         functions: &mut HashMap<u64, tokio::task::JoinHandle<()>>,
     ) {
@@ -277,6 +283,16 @@ impl Runner {
                     task.abort();
                 }
             }
+            ToNode::Sync {
+                call,
+                sync,
+                request,
+            } => {
+                tokio::spawn(
+                    self.clone()
+                        .sync(call, sync, request, syncs.clone(), outbox.clone()),
+                );
+            }
             ToNode::McpReply { call, status, body } => {
                 if let Some(waiting) = locked(&self.inner.pending).remove(&call) {
                     let _ = waiting.send((status, body));
@@ -345,6 +361,110 @@ impl Runner {
         }
     }
 
+    /// Demande sur l'arbre d'une synchro (D44). Le hub attend chaque réponse avant
+    /// d'envoyer la suivante : les morceaux d'un fichier arrivent dans l'ordre.
+    async fn sync(
+        self,
+        call: u64,
+        id: String,
+        request: SyncRequest,
+        syncs: NodeSyncs,
+        outbox: Outbox,
+    ) {
+        let result = match request {
+            SyncRequest::Open {
+                workdir,
+                excludes,
+                known,
+            } => {
+                self.open_sync(&id, workdir, excludes, known, &syncs, &outbox)
+                    .await
+            }
+            SyncRequest::Read { chunks } => {
+                with_tree(&syncs, &id, move |tree| {
+                    Ok(SyncResponse::Data {
+                        chunks: tree.read(&chunks),
+                    })
+                })
+                .await
+            }
+            SyncRequest::Write { ops } => {
+                with_tree(&syncs, &id, move |tree| {
+                    Ok(SyncResponse::Written {
+                        results: tree.write(ops),
+                    })
+                })
+                .await
+            }
+            SyncRequest::Close => {
+                locked(&syncs).remove(&id);
+                Ok(SyncResponse::Closed)
+            }
+        };
+        let _ = outbox.send(FromNode::SyncReply { call, result });
+    }
+
+    /// Ouvre l'arbre du workspace et son watcher ; rend l'index complet. Chaque rafale de
+    /// changements part ensuite au hub, en écart avec ce qu'il a déjà reçu.
+    async fn open_sync(
+        &self,
+        id: &str,
+        workdir: PathBuf,
+        excludes: Vec<String>,
+        known: Vec<String>,
+        syncs: &NodeSyncs,
+        outbox: &Outbox,
+    ) -> Result<SyncResponse, String> {
+        let root = self.inner.settings.home.join(&workdir);
+        if !root.is_dir() {
+            return Err(format!(
+                "workspace introuvable sur ce nœud : {}",
+                root.display()
+            ));
+        }
+        locked(syncs).remove(id);
+        // Le watcher d'abord : rien de ce qui change pendant le parcours n'est perdu.
+        let (watcher, mut calm) =
+            tree::watch(&root).map_err(|error| format!("watcher : {error}"))?;
+        let tree = Arc::new(Mutex::new(Tree::new(root, excludes, known)));
+        let scanning = Arc::clone(&tree);
+        let index = tokio::task::spawn_blocking(move || locked(&scanning).scan())
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        let mut sent = index.clone();
+        let watched = Arc::clone(&tree);
+        let outbox = outbox.clone();
+        let sync = id.to_string();
+        let task = tokio::spawn(async move {
+            while calm.recv().await.is_some() {
+                let scanning = Arc::clone(&watched);
+                let Ok(Ok(index)) =
+                    tokio::task::spawn_blocking(move || locked(&scanning).scan()).await
+                else {
+                    continue;
+                };
+                let delta = crate::sync::diff(&sent, &index);
+                if !delta.is_empty() {
+                    let _ = outbox.send(FromNode::SyncChanged {
+                        sync: sync.clone(),
+                        delta,
+                    });
+                }
+                sent = index;
+            }
+        });
+        locked(syncs).insert(
+            id.to_string(),
+            NodeSync {
+                tree,
+                _watcher: watcher,
+                task,
+            },
+        );
+        Ok(SyncResponse::Index { entries: index })
+    }
+
     /// Complète la demande du hub avec ce qui dépend du nœud.
     fn local_spec(&self, remote: RemoteSpec) -> Result<SessionSpec, String> {
         let settings = &self.inner.settings;
@@ -382,6 +502,35 @@ impl Runner {
 }
 
 type Sessions = Arc<Mutex<HashMap<u64, SessionControl>>>;
+type NodeSyncs = Arc<Mutex<HashMap<String, NodeSync>>>;
+
+/// Une synchro ouverte par le hub sur cette connexion.
+struct NodeSync {
+    tree: Arc<Mutex<Tree>>,
+    _watcher: notify::RecommendedWatcher,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for NodeSync {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// Opération bloquante sur l'arbre d'une synchro ouverte.
+async fn with_tree(
+    syncs: &NodeSyncs,
+    id: &str,
+    operation: impl FnOnce(&mut Tree) -> Result<SyncResponse, String> + Send + 'static,
+) -> Result<SyncResponse, String> {
+    let tree = locked(syncs)
+        .get(id)
+        .map(|sync| Arc::clone(&sync.tree))
+        .ok_or_else(|| format!("synchro {id} non ouverte sur ce nœud"))?;
+    tokio::task::spawn_blocking(move || operation(&mut locked(&tree)))
+        .await
+        .map_err(|error| error.to_string())?
+}
 type Outbox = mpsc::UnboundedSender<FromNode>;
 
 /// Mandataire MCP : relaie la requête au hub et rend sa réponse telle quelle.

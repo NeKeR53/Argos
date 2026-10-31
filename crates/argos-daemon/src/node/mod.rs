@@ -13,6 +13,9 @@
 //! envoie chaque opération et en tient un miroir sans historique (D25), mis à jour par
 //! le nœud après chaque écriture et à chaque connexion : quand le nœud est injoignable,
 //! le hub lit le miroir et refuse les écritures.
+//!
+//! Le workspace d'un Agent peut aussi avoir une copie locale sur le hub (D44, `sync`) :
+//! le nœud parcourt, lit et écrit son arbre à la demande, et signale ses changements.
 
 pub mod link;
 pub mod runner;
@@ -23,12 +26,13 @@ pub use link::Nodes;
 
 use crate::engine::{Access, EngineEvent};
 use crate::memory::{MemoryOp, MemoryOutput};
+use crate::sync::{Delta, SyncRequest, SyncResponse};
 use argos_core::{AgentId, EngineKind, FunctionRequest};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Version du protocole entre hub et nœud.
-pub const NODE_PROTOCOL: u32 = 5;
+pub const NODE_PROTOCOL: u32 = 6;
 
 /// Ce qu'il faut au nœud pour lancer une session ; il complète le reste lui-même
 /// (binaires, `CODEX_HOME`, adresse de son mandataire MCP).
@@ -87,6 +91,12 @@ pub enum ToNode {
     CancelFunction {
         call: u64,
     },
+    /// Synchro de workspace (D44) : une demande sur l'arbre de la synchro `sync`.
+    Sync {
+        call: u64,
+        sync: String,
+        request: SyncRequest,
+    },
     /// Réponse du hub à une requête MCP relayée ; `body` vide quand il n'y a rien à rendre.
     McpReply {
         call: u64,
@@ -129,6 +139,15 @@ pub enum FromNode {
     MemorySnapshot {
         agent: AgentId,
         files: Vec<(String, String)>,
+    },
+    SyncReply {
+        call: u64,
+        result: Result<SyncResponse, String>,
+    },
+    /// Ce que le watcher d'une synchro ouverte a vu changer depuis le dernier envoi.
+    SyncChanged {
+        sync: String,
+        delta: Delta,
     },
     /// Requête MCP d'un agent du nœud, à servir par le hub.
     McpCall {

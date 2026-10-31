@@ -66,3 +66,6 @@ Vocabulaire canonique du projet. Le code, les docs et les prompts des agents uti
 - **Isolation** — mode d'exécution d'un agent : conteneur ou répertoire borné.
 
 - **Workspace** — répertoire de projet sur le nœud de l’Agent, partagé avec ses Workers. Son `AGENTS.md` fournit les consignes du projet. Distinct de la mémoire Argos et du `CODEX_HOME` isolé.
+- **Synchro de workspace** — lien continu et bidirectionnel entre le workspace d'un Agent sur son nœud et une copie locale sur le hub (D44). Ne transporte ni `.git/` ni les fichiers ignorés.
+- **Copie locale** — le dossier du hub tenu à jour par une synchro de workspace, où l'on lance et débogue le projet. Distincte du miroir, qui ne concerne que les mémoires et reste en lecture seule.
+- **État commun** — pour une synchro, l'index des fichiers sur lesquels les deux côtés étaient d'accord à la dernière passe. Un fichier qui s'en écarte des deux côtés est en conflit.
