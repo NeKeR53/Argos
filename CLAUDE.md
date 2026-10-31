@@ -8,6 +8,7 @@ Assistant IA personnel qui délègue à une hiérarchie Assistant → Agents →
 - [docs/GLOSSARY.md](docs/GLOSSARY.md) — vocabulaire canonique. Code, docs et prompts d'agents utilisent ces termes.
 - [docs/PHASE-1.md](docs/PHASE-1.md) — tranches en cours, choix d'implémentation et faits vérifiés sur les CLI.
 - [docs/PHASE-2.md](docs/PHASE-2.md), [docs/PHASE-3.md](docs/PHASE-3.md), [docs/PHASE-4.md](docs/PHASE-4.md), [docs/PHASE-5.md](docs/PHASE-5.md) — surfaces, voix, multi-nœud, événements : ce qui est fait, les écarts avec la vision, ce qui reste.
+- [docs/TELEGRAM.md](docs/TELEGRAM.md) — pont Telegram (D43) : installation, fonctionnement, limites.
 
 ## Structure
 

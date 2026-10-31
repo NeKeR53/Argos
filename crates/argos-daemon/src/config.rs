@@ -55,6 +55,15 @@ preempt = false
 # ssh = "pi"                       # hôte de ~/.ssh/config ; ou url = "ws://127.0.0.1:7880"
 # remote = "127.0.0.1:7880"        # écoute du nœud, vue depuis cet hôte
 # token_file = "/chemin/vers/le/jeton"
+
+# Telegram (D43) : parler à l'Assistant en texte ou en vocal depuis son téléphone.
+# Créer le bot avec @BotFather, mettre son jeton dans $ARGOS_HOME/telegram-token (ou la
+# variable ARGOS_TELEGRAM_TOKEN), puis écrire au bot : il répond avec l'identifiant à
+# reporter dans chat_id. Les vocaux utilisent ffmpeg, whisper-cli et la section [voice].
+# [telegram]
+# chat_id = 123456789
+# voice_replies = true             # un vocal reçu appelle une réponse vocale
+# escalations = true               # signaler les escalades, avec leurs réponses en boutons
 "#;
 
 /// Configuration d'un daemon lancé en mode nœud (`$ARGOS_HOME/node.toml`).
@@ -85,6 +94,13 @@ pub struct Config {
     pub workers: WorkersConfig,
     #[serde(default)]
     pub board: BoardConfig,
+    /// Pont Telegram (D43), absent par défaut.
+    #[serde(default)]
+    pub telegram: Option<crate::telegram::TelegramConfig>,
+    /// Section `[voice]`, partagée avec la GUI : le pont Telegram y lit le modèle whisper
+    /// et la voix de synthèse.
+    #[serde(default)]
+    pub voice: Option<crate::telegram::SpeechConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -113,6 +113,23 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
   - **Configuration par l’Assistant** : `configure_agent(agent, name?, workdir?, profile?, engine?, model?)` modifie les seuls champs fournis, ensemble dans une transaction. `agent` accepte un nom ou un id. Un profil choisit moteur et modèle selon la politique ; `engine`/`model` permettent un choix exact demandé par l’utilisateur (harness `claude` ou `codex`). `profile` ne se combine pas avec `engine`/`model` ; `model` seul conserve le moteur. Un changement de moteur exige un modèle. Un Agent ou Worker ne configure jamais un autre Agent. La mémoire et l’identité persistent, et les changements de workspace/moteur ouvrent une nouvelle session au prochain message. Le renommage seul ne coupe pas un tour.
   - Le `AGENTS.md` du workspace est chargé au démarrage de chaque session : nativement par Codex, explicitement par Argos pour Claude (qui continue aussi de charger `CLAUDE.md`). Claude reçoit la consigne de lire les éventuels `AGENTS.md` des sous-dossiers avant de les modifier. Sur un nœud, la lecture se fait sur ce nœud.
   - Le changement de dossier est refusé pendant un tour ou tant qu'un Worker non retiré subsiste. Une session inactive est parkée, son identifiant est effacé et le prochain message ouvre une session neuve avec la mémoire Argos conservée. Les fichiers de l'ancien dossier restent en place. Le chemin est absolu sur le nœud de l'Agent ; le hub vérifie l'existence des dossiers locaux ; un dossier distant est vérifié au prochain démarrage sur son nœud.
+- **D44 — Synchro de workspace entre nœuds** (décidé le 2026-10-31). Le workspace d'un Agent placé sur un nœud peut avoir une copie locale sur le hub, synchronisée dans les deux sens et en continu, pour lancer et déboguer le projet sur le Mac pendant que l'Agent le modifie sur son nœud. Ni commit, ni push, ni dépôt intermédiaire. Les règles :
+  - **Moteur natif, sur la connexion hub → nœud** : aucun outil externe, aucun port ni process de plus sur le nœud. L'infrastructure copie des fichiers ; elle ne décide rien (D5).
+  - **Ouverte par l'utilisateur**, depuis la console ou par l'Assistant à sa demande. Ni les Agents ni les Workers n'en ouvrent. La copie locale part d'un dossier vide ou absent : la première passe copie le nœud vers le hub, sans fusionner deux arbres étrangers.
+  - **Hors synchro** : `.git/` (l'historique reste sur le nœud, les commits s'y font), ce qu'ignore le `.gitignore` du projet, et une liste d'exclusions propre à la synchro. Les dossiers de build (`target/`, `node_modules/`, `dist/`…) restent ainsi propres à chaque machine : on compile chez soi, pour son OS et son architecture.
+  - **Conflit** (un fichier modifié des deux côtés depuis le dernier état commun) : la version du nœud, celle de l'Agent, garde le chemin ; celle du hub est conservée à côté sous `<nom>.conflit-hub`, des deux côtés, et une escalade prévient l'utilisateur. Une modification l'emporte sur une suppression. Rien n'est jamais perdu en silence.
+  - **Nœud injoignable** : la copie locale reste utilisable et modifiable ; les deux côtés se rapprochent au retour du nœud, avec la même règle de conflit.
+  - **Pas encore** : la synchro entre deux nœuds dont aucun n'est le hub (le cas du hub sur le VPS et du Mac en nœud) passera par le hub ; à concevoir avec les vrais serveurs.
+
+## 13 quinquies. Messagerie
+
+- **D43 — Telegram, canal texte et vocal vers l'Assistant** (décidé le 2026-10-31). Depuis son téléphone, l'utilisateur écrit ou envoie un vocal à un bot Telegram personnel. Le daemon du hub relaie, il ne décide pas (D5) :
+  - **Vers l'Assistant seulement**, comme la voix (D2, D3) : un message est remis au nom de l'utilisateur, préfixé « [Depuis Telegram] » ou « [Depuis Telegram, message vocal transcrit] ». Jamais à un Agent ni à un Worker.
+  - **Les réponses suivent le dernier canal** : après un message Telegram, les messages de l'Assistant partent sur Telegram, en vocal si on lui a parlé en vocal, jusqu'au prochain message tapé dans la console ou dit à l'orbe.
+  - **Escalades** : signalées sur Telegram avec leurs options en boutons ; une réponse libre se donne en citant le message. Exception explicite à D2 : l'utilisateur peut répondre à un Agent escaladé depuis Telegram, sans dialogue au-delà de cette réponse.
+  - **Vocaux en local** : transcription `whisper-cli`, synthèse `say` ou Kokoro selon `[voice]`, conversions `ffmpeg`. Seul Telegram voit le son et le texte.
+  - **Un seul interlocuteur** (`chat_id`) ; un inconnu n'obtient rien. Long polling : aucun port ouvert. Jeton hors de `config.toml`.
+  - **Limite assumée** : les conversations avec un bot ne sont pas chiffrées de bout en bout, Telegram peut les lire.
 
 ## 14. Phases
 

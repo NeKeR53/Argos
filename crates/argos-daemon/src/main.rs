@@ -4,6 +4,7 @@ use argos_daemon::node::Nodes;
 use argos_daemon::node::runner::{self, RunnerSettings};
 use argos_daemon::registry::{Registry, RegistryError};
 use argos_daemon::supervisor::{Supervisor, SupervisorSettings};
+use argos_daemon::telegram::Telegram;
 use argos_daemon::{api, events, mcp};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -125,6 +126,21 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     println!("serveur MCP des agents sur {mcp_url}/mcp/<jeton de session>");
 
     tokio::spawn(events::Events::new(supervisor.clone()).run());
+    if let Some(telegram) = config.telegram.clone() {
+        match Telegram::from_config(
+            supervisor.clone(),
+            assistant.id.clone(),
+            telegram,
+            config.voice.clone(),
+            &home,
+        ) {
+            Ok(bridge) => {
+                bridge.spawn();
+                println!("pont Telegram actif");
+            }
+            Err(error) => eprintln!("pont Telegram désactivé : {error}"),
+        }
+    }
 
     tokio::select! {
         served = api::serve(listener, supervisor.clone(), token) => served?,
