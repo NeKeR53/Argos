@@ -31,6 +31,14 @@ Réglages et permission micro : voir [apps/gui/README.md](../apps/gui/README.md)
 - **Sortie** : « Quitter Argos » et SIGTERM, SIGHUP ou SIGINT arrêtent la voix.
 - **Essai sans micro**, en debug seulement : commande `voice_simulate`, champ « Simuler la voix » de la console, ou `ARGOS_VOICE_SIMULATE="phrase"` au lancement.
 
+## Synthèse neurale et écoute mains libres
+
+- **TTS Kokoro** (`tts_backend = "kokoro"`, `kokoro_python`, `kokoro_model`, `kokoro_voices`, `kokoro_voice`) : un worker Python local à la place de `say`.
+- **Écoute mains libres** (`[voice] hands_free = true`, ou le réglage « Écoute mains libres » de la console dans l'app) : le micro reste ouvert. Un détecteur de parole (`argos_voice::vad`) suit un seuil d'énergie au-dessus du bruit ambiant. Il ne déclenche ni sur un claquement ni sur un ronronnement, garde 300 ms avant le début de l'énoncé et le clôt après 900 ms de silence (30 s au plus).
+  - Pour le front, chaque énoncé se présente comme un appui de push-to-talk : `push-to-talk` pressé (barge-in et interruption de l'Assistant), puis relâché, puis `voice-transcript`. Un bruit sans parole nette n'envoie rien. Le push-to-talk reste utilisable, et l'écoute se tait pendant un appui.
+  - **Écart avec D37** : pas de vraie annulation d'écho. Pendant que la synthèse parle, le seuil suit un plancher d'écho à part, plus haut, et il faut parler plus fort et plus longtemps (320 ms) pour couper la parole. Un casque supprime le problème. Une AEC passerait par Voice Processing IO de CoreAudio, que `cpal` n'expose pas.
+  - Vérifié sur signaux synthétiques et faux backends (tests du VAD et du moteur). Pas vérifié au vrai micro.
+
 ## Vérifié
 
 - `npx tauri dev` contre un vrai daemon, Assistant sur Haiku, phrase simulée « Dis-moi bonjour en une phrase ». Les fragments de la réponse partent à la lecture et `say -v Thomas -- Bonjour, je suis là si vous avez besoin de quelque chose.` a été observé pendant 2 s. `whisper-server` a disparu après l'arrêt de l'app.

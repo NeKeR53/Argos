@@ -123,6 +123,7 @@ async fn hub(nodes: BTreeMap<String, NodeConfig>) -> Hub {
             policy: ModelPolicy::default(),
             nodes: nodes.clone(),
             worker_access: argos_daemon::engine::Access::Full,
+            preempt: false,
         },
     );
     tokio::spawn(argos_daemon::mcp::serve(mcp, supervisor.clone()));

@@ -3,7 +3,8 @@
 //! [`ServerMessage::Reply`] (même `id`) et pousse en continu des [`ServerMessage::Event`].
 
 use crate::{
-    AgentId, AgentRecord, Board, EngineKind, SurfaceDoc, SurfaceMeta, Trigger, TurnOutcome, Usage,
+    AgentId, AgentRecord, Board, EngineKind, Escalation, SurfaceDoc, SurfaceMeta, Trigger,
+    TurnOutcome, Usage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -34,10 +35,30 @@ pub enum Command {
     Board {
         agent: AgentId,
     },
-    /// Message à un agent ; un agent parké est réveillé.
+    /// Passe une mission en tête du board de son Agent ; avec la préemption active, ses
+    /// Workers moins prioritaires sont mis au repos (D14).
+    PrioritizeMission {
+        mission: String,
+    },
+    /// Les escalades ouvertes, puis les dernières résolues (D12).
+    Escalations,
+    /// Répond à une escalade : la réponse part directement à l'Agent qui attend.
+    AnswerEscalation {
+        escalation: String,
+        answer: String,
+    },
+    /// Écarte une escalade sans répondre ; l'Agent est prévenu de ne plus l'attendre.
+    DismissEscalation {
+        escalation: String,
+    },
+    /// Message à un agent ; un agent parké est réveillé. Les pièces jointes partent avec :
+    /// les images en entrée native du moteur, les fichiers texte dans le message, les
+    /// autres enregistrés sur le hub avec leur chemin.
     Send {
         agent: AgentId,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
     },
     Interrupt {
         agent: AgentId,
@@ -163,6 +184,9 @@ pub enum Reply {
     Triggers {
         triggers: Vec<Trigger>,
     },
+    Escalations {
+        escalations: Vec<Escalation>,
+    },
     Nodes {
         nodes: Vec<NodeStatus>,
     },
@@ -177,6 +201,17 @@ pub enum Reply {
     Error {
         message: String,
     },
+}
+
+/// Fichier joint à un message de l'utilisateur.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// Nom du fichier, tel que l'utilisateur l'a choisi.
+    pub name: String,
+    /// Type MIME annoncé par la console (`image/png`, `application/pdf`…).
+    pub media_type: String,
+    /// Contenu encodé en base64.
+    pub data: String,
 }
 
 /// Un profil de la politique de modèles (D22) : sa chaîne, premier choix d'abord.
@@ -270,6 +305,10 @@ pub enum DaemonEvent {
         surface: String,
         data: Value,
     },
+    /// Une escalade a été ouverte, répondue ou écartée.
+    EscalationUpdated {
+        escalation: Escalation,
+    },
     /// Information courte du daemon pour l'utilisateur (repli de modèle, plafond…).
     Notice {
         agent: Option<AgentId>,
@@ -325,7 +364,8 @@ mod tests {
                 id: 7,
                 command: Command::Send {
                     agent: AgentId::new("a1"),
-                    text: "bonjour".into()
+                    text: "bonjour".into(),
+                    attachments: vec![],
                 }
             }
         );

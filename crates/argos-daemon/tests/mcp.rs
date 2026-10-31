@@ -2,8 +2,9 @@
 
 mod common;
 
-use argos_core::{AgentId, EngineKind, Level, TaskState};
-use common::world::{World, is_message, until, world};
+use argos_core::protocol::{DaemonEvent, Origin};
+use argos_core::{AgentId, EngineKind, EscalationState, Level, TaskState};
+use common::world::{World, is_message, until, world, world_preempting};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -553,6 +554,204 @@ async fn cancelling_a_mission_stops_its_workers() {
         w.supervisor.registry().task(&task.id).unwrap().state,
         TaskState::Cancelled
     );
+}
+
+/// Une mission passée en tête parke le Worker d'une tâche moins prioritaire ; il
+/// reprend de lui-même quand cette mission est close (D14).
+#[tokio::test]
+async fn a_mission_moved_to_the_top_preempts_then_resumes_workers() {
+    let mut w = world_preempting();
+    let address = serve(&w).await;
+    let (first, urgent, task) = {
+        let registry = w.supervisor.registry();
+        let first = registry.add_mission(&w.agent.id, "éclairage").unwrap();
+        let urgent = registry.add_mission(&w.agent.id, "fuite d'eau").unwrap();
+        let task = registry
+            .add_task(&w.agent.id, "salon", None, Some(&first.id))
+            .unwrap();
+        registry.assign_task(&task.id, &w.worker.id).unwrap();
+        (first, urgent, task)
+    };
+    w.supervisor.send(&w.worker.id, "SLOW").await.unwrap();
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+
+    let (moved, error) = assistant
+        .call(
+            "prioritize_mission",
+            json!({"mission": urgent.id, "position": "top"}),
+        )
+        .await;
+    assert!(!error, "{moved}");
+    assert!(moved.contains("1 Worker(s) mis au repos"), "{moved}");
+    assert!(!w.supervisor.inspect(&w.worker.id).unwrap().running);
+    let agent_id = w.agent.id.clone();
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent, from: Origin::Argos, text }
+            if *agent == agent_id && text.starts_with("[Préemption]"))
+    })
+    .await;
+    // La tâche reste en cours chez son Worker.
+    assert_eq!(
+        w.supervisor.registry().task(&task.id).unwrap().state,
+        TaskState::InProgress
+    );
+
+    // Remettre l'autre mission en tête ne préempte rien de plus.
+    let (moved, _) = assistant
+        .call(
+            "prioritize_mission",
+            json!({"mission": first.id, "position": "top"}),
+        )
+        .await;
+    assert_eq!(moved, format!("Mission {} déplacée.", first.id));
+
+    let agent = Client::new(&w, &address, &w.agent.id);
+    let (_, error) = agent
+        .call(
+            "report_to_assistant",
+            json!({"summary": "fuite réparée", "mission": urgent.id, "outcome": "done"}),
+        )
+        .await;
+    assert!(!error);
+    let worker_id = w.worker.id.clone();
+    let task_id = task.id.clone();
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent, from: Origin::Argos, text }
+            if *agent == worker_id && text.starts_with("[Reprise]") && text.contains(&task_id))
+    })
+    .await;
+    assert!(w.supervisor.inspect(&w.worker.id).unwrap().running);
+}
+
+/// Une escalade avec des choix est gardée, relayée à l'Assistant avec son identifiant,
+/// et la réponse de l'utilisateur part directement à l'Agent (D12, D35).
+#[tokio::test]
+async fn an_escalation_waits_for_the_user_and_its_answer_reaches_the_agent() {
+    let mut w = world();
+    let address = serve(&w).await;
+    let agent = Client::new(&w, &address, &w.agent.id);
+    let (sent, error) = agent
+        .call(
+            "escalate_to_user",
+            json!({"question": "Couper le chauffage ?", "options": ["Approuver", "Refuser"]}),
+        )
+        .await;
+    assert!(!error, "{sent}");
+    let escalation = w.supervisor.registry().escalations().unwrap().remove(0);
+    assert_eq!(escalation.options, ["Approuver", "Refuser"]);
+    let assistant_id = w.assistant.id.clone();
+    let id = escalation.id.clone();
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent, text, .. }
+            if *agent == assistant_id && text.starts_with("[Escalade pour l'utilisateur")
+                && text.contains(&id) && text.contains("Approuver / Refuser"))
+    })
+    .await;
+
+    w.supervisor
+        .answer_escalation(&escalation.id, "Refuser")
+        .await
+        .unwrap();
+    let agent_id = w.agent.id.clone();
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent, from: Origin::User, text }
+            if *agent == agent_id && text.starts_with("[Réponse de l'utilisateur")
+                && text.ends_with("Réponse : Refuser"))
+    })
+    .await;
+    // Une seule réponse ; l'Assistant ne peut plus la donner après coup.
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+    let (_, error) = assistant
+        .call(
+            "answer_escalation",
+            json!({"escalation": escalation.id, "answer": "Approuver"}),
+        )
+        .await;
+    assert!(error);
+
+    // Une option inconnue du schéma (pas une liste) est refusée.
+    let (_, error) = agent
+        .call(
+            "escalate_to_user",
+            json!({"question": "?", "options": "oui"}),
+        )
+        .await;
+    assert!(error);
+}
+
+/// L'Assistant transmet la réponse reçue de vive voix ; une escalade écartée prévient l'Agent.
+#[tokio::test]
+async fn the_assistant_relays_an_answer_and_the_user_can_dismiss() {
+    let mut w = world();
+    let address = serve(&w).await;
+    let agent = Client::new(&w, &address, &w.agent.id);
+    agent
+        .call("escalate_to_user", json!({"question": "Quel compte ?"}))
+        .await;
+    agent
+        .call("escalate_to_user", json!({"question": "Quelle date ?"}))
+        .await;
+    let open = w.supervisor.registry().escalations().unwrap();
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+    let (relayed, error) = assistant
+        .call(
+            "answer_escalation",
+            json!({"escalation": open[0].id, "answer": "le compte pro"}),
+        )
+        .await;
+    assert!(!error, "{relayed}");
+    let agent_id = w.agent.id.clone();
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent, text, .. }
+            if *agent == agent_id && text.ends_with("Réponse : le compte pro"))
+    })
+    .await;
+
+    w.supervisor.dismiss_escalation(&open[1].id).await.unwrap();
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent, text, .. }
+            if *agent == agent_id && text.contains("écartée par l'utilisateur"))
+    })
+    .await;
+    let states: Vec<_> = w
+        .supervisor
+        .registry()
+        .escalations()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.state)
+        .collect();
+    assert_eq!(
+        states,
+        [EscalationState::Dismissed, EscalationState::Answered]
+    );
+}
+
+/// Sans l'option, déplacer une mission ne touche à aucun Worker.
+#[tokio::test]
+async fn without_preemption_workers_keep_running() {
+    let w = world();
+    let address = serve(&w).await;
+    let urgent = {
+        let registry = w.supervisor.registry();
+        let first = registry.add_mission(&w.agent.id, "éclairage").unwrap();
+        let urgent = registry.add_mission(&w.agent.id, "fuite d'eau").unwrap();
+        let task = registry
+            .add_task(&w.agent.id, "salon", None, Some(&first.id))
+            .unwrap();
+        registry.assign_task(&task.id, &w.worker.id).unwrap();
+        urgent
+    };
+    w.supervisor.send(&w.worker.id, "SLOW").await.unwrap();
+    let assistant = Client::new(&w, &address, &w.assistant.id);
+    let (moved, _) = assistant
+        .call(
+            "prioritize_mission",
+            json!({"mission": urgent.id, "position": "top"}),
+        )
+        .await;
+    assert_eq!(moved, format!("Mission {} déplacée.", urgent.id));
+    assert!(w.supervisor.inspect(&w.worker.id).unwrap().running);
 }
 
 #[tokio::test]

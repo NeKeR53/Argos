@@ -134,8 +134,33 @@ pub enum EngineError {
     Closed,
 }
 
+/// Image donnée au moteur en entrée native, avec le texte d'un message.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Image {
+    /// `image/png`, `image/jpeg`, `image/gif` ou `image/webp`.
+    pub media_type: String,
+    /// Contenu encodé en base64.
+    pub data: String,
+}
+
+/// Ce qu'un tour reçoit : du texte, et éventuellement des images.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Message {
+    pub text: String,
+    pub images: Vec<Image>,
+}
+
+impl From<String> for Message {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            images: vec![],
+        }
+    }
+}
+
 pub(crate) enum Command {
-    Send(String),
+    Send(Message),
     Interrupt,
     Park,
     /// Arrêt dur d'une session distante ; une session locale tue son groupe de process
@@ -248,7 +273,12 @@ impl SessionControl {
 
     /// Envoie un message utilisateur à l'agent.
     pub fn send(&self, text: impl Into<String>) -> Result<(), EngineError> {
-        self.command(Command::Send(text.into()))
+        self.command(Command::Send(Message::from(text.into())))
+    }
+
+    /// Message avec images (pièces jointes de l'utilisateur).
+    pub fn send_message(&self, message: Message) -> Result<(), EngineError> {
+        self.command(Command::Send(message))
     }
 
     /// Interrompt le tour en cours ; la session reste utilisable.

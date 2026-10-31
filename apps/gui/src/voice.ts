@@ -12,7 +12,8 @@ export type VoiceStatus =
   | { status: "failed"; reason: string };
 
 /** Réponse de la commande `voice_status`. */
-export type VoiceInfo = VoiceStatus & { speak_typed_replies: boolean };
+/** `voice_status` : état, lecture des réponses tapées, écoute mains libres. */
+export type VoiceInfo = VoiceStatus & { speak_typed_replies: boolean; hands_free?: boolean };
 
 /** `voice-event` : un `argos_voice::VoiceEvent`. */
 export type VoiceEvent =

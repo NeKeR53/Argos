@@ -163,6 +163,31 @@ export interface Trigger {
   last_fired: number | null;
 }
 
+/** Fichier joint à un message (`Attachment`) ; `data` est le contenu en base64. */
+export interface Attachment {
+  name: string;
+  media_type: string;
+  data: string;
+}
+
+export type EscalationState = "open" | "answered" | "dismissed";
+
+/**
+ * Question d'un Agent à l'utilisateur (D12, D35), gardée jusqu'à sa réponse. La console
+ * la montre avec ses choix ; la réponse part directement à l'Agent.
+ */
+export interface Escalation {
+  id: string;
+  agent: AgentId;
+  question: string;
+  /** Réponses courtes proposées en boutons ; vide pour une réponse libre seulement. */
+  options: string[];
+  state: EscalationState;
+  answer: string | null;
+  created_at: number;
+  resolved_at: number | null;
+}
+
 /** Ce que l'utilisateur peut demander (`Command`, tag `command`). */
 export type Command =
   | { command: "tree" }
@@ -170,7 +195,19 @@ export type Command =
   | { command: "capabilities"; agent: AgentId }
   /** Le board d'un Agent (lecture seule ; erreur pour un autre niveau). */
   | { command: "board"; agent: AgentId }
-  | { command: "send"; agent: AgentId; text: string }
+  /** Passe une mission en tête du board ; préempte les Workers moins prioritaires si actif (D14). */
+  | { command: "prioritize_mission"; mission: string }
+  /** Les escalades ouvertes, puis les dernières résolues. */
+  | { command: "escalations" }
+  /** Répond à une escalade : la réponse part directement à l'Agent qui attend. */
+  | { command: "answer_escalation"; escalation: string; answer: string }
+  /** Écarte une escalade ; l'Agent est prévenu de ne plus l'attendre. */
+  | { command: "dismiss_escalation"; escalation: string }
+  /**
+   * Message à un agent, avec d'éventuelles pièces jointes : images en entrée native du
+   * moteur, fichiers texte recopiés dans le message, autres fichiers enregistrés sur le hub.
+   */
+  | { command: "send"; agent: AgentId; text: string; attachments?: Attachment[] }
   | { command: "interrupt"; agent: AgentId }
   | { command: "park"; agent: AgentId }
   | { command: "stop"; agent: AgentId }
@@ -237,6 +274,7 @@ export type Reply =
   | { kind: "surface"; surface: SurfaceDoc }
   | { kind: "function_result"; result: Json }
   | { kind: "triggers"; triggers: Trigger[] }
+  | { kind: "escalations"; escalations: Escalation[] }
   | { kind: "nodes"; nodes: NodeStatus[] }
   | { kind: "models"; profiles: ProfileInfo[]; models: { engine: EngineKind; model: string }[] }
   | { kind: "done"; affected: AgentId[] }
@@ -274,6 +312,8 @@ export type DaemonEvent =
   | { type: "agent_updated"; agent: AgentStatus }
   /** Information courte du daemon pour l'utilisateur (repli de modèle, plafond…). */
   | { type: "notice"; agent: AgentId | null; text: string }
+  /** Une escalade a été ouverte, répondue ou écartée. */
+  | { type: "escalation_updated"; escalation: Escalation }
   /** Une surface a été créée, mise à jour (nouvelle `version`) ou supprimée. */
   | { type: "surface_updated"; surface: SurfaceMeta; deleted: boolean }
   /** Données poussées par l'agent vers son cockpit (`argos.on('data')`). */
@@ -385,6 +425,9 @@ function checkReply(reply: Record<string, unknown>) {
         if (typeof trigger.enabled !== "boolean") throw new ProtocolError("trigger.enabled : booléen attendu");
       });
       break;
+    case "escalations":
+      array(reply.escalations, "reply.escalations").forEach((escalation) => checkEscalation(escalation));
+      break;
     case "models":
       array(reply.models, "reply.models").forEach((choice) => {
         const model = object(choice, "model");
@@ -428,6 +471,10 @@ function checkEvent(event: Record<string, unknown>) {
   if (event.type === "surface_updated") {
     checkSurface(event.surface);
     if (typeof event.deleted !== "boolean") throw new ProtocolError("surface_updated.deleted : booléen attendu");
+    return;
+  }
+  if (event.type === "escalation_updated") {
+    checkEscalation(event.escalation);
     return;
   }
   if (event.type === "surface_data") {
@@ -476,6 +523,19 @@ function checkEvent(event: Record<string, unknown>) {
 const TASK_STATES: TaskState[] = ["pending", "in_progress", "blocked", "done", "cancelled", "interrupted"];
 
 const TRIGGER_KINDS: TriggerKind[] = ["every", "cron", "switch", "watch", "webhook"];
+
+const ESCALATION_STATES: EscalationState[] = ["open", "answered", "dismissed"];
+
+function checkEscalation(value: unknown) {
+  const escalation = object(value, "escalation");
+  string(escalation.id, "escalation.id");
+  string(escalation.agent, "escalation.agent");
+  string(escalation.question, "escalation.question");
+  array(escalation.options, "escalation.options").forEach((option) => string(option, "escalation.option"));
+  if (!ESCALATION_STATES.includes(escalation.state as EscalationState)) {
+    throw new ProtocolError(`état d'escalade inconnu : ${String(escalation.state)}`);
+  }
+}
 
 function checkSurface(value: unknown): Record<string, unknown> {
   const surface = object(value, "surface");

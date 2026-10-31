@@ -33,6 +33,16 @@ pub fn world() -> World {
 
 /// Le même monde, avec une politique de modèles donnée.
 pub fn world_with(policy: ModelPolicy) -> World {
+    world_custom(policy, false)
+}
+
+/// Le même monde, préemption des Workers active (D14).
+#[allow(dead_code)]
+pub fn world_preempting() -> World {
+    world_custom(ModelPolicy::default(), true)
+}
+
+fn world_custom(policy: ModelPolicy, preempt: bool) -> World {
     let home = tempfile::tempdir().unwrap();
     let registry = Registry::open_in_memory().unwrap();
     let assistant = registry
@@ -76,6 +86,7 @@ pub fn world_with(policy: ModelPolicy) -> World {
         policy,
         nodes: Default::default(),
         worker_access: Default::default(),
+        preempt,
     };
     let supervisor = Supervisor::new(registry, settings);
     let events = supervisor.subscribe();

@@ -65,6 +65,7 @@ impl Stage {
                 policy: cheap_policy(),
                 nodes: Default::default(),
                 worker_access: Default::default(),
+                preempt: false,
             },
         );
         tokio::spawn(argos_daemon::mcp::serve(listener, supervisor.clone()));

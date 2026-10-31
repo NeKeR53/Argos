@@ -1,4 +1,6 @@
-// Board d'un Agent, en lecture seule : missions ouvertes et tâches (état, Worker, résultat).
+// Board d'un Agent : missions ouvertes et tâches (état, Worker, résultat). Seule action :
+// passer une mission en tête, ce qui préempte les Workers moins prioritaires si l'option
+// est active (D14).
 // Relu à l'ouverture de l'Agent et après chaque événement qui le concerne, lui ou l'un
 // de ses Workers (rafales regroupées).
 
@@ -46,12 +48,23 @@ export function BoardSection(props: Props) {
       </summary>
       <div className="board-body">
         {board && missions.length === 0 && tasks.length === 0 && <p className="muted">Rien en cours.</p>}
-        {missions.map((mission) => (
+        {missions.map((mission, rank) => (
           <section key={mission.id} className="board-mission">
             <header>
-              <span className="mission-kicker">Demande</span>
+              <span className="mission-kicker">{rank === 0 ? "Demande prioritaire" : "Demande"}</span>
               <details className="mission-description"><summary><span className="board-mission-text">{mission.text}</span><span className="mission-more" aria-hidden="true" /></summary></details>
             </header>
+            {rank > 0 && (
+              <button
+                type="button"
+                className="link mission-top"
+                disabled={!connected}
+                onClick={() => send({ command: "prioritize_mission", mission: mission.id })}
+                title="Passer cette demande avant les autres"
+              >
+                Passer en tête
+              </button>
+            )}
             <TaskList tasks={tasks.filter((task) => task.mission === mission.id)} isLiving={props.isLiving} onSelect={props.onSelect} />
           </section>
         ))}

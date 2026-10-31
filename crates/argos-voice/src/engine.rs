@@ -3,10 +3,12 @@
 use crate::capture::{ActiveCapture, AudioSource, CaptureSink, CpalSource};
 use crate::stt::{self, Transcriber, Turn};
 use crate::tts::{KokoroSpeaker, SaySpeaker, Speaker, SpeechQueue};
+use crate::vad::{Vad, VadEvent, VadSettings};
 use crate::whisper::WhisperServer;
 use crate::{VoiceConfig, VoiceError};
 use serde::Serialize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{Mutex, broadcast};
 use tokio::task::JoinHandle;
@@ -16,6 +18,8 @@ use tokio::task::JoinHandle;
 const EVENT_CAPACITY: usize = 256;
 /// Un appui de moins de 300 ms est un faux départ : pas de transcription.
 const MIN_FINAL_SAMPLES: usize = crate::audio::SAMPLE_RATE as usize * 3 / 10;
+/// Cadence à laquelle l'écoute mains libres lit le micro.
+const HANDS_FREE_TICK: Duration = Duration::from_millis(20);
 
 /// Ce que le moteur publie, pour l'orbe et la console. Sérialisé tel quel vers le front
 /// (`{"type": "partial", "text": "..."}`).
@@ -44,6 +48,13 @@ pub enum VoiceEvent {
     SpeechFinished {
         interrupted: bool,
     },
+    /// Écoute mains libres : la voix de l'utilisateur vient d'être détectée. La parole en
+    /// cours est déjà coupée (barge-in).
+    HandsFreeStarted,
+    /// Écoute mains libres : fin de l'énoncé et sa transcription (vide si rien de net).
+    HandsFreeHeard {
+        text: String,
+    },
     /// Erreur survenue hors d'un appel (partielle, synthèse, flux micro).
     Error {
         message: String,
@@ -67,7 +78,16 @@ pub struct VoiceEngine {
     speech: SpeechQueue,
     partial_interval: Duration,
     listening: Mutex<Option<Listening>>,
+    /// Push-to-talk en cours : l'écoute mains libres se tait pendant ce temps.
+    pressed: Arc<AtomicBool>,
+    hands_free: Mutex<Option<HandsFree>>,
     server: Mutex<Option<WhisperServer>>,
+}
+
+/// L'écoute mains libres en cours : micro ouvert en continu, détection de parole.
+struct HandsFree {
+    capture: Box<dyn ActiveCapture>,
+    task: JoinHandle<()>,
 }
 
 /// Un appui en cours.
@@ -127,6 +147,8 @@ impl VoiceEngine {
             speech,
             partial_interval,
             listening: Mutex::new(None),
+            pressed: Arc::new(AtomicBool::new(false)),
+            hands_free: Mutex::new(None),
             server: Mutex::new(None),
         }
     }
@@ -144,13 +166,16 @@ impl VoiceEngine {
         if listening.is_some() {
             return Ok(());
         }
+        self.pressed.store(true, Ordering::SeqCst);
         let sink = CaptureSink::new(self.events.clone());
         let source = Arc::clone(&self.source);
         let source_sink = sink.clone();
         // Ouvrir un périphérique audio peut prendre quelques dizaines de ms.
         let capture = tokio::task::spawn_blocking(move || source.start(source_sink))
             .await
-            .map_err(|_| VoiceError::Closed)??;
+            .map_err(|_| VoiceError::Closed)
+            .flatten()
+            .inspect_err(|_| self.pressed.store(false, Ordering::SeqCst))?;
         let turn = Arc::new(Turn::new(self.events.clone()));
         let partials = tokio::spawn(stt::run_partials(
             Arc::clone(&self.transcriber),
@@ -175,6 +200,7 @@ impl VoiceEngine {
             return Err(VoiceError::NotListening);
         };
         let samples = stop_listening(listening).await;
+        self.pressed.store(false, Ordering::SeqCst);
         let text = if samples.len() < MIN_FINAL_SAMPLES {
             String::new()
         } else {
@@ -182,6 +208,42 @@ impl VoiceEngine {
         };
         let _ = self.events.send(VoiceEvent::Final { text: text.clone() });
         Ok(text)
+    }
+
+    /// Active ou coupe l'écoute mains libres : le micro reste ouvert, chaque énoncé
+    /// détecté coupe la parole en cours puis est transcrit ([`VoiceEvent::HandsFreeStarted`],
+    /// [`VoiceEvent::HandsFreeHeard`]). Le push-to-talk reste utilisable à côté.
+    pub async fn set_hands_free(&self, on: bool) -> Result<(), VoiceError> {
+        let mut hands_free = self.hands_free.lock().await;
+        if !on {
+            if let Some(active) = hands_free.take() {
+                stop_hands_free(active).await;
+            }
+            return Ok(());
+        }
+        if hands_free.is_some() {
+            return Ok(());
+        }
+        let sink = CaptureSink::new(self.events.clone());
+        let source = Arc::clone(&self.source);
+        let source_sink = sink.clone();
+        let capture = tokio::task::spawn_blocking(move || source.start(source_sink))
+            .await
+            .map_err(|_| VoiceError::Closed)??;
+        let task = tokio::spawn(run_hands_free(HandsFreeLoop {
+            sink,
+            events: self.events.clone(),
+            speech: self.speech.clone(),
+            transcriber: Arc::clone(&self.transcriber),
+            pressed: Arc::clone(&self.pressed),
+            vad: Vad::new(VadSettings::default()),
+        }));
+        *hands_free = Some(HandsFree { capture, task });
+        Ok(())
+    }
+
+    pub async fn hands_free(&self) -> bool {
+        self.hands_free.lock().await.is_some()
     }
 
     /// Fragment de la réponse à prononcer ; chaque phrase part dès qu'elle est complète.
@@ -206,8 +268,76 @@ impl VoiceEngine {
         if let Some(listening) = self.listening.lock().await.take() {
             stop_listening(listening).await;
         }
+        if let Some(active) = self.hands_free.lock().await.take() {
+            stop_hands_free(active).await;
+        }
         if let Some(server) = self.server.lock().await.take() {
             server.shutdown().await;
+        }
+    }
+}
+
+async fn stop_hands_free(active: HandsFree) {
+    active.task.abort();
+    let capture = active.capture;
+    let _ = tokio::task::spawn_blocking(move || capture.stop()).await;
+}
+
+struct HandsFreeLoop {
+    sink: CaptureSink,
+    events: broadcast::Sender<VoiceEvent>,
+    speech: SpeechQueue,
+    transcriber: Arc<dyn Transcriber>,
+    pressed: Arc<AtomicBool>,
+    vad: Vad,
+}
+
+/// Lit le micro toutes les 20 ms et le passe au détecteur. La synthèse est suivie par
+/// ses propres événements : pendant qu'elle parle, le détecteur compte avec l'écho.
+async fn run_hands_free(mut state: HandsFreeLoop) {
+    let mut own_events = state.events.subscribe();
+    let mut playing = false;
+    let mut tick = tokio::time::interval(HANDS_FREE_TICK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        loop {
+            match own_events.try_recv() {
+                Ok(VoiceEvent::SpeechStarted) => playing = true,
+                Ok(VoiceEvent::SpeechFinished { .. }) => playing = false,
+                Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+                Err(_) => break,
+            }
+        }
+        let samples = state.sink.take();
+        if state.pressed.load(Ordering::SeqCst) {
+            state.vad.reset();
+            continue;
+        }
+        for event in state.vad.push(&samples, playing) {
+            match event {
+                VadEvent::Started => {
+                    state.speech.stop();
+                    let _ = state.events.send(VoiceEvent::HandsFreeStarted);
+                }
+                VadEvent::Ended { samples } => {
+                    // Transcrit à part : l'écoute continue pendant ce temps.
+                    let transcriber = Arc::clone(&state.transcriber);
+                    let events = state.events.clone();
+                    tokio::spawn(async move {
+                        let text = match transcriber.transcribe(samples).await {
+                            Ok(text) => text,
+                            Err(error) => {
+                                let _ = events.send(VoiceEvent::Error {
+                                    message: error.to_string(),
+                                });
+                                String::new()
+                            }
+                        };
+                        let _ = events.send(VoiceEvent::HandsFreeHeard { text });
+                    });
+                }
+            }
         }
     }
 }
@@ -315,6 +445,72 @@ mod tests {
     fn the_engine_can_live_behind_an_arc_in_tauri() {
         assert_send_sync::<VoiceEngine>();
         assert_send_sync::<Arc<VoiceEngine>>();
+    }
+
+    /// Pousse `ms` millisecondes d'un signal d'amplitude `level`, au rythme du temps réel.
+    async fn feed(source: &FakeSource, ms: u64, level: f32) {
+        let frame: Vec<f32> = (0..320)
+            .map(|i| if i % 2 == 0 { level } else { -level })
+            .collect();
+        for _ in 0..ms / 20 {
+            source.push(&frame);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hands_free_cuts_the_speech_then_transcribes_the_utterance() {
+        let mut f = fixture(Duration::from_millis(50));
+        f.engine.set_hands_free(true).await.unwrap();
+        assert!(f.engine.hands_free().await);
+        f.engine
+            .speak_delta("Une longue réponse qui parle encore. ");
+        feed(&f.source, 400, 0.002).await;
+        // Une voix franche par-dessus la synthèse : barge-in, puis la fin de l'énoncé.
+        feed(&f.source, 600, 0.3).await;
+        feed(&f.source, 1200, 0.002).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let events: Vec<_> = drain(&mut f.events)
+            .into_iter()
+            .filter(|e| !matches!(e, VoiceEvent::Level { .. } | VoiceEvent::Utterance { .. }))
+            .collect();
+        let started = events
+            .iter()
+            .position(|e| *e == VoiceEvent::HandsFreeStarted);
+        let cut = events
+            .iter()
+            .position(|e| *e == VoiceEvent::SpeechFinished { interrupted: true });
+        assert!(started.is_some() && cut.is_some(), "{events:?}");
+        let heard = events.iter().find_map(|e| match e {
+            VoiceEvent::HandsFreeHeard { text } => Some(text.clone()),
+            _ => None,
+        });
+        assert!(
+            heard.is_some_and(|text| text.ends_with("échantillons")),
+            "{events:?}"
+        );
+
+        f.engine.set_hands_free(false).await.unwrap();
+        assert!(!f.engine.hands_free().await);
+        assert_eq!(*f.source.stops.lock().unwrap(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn hands_free_stays_quiet_while_push_to_talk_is_held() {
+        let mut f = fixture(Duration::from_millis(50));
+        f.engine.set_hands_free(true).await.unwrap();
+        f.engine.press().await.unwrap();
+        // La source ne garde que le dernier sink : on alimente le push-to-talk, et
+        // l'écoute mains libres, muette, ne doit rien ouvrir.
+        feed(&f.source, 300, 0.002).await;
+        feed(&f.source, 600, 0.3).await;
+        f.engine.release().await.unwrap();
+        let events = drain(&mut f.events);
+        assert!(
+            !events.contains(&VoiceEvent::HandsFreeStarted),
+            "{events:?}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

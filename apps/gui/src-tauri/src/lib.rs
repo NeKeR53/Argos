@@ -201,6 +201,12 @@ mod commands {
         voice.info()
     }
 
+    /// Active ou coupe l'écoute mains libres ; rend l'état obtenu.
+    #[tauri::command]
+    pub async fn voice_set_hands_free(app: AppHandle, on: bool) -> bool {
+        voice::set_hands_free(&app, on).await
+    }
+
     /// Fragment de la réponse de l'Assistant à prononcer.
     #[tauri::command]
     pub fn voice_speak_delta(app: AppHandle, text: String) {
@@ -277,6 +283,7 @@ macro_rules! handler {
             commands::shortcuts,
             commands::set_shortcut,
             commands::voice_status,
+            commands::voice_set_hands_free,
             commands::voice_speak_delta,
             commands::voice_finish_speech,
             commands::voice_stop_speech,

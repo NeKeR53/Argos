@@ -211,7 +211,9 @@ enum SpeechCommand {
     Stop,
 }
 
-/// Poignée de la file de parole ; la tâche qui la sert s'arrête quand on la lâche.
+/// Poignée de la file de parole ; la tâche qui la sert s'arrête quand on lâche la
+/// dernière copie.
+#[derive(Clone)]
 pub(crate) struct SpeechQueue {
     commands: mpsc::UnboundedSender<SpeechCommand>,
 }

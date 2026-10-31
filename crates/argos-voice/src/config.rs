@@ -17,6 +17,7 @@ const MIN_PARTIAL_INTERVAL_MS: u64 = 100;
 /// language = "fr"
 /// voice = "Thomas"                    # voix de `say` (`say -v '?'` pour la liste)
 /// partial_interval_ms = 700           # cadence des hypothèses partielles
+/// hands_free = false                  # écoute continue au démarrage (sinon push-to-talk)
 /// ```
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct VoiceConfig {
@@ -41,6 +42,9 @@ pub struct VoiceConfig {
     pub kokoro_voice: String,
     #[serde(default = "default_partial_interval_ms")]
     pub partial_interval_ms: u64,
+    /// Écoute mains libres dès le démarrage : chaque énoncé détecté part à l'Assistant.
+    #[serde(default)]
+    pub hands_free: bool,
 }
 
 fn default_whisper_server() -> PathBuf {
@@ -85,6 +89,7 @@ impl VoiceConfig {
             kokoro_voices: None,
             kokoro_voice: default_kokoro_voice(),
             partial_interval_ms: default_partial_interval_ms(),
+            hands_free: false,
         }
     }
 

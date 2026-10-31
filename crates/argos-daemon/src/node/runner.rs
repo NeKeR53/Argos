@@ -223,9 +223,13 @@ impl Runner {
                         .spawn(session, spec, sessions.clone(), outbox.clone()),
                 );
             }
-            ToNode::Send { session, text } => match control(session) {
+            ToNode::Send {
+                session,
+                text,
+                images,
+            } => match control(session) {
                 Some(control) => {
-                    let _ = control.send(text);
+                    let _ = control.send_message(crate::engine::Message { text, images });
                 }
                 None => gone(session),
             },

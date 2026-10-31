@@ -11,6 +11,7 @@ import type { AgentId, AgentStatus, SurfaceMeta } from "./protocol";
 import {
   attention,
   displayName,
+  openEscalations,
   selectedAgent,
   shortId,
   type Connection,
@@ -71,6 +72,7 @@ export default function App() {
     if (!connected) return;
     send({ command: "nodes" });
     send({ command: "models" });
+    send({ command: "escalations" });
     const timer = setInterval(() => send({ command: "nodes" }), NODES_REFRESH_MS);
     return () => clearInterval(timer);
   }, [connected, send]);
@@ -164,6 +166,7 @@ export default function App() {
                 agent={agent}
                 parent={agent.parent ? (state.agents[agent.parent] ?? null) : null}
                 thread={state.threads[agent.id] ?? []}
+                escalations={openEscalations(state, agent)}
                 surfaces={state.surfaces[agent.id] ?? NO_SURFACES}
                 surfaceDocs={state.surfaceDocs}
                 surfaceFeeds={state.surfaceFeeds}

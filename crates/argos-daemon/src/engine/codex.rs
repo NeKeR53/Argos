@@ -3,7 +3,7 @@
 
 use super::process::{self, Spawned};
 use super::{
-    Access, Command, EngineError, EngineEvent, Events, McpServer, Session, SessionSpec,
+    Access, Command, EngineError, EngineEvent, Events, McpServer, Message, Session, SessionSpec,
     TurnOutcome, Usage, forward,
 };
 use serde_json::{Value, json};
@@ -181,7 +181,7 @@ async fn drive(
         tokio::select! {
             command = commands.recv() => {
                 let message = match command {
-                    Some(Command::Send(text)) => Some(state.turn_start(&text)),
+                    Some(Command::Send(message)) => Some(state.turn_start(&message)),
                     Some(Command::Interrupt) => state.interrupt(),
                     Some(Command::Park | Command::Kill) | None => break,
                 };
@@ -228,8 +228,15 @@ impl State {
         (id, json!({"id": id, "method": method, "params": params}))
     }
 
-    fn turn_start(&mut self, text: &str) -> Value {
-        let input = json!([{"type": "text", "text": text, "text_elements": []}]);
+    fn turn_start(&mut self, message: &Message) -> Value {
+        let mut input: Vec<Value> = message
+            .images
+            .iter()
+            .map(|image| {
+                json!({"type": "image", "url": format!("data:{};base64,{}", image.media_type, image.data)})
+            })
+            .collect();
+        input.push(json!({"type": "text", "text": message.text, "text_elements": []}));
         let params = json!({"threadId": self.thread_id, "input": input});
         let (id, request) = self.request("turn/start", params);
         self.turn_starts.insert(id);
@@ -441,6 +448,25 @@ mod tests {
     }
 
     // Messages de la forme observée avec codex-cli 0.164.0 (docs/PHASE-1.md).
+    #[test]
+    fn images_go_before_the_text_as_data_urls() {
+        let mut state = State::default();
+        let request = state.turn_start(&Message {
+            text: "Regarde".into(),
+            images: vec![super::super::Image {
+                media_type: "image/png".into(),
+                data: "AAAA".into(),
+            }],
+        });
+        assert_eq!(
+            request["params"]["input"],
+            json!([
+                {"type": "image", "url": "data:image/png;base64,AAAA"},
+                {"type": "text", "text": "Regarde", "text_elements": []}
+            ])
+        );
+    }
+
     const TURN_STARTED: &str = r#"{"method":"turn/started","params":{"threadId":"t1","turn":{"id":"turn-1","status":"inProgress"}}}"#;
     const AGENT_MESSAGE: &str = r#"{"method":"item/completed","params":{"threadId":"t1","turnId":"turn-1","completedAtMs":1,"item":{"type":"agentMessage","id":"m1","text":"42","phase":null}}}"#;
     const TOKEN_USAGE: &str = r#"{"method":"thread/tokenUsage/updated","params":{"threadId":"t1","turnId":"turn-1","tokenUsage":{"total":{"inputTokens":50,"outputTokens":3},"last":{"totalTokens":25,"inputTokens":20,"cachedInputTokens":7,"cacheWriteInputTokens":0,"outputTokens":5,"reasoningOutputTokens":0},"modelContextWindow":272000}}}"#;
@@ -547,7 +573,9 @@ mod tests {
             ..State::default()
         };
         assert_eq!(state.interrupt(), None);
-        let id = state.turn_start("bonjour")["id"].as_u64().unwrap();
+        let id = state.turn_start(&Message::from("bonjour".to_string()))["id"]
+            .as_u64()
+            .unwrap();
         state.handle_line(&turn_start_response(id));
         let interrupt = state.interrupt().expect("un tour à interrompre");
         assert_eq!(interrupt["method"], "turn/interrupt");
@@ -558,7 +586,9 @@ mod tests {
     #[test]
     fn an_interrupt_sent_before_the_turn_is_known_leaves_once_it_is() {
         let mut state = State::default();
-        let id = state.turn_start("bonjour")["id"].as_u64().unwrap();
+        let id = state.turn_start(&Message::from("bonjour".to_string()))["id"]
+            .as_u64()
+            .unwrap();
         assert_eq!(state.interrupt(), None);
 
         let (_, deferred) = state.handle_line(&turn_start_response(id));
@@ -579,7 +609,9 @@ mod tests {
     #[test]
     fn a_refused_turn_start_fails_the_turn() {
         let mut state = State::default();
-        let id = state.turn_start("bonjour")["id"].as_u64().unwrap();
+        let id = state.turn_start(&Message::from("bonjour".to_string()))["id"]
+            .as_u64()
+            .unwrap();
         let events = state
             .handle_line(&format!(
                 r#"{{"id":{id},"error":{{"message":"thread inconnu"}}}}"#

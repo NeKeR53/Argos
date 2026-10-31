@@ -8,8 +8,8 @@
 
 use crate::contracts;
 use crate::engine::{
-    Access, EngineError, EngineEvent, EventStream, McpServer, Session, SessionControl, SessionSpec,
-    prepare_codex_home,
+    Access, EngineError, EngineEvent, EventStream, McpServer, Message, Session, SessionControl,
+    SessionSpec, prepare_codex_home,
 };
 use crate::memory::{Memory, MemoryOp, MemoryOutput};
 use crate::node::{Nodes, RemoteSpec};
@@ -25,7 +25,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex as AsyncMutex, broadcast, watch};
 
+mod escalations;
 mod functions;
+mod preemption;
 use functions::FunctionCall;
 
 /// Délai laissé à un process pour sortir après un parking ou un kill.
@@ -53,6 +55,8 @@ pub struct SupervisorSettings {
     pub nodes: Nodes,
     /// Droits des Agents et Workers sur la machine (`[workers] access`).
     pub worker_access: Access,
+    /// Préemption (D14) : une mission passée en tête parke les Workers moins prioritaires.
+    pub preempt: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,6 +75,8 @@ pub enum SupervisorError {
     Cap(String),
     #[error("mémoire : {0}")]
     Memory(String),
+    #[error("pièce jointe : {0}")]
+    Attachment(String),
 }
 
 pub type Result<T> = std::result::Result<T, SupervisorError>;
@@ -101,6 +107,9 @@ struct Inner {
     lateral: Mutex<HashMap<(AgentId, AgentId), VecDeque<Instant>>>,
     /// Appels HTTP déterministes en cours ; le stop les annule même sans session LLM.
     function_calls: Mutex<HashMap<u64, FunctionCall>>,
+    /// Workers parkés par une préemption → mission qui les a mis au repos. Perdu au
+    /// redémarrage : l'Agent, prévenu, les reprend alors lui-même.
+    preempted: Mutex<HashMap<AgentId, String>>,
     memory: Memory,
     /// Modèles lus auprès des harnais, et quand (voir `discover_models`).
     catalog: Mutex<Option<(Instant, Vec<argos_core::protocol::ModelRef>)>>,
@@ -130,6 +139,7 @@ impl Supervisor {
                 last_input: Mutex::default(),
                 lateral: Mutex::default(),
                 function_calls: Mutex::default(),
+                preempted: Mutex::default(),
                 memory: Memory::new(settings.home.join("memory")),
                 catalog: Mutex::default(),
                 events,
@@ -276,6 +286,37 @@ impl Supervisor {
     /// Remet un message à un agent en disant qui l'envoie (un autre agent, Argos) ; un
     /// agent parké est d'abord réveillé.
     pub async fn deliver(&self, id: &AgentId, from: Origin, text: impl Into<String>) -> Result<()> {
+        self.deliver_message(id, from, Message::from(text.into()))
+            .await
+    }
+
+    /// Message de l'utilisateur avec ses pièces jointes : préparées (voir
+    /// [`crate::attachments`]) puis remises comme un message ordinaire.
+    pub async fn send_with_attachments(
+        &self,
+        id: &AgentId,
+        text: &str,
+        attachments: &[argos_core::protocol::Attachment],
+    ) -> Result<()> {
+        let record = self.record(id)?;
+        let dir = self
+            .inner
+            .settings
+            .home
+            .join("attachments")
+            .join(id.as_str());
+        let message = crate::attachments::prepare(&record, text, attachments, &dir)
+            .map_err(SupervisorError::Attachment)?;
+        self.deliver_message(id, Origin::User, message).await
+    }
+
+    /// Remet un message (texte et images) ; un agent parké est d'abord réveillé.
+    pub async fn deliver_message(
+        &self,
+        id: &AgentId,
+        from: Origin,
+        message: Message,
+    ) -> Result<()> {
         let slot = self.slot(id);
         let mut live = slot.lock().await;
         if live.is_none() {
@@ -284,11 +325,11 @@ impl Supervisor {
         if let Some(busy) = locked(&self.inner.running).get(id) {
             busy.store(true, Ordering::SeqCst);
         }
-        let text = text.into();
+        let text = message.text.clone();
         live.as_ref()
             .expect("session démarrée juste au-dessus")
             .control
-            .send(text.clone())?;
+            .send_message(message)?;
         locked(&self.inner.last_input).insert(id.clone(), text.clone());
         self.publish(DaemonEvent::Input {
             agent: id.clone(),

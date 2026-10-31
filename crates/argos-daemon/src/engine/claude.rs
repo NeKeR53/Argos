@@ -3,8 +3,8 @@
 
 use super::process::{self, Spawned};
 use super::{
-    Access, Command, EngineError, EngineEvent, Events, Session, SessionSpec, TurnOutcome, Usage,
-    forward,
+    Access, Command, EngineError, EngineEvent, Events, Message, Session, SessionSpec, TurnOutcome,
+    Usage, forward,
 };
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -140,7 +140,7 @@ async fn drive(
         tokio::select! {
             command = commands.recv() => {
                 let message = match command {
-                    Some(Command::Send(text)) => user_message(&text),
+                    Some(Command::Send(message)) => user_message(&message),
                     Some(Command::Interrupt) => state.interrupt_request(),
                     Some(Command::Park | Command::Kill) | None => break,
                 };
@@ -160,8 +160,21 @@ async fn drive(
         .await
 }
 
-fn user_message(text: &str) -> Value {
-    json!({"type": "user", "message": {"role": "user", "content": text}})
+fn user_message(message: &Message) -> Value {
+    if message.images.is_empty() {
+        return json!({"type": "user", "message": {"role": "user", "content": message.text}});
+    }
+    let mut content: Vec<Value> = message
+        .images
+        .iter()
+        .map(|image| {
+            json!({"type": "image", "source": {
+                "type": "base64", "media_type": image.media_type, "data": image.data
+            }})
+        })
+        .collect();
+    content.push(json!({"type": "text", "text": message.text}));
+    json!({"type": "user", "message": {"role": "user", "content": content}})
 }
 
 #[derive(Default)]
@@ -314,6 +327,28 @@ mod tests {
     }
 
     // Lignes de la forme observée avec claude 2.1.310 (docs/PHASE-1.md).
+    #[test]
+    fn a_message_with_images_becomes_content_blocks() {
+        assert_eq!(
+            user_message(&Message::from("bonjour".to_string())),
+            json!({"type": "user", "message": {"role": "user", "content": "bonjour"}})
+        );
+        let message = Message {
+            text: "Regarde".into(),
+            images: vec![super::super::Image {
+                media_type: "image/jpeg".into(),
+                data: "AAAA".into(),
+            }],
+        };
+        assert_eq!(
+            user_message(&message)["message"]["content"],
+            json!([
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": "AAAA"}},
+                {"type": "text", "text": "Regarde"}
+            ])
+        );
+    }
+
     const ASSISTANT_TEXT: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"42"}],"model":"claude-haiku-5-5","stop_reason":null},"parent_tool_use_id":null,"session_id":"a6ade44e"}"#;
     const ASSISTANT_THINKING: &str = r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"","signature":"CAQS"}]},"session_id":"a6ade44e"}"#;
     const RESULT_SUCCESS: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"42","session_id":"a6ade44e","total_cost_usd":0.0076878,"usage":{"input_tokens":2,"cache_creation_input_tokens":38428,"cache_read_input_tokens":0,"output_tokens":4},"modelUsage":{"claude-haiku-5-5":{"inputTokens":2,"outputTokens":4,"contextWindow":1000000,"maxOutputTokens":128000}}}"#;

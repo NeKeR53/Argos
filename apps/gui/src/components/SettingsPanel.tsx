@@ -1,11 +1,12 @@
 // Réglages de la console, ouverts depuis le ⚙ de la barre du haut : connexion, voix (état
 // et essai sans micro), raccourcis, orbe et nœuds. Ce qui n'a pas à rester sous les yeux.
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { NodeStatus } from "../protocol";
 import type { Connection } from "../state";
 import { simulateVoice } from "../useVoiceView";
-import { voiceReason, voiceStatusLabel, type VoiceStatus } from "../voice";
+import { voiceReason, voiceStatusLabel, type VoiceInfo, type VoiceStatus } from "../voice";
 
 interface Props {
   connection: Connection;
@@ -39,6 +40,12 @@ export function SettingsPanel(props: Props) {
           <span className="voice-badge" data-status={voice.status} title={voiceReason(voice) ?? undefined}>
             {voiceStatusLabel(voice)}
           </span>
+        </div>
+      )}
+      {voice?.status === "ready" && isTauri() && (
+        <div className="settings-row">
+          <span>Écoute mains libres</span>
+          <HandsFree />
         </div>
       )}
       {props.voiceTrial && (
@@ -139,5 +146,31 @@ export function ConnectionStatus({ connection, compact = false }: { connection: 
       {quiet ? <span className="sr-only">{label}</span> : <span className="connection-label">{label}</span>}
       {!compact && detail && <span className="connection-detail">{detail}</span>}
     </span>
+  );
+}
+
+/**
+ * Écoute continue : le micro reste ouvert et chaque phrase détectée part à l'Assistant,
+ * en coupant sa lecture. Sans casque, il faut parler plus fort que le haut-parleur.
+ */
+function HandsFree() {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    void invoke<VoiceInfo>("voice_status").then((info) => setOn(info.hands_free ?? false));
+  }, []);
+  return (
+    <label className="hands-free" title="Sans casque, parlez plus fort que le haut-parleur pour couper la lecture">
+      <input
+        type="checkbox"
+        checked={on ?? false}
+        disabled={on === null}
+        onChange={(event) => {
+          const wanted = event.target.checked;
+          setOn(null);
+          void invoke<boolean>("voice_set_hands_free", { on: wanted }).then(setOn, () => setOn(!wanted));
+        }}
+      />
+      {on ? "Active : parlez, l'Assistant vous écoute" : "Coupée (push-to-talk)"}
+    </label>
   );
 }

@@ -201,6 +201,7 @@ async fn a_message_wakes_the_agent_and_its_events_are_streamed() {
         Command::Send {
             agent: assistant.clone(),
             text: "bonjour".into(),
+            attachments: vec![],
         },
     )
     .await;
@@ -233,6 +234,7 @@ async fn the_user_never_addresses_a_worker() {
             Command::Send {
                 agent: worker.clone(),
                 text: "bonjour".into(),
+                attachments: vec![],
             },
         ),
         (
@@ -499,4 +501,127 @@ async fn the_user_changes_the_model_of_an_agent() {
     )
     .await;
     assert!(matches!(refused, Reply::Error { .. }), "{refused:?}");
+}
+
+/// La console lit les escalades, y répond, et un `escalation_updated` suit chaque changement.
+#[tokio::test]
+async fn the_console_answers_an_escalation() {
+    let w = world();
+    let mut client = connect(&serve(&w).await).await;
+    let escalation = w
+        .supervisor
+        .open_escalation(
+            &w.agent.id,
+            "Approuver le devis ?",
+            &["Oui".into(), "Non".into()],
+        )
+        .unwrap();
+    let Reply::Escalations { escalations } = ask(&mut client, 1, Command::Escalations).await else {
+        panic!("liste attendue");
+    };
+    assert_eq!(escalations, vec![escalation.clone()]);
+
+    let reply = ask(
+        &mut client,
+        2,
+        Command::AnswerEscalation {
+            escalation: escalation.id.clone(),
+            answer: "Oui".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        reply,
+        Reply::Done {
+            affected: vec![w.agent.id.clone()]
+        }
+    );
+    let answered = w.supervisor.registry().escalation(&escalation.id).unwrap();
+    assert_eq!(answered.answer.as_deref(), Some("Oui"));
+    // Déjà répondue : une seconde réponse, ou l'écarter, échoue.
+    assert!(matches!(
+        ask(
+            &mut client,
+            3,
+            Command::DismissEscalation {
+                escalation: escalation.id.clone()
+            }
+        )
+        .await,
+        Reply::Error { .. }
+    ));
+}
+
+/// « Passer en tête » depuis la console réordonne le board de l'Agent.
+#[tokio::test]
+async fn the_console_moves_a_mission_to_the_top() {
+    let w = world();
+    let mut client = connect(&serve(&w).await).await;
+    let (_, second) = {
+        let registry = w.supervisor.registry();
+        (
+            registry.add_mission(&w.agent.id, "a").unwrap(),
+            registry.add_mission(&w.agent.id, "b").unwrap(),
+        )
+    };
+    let reply = ask(
+        &mut client,
+        1,
+        Command::PrioritizeMission {
+            mission: second.id.clone(),
+        },
+    )
+    .await;
+    assert!(matches!(reply, Reply::Done { .. }), "{reply:?}");
+    let board = w.supervisor.registry().board(&w.agent.id).unwrap();
+    assert_eq!(board.missions[0].id, second.id);
+}
+
+/// Une image jointe depuis la console arrive au moteur en bloc natif ; le fil la mentionne.
+#[tokio::test]
+async fn an_attached_image_reaches_the_engine() {
+    let mut w = world();
+    let mut client = connect(&serve(&w).await).await;
+    let reply = ask(
+        &mut client,
+        1,
+        Command::Send {
+            agent: w.agent.id.clone(),
+            text: "Que vois-tu ?".into(),
+            attachments: vec![argos_core::protocol::Attachment {
+                name: "capture.png".into(),
+                media_type: "image/png".into(),
+                data: "iVBORw0KGgo=".into(),
+            }],
+        },
+    )
+    .await;
+    assert!(matches!(reply, Reply::Done { .. }), "{reply:?}");
+    let agent = w.agent.id.clone();
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent: a, text, .. }
+            if *a == agent && text == "Que vois-tu ?\n\n[Image jointe : capture.png]")
+    })
+    .await;
+    until(&mut w.events, |event| {
+        common::world::is_message(event, &agent, "image reçue")
+    })
+    .await;
+
+    // Une pièce jointe illisible est refusée sans réveiller l'agent.
+    let reply = ask(
+        &mut client,
+        2,
+        Command::Send {
+            agent: w.agent.id.clone(),
+            text: "x".into(),
+            attachments: vec![argos_core::protocol::Attachment {
+                name: "a.png".into(),
+                media_type: "image/png".into(),
+                data: "%%%".into(),
+            }],
+        },
+    )
+    .await;
+    assert!(matches!(reply, Reply::Error { .. }));
 }

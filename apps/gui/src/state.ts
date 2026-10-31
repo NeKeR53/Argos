@@ -11,6 +11,7 @@ import {
   type Board,
   type Command,
   type DaemonEvent,
+  type Escalation as UserEscalation,
   type Json,
   type Origin,
   type Reply,
@@ -61,6 +62,8 @@ export type ThreadEntry =
       console: ConsoleSend | null;
       /** Demande faite à la voix (transcription envoyée par l'orbe). */
       voice?: boolean;
+      /** Noms des pièces jointes envoyées avec ce message depuis la console. */
+      attachments?: string[];
     }
   | { seq: number; kind: "agent"; text: string }
   /** Message en cours d'écriture (`message_delta`), remplacé par le message complet. */
@@ -151,6 +154,11 @@ export interface AppState {
   nodes: NodeStatus[] | null;
   /** Profils de la politique de modèles, pour choisir le modèle d'un agent. */
   profiles: ProfileInfo[] | null;
+  /**
+   * Escalades gardées par le daemon (ouvertes et dernières résolues), par id : la console
+   * y répond d'un clic (D12, D35). `null` avant la première lecture.
+   */
+  inbox: Record<string, UserEscalation> | null;
   /** Escalades pas encore vues chez l'Agent concerné (pastille dans l'arbre). */
   escalations: Escalation[];
   /** Escalades arrivées depuis la dernière consultation de l'Assistant. */
@@ -213,6 +221,7 @@ export const initialState: AppState = {
   voice: { status: null, dictation: null, spoken: [] },
   nodes: null,
   profiles: null,
+  inbox: null,
   escalations: [],
   unseenEscalations: 0,
   seenEscalations: null,
@@ -235,11 +244,13 @@ export function reduce(state: AppState, action: Action): AppState {
       if (command.command === "surface_send") return feed(next, command.surface, { type: "sent", text: command.text });
       if (command.command !== "send") return next;
       // Affiché tout de suite ; l'`input` du daemon le confirmera sans le dupliquer.
+      const attachments = command.attachments?.map((attachment) => attachment.name) ?? [];
       return append(next, command.agent, {
         kind: "input",
         text: command.text,
         from: null,
         console: { request: action.id, delivery: "pending", awaitingEcho: true },
+        ...(attachments.length > 0 ? { attachments } : {}),
       });
     }
     case "select": {
@@ -325,6 +336,8 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
       return { ...next, triggers: { ...next.triggers, [command.agent]: reply.triggers } };
     case "nodes":
       return { ...next, nodes: reply.nodes };
+    case "escalations":
+      return { ...next, inbox: Object.fromEntries(reply.escalations.map((escalation) => [escalation.id, escalation])) };
     case "models":
       return { ...next, profiles: [{ name: "harnais", description: "", models: reply.models }] };
     case "capabilities":
@@ -402,6 +415,8 @@ function onEvent(state: AppState, event: DaemonEvent): AppState {
     }
     case "notice":
       return notify(state, "info", event.text, event.agent);
+    case "escalation_updated":
+      return { ...state, inbox: { ...(state.inbox ?? {}), [event.escalation.id]: event.escalation } };
     case "surface_updated":
       return event.deleted ? withoutSurface(state, event.surface.id) : withSurface(state, event.surface);
     case "surface_data":
@@ -523,7 +538,8 @@ function onInput(state: AppState, agent: AgentId, from: Origin, text: string): A
       entry.kind === "input" &&
       entry.console?.awaitingEcho === true &&
       entry.console.delivery !== "failed" &&
-      entry.text === text,
+      // Le daemon ajoute une ligne par pièce jointe après le texte envoyé.
+      (entry.text === text || (!!entry.attachments && text.startsWith(entry.text))),
   );
   let next: AppState;
   if (echoed >= 0) {
@@ -575,6 +591,17 @@ function withEscalation(state: AppState, text: string): AppState {
  * Pastilles de l'arbre : escalades non vues, par agent. L'Agent qui a besoin de
  * l'utilisateur, et l'Assistant qui l'a relayée tant qu'on ne l'a pas ouvert.
  */
+/**
+ * Escalades ouvertes à montrer dans la conversation d'un agent, plus anciennes d'abord :
+ * toutes chez l'Assistant (il les relaie), les siennes chez un Agent.
+ */
+export function openEscalations(state: AppState, agent: AgentStatus): UserEscalation[] {
+  return Object.values(state.inbox ?? {})
+    .filter((escalation) => escalation.state === "open")
+    .filter((escalation) => agent.level === "assistant" || escalation.agent === agent.id)
+    .sort((a, b) => a.created_at - b.created_at);
+}
+
 export function attention(state: AppState): Record<AgentId, number> {
   const counts: Record<AgentId, number> = {};
   for (const escalation of state.escalations) {
@@ -591,6 +618,7 @@ function touchBoard(state: AppState, event: DaemonEvent): AppState {
   // ferait une requête par mot.
   if (
     event.type === "notice" ||
+    event.type === "escalation_updated" ||
     event.type === "surface_updated" ||
     event.type === "surface_data" ||
     event.type === "message_delta"
@@ -804,6 +832,14 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `Suppression du déclencheur ${command.trigger}`;
     case "nodes":
       return "Lecture des nœuds";
+    case "escalations":
+      return "Lecture des escalades";
+    case "answer_escalation":
+      return `Réponse à l'escalade ${command.escalation}`;
+    case "dismiss_escalation":
+      return `Escalade ${command.escalation} écartée`;
+    case "prioritize_mission":
+      return `Priorité de la demande ${command.mission}`;
     case "models":
       return "Lecture des modèles";
     case "capabilities":

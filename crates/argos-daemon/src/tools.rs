@@ -6,7 +6,9 @@
 
 use crate::memory::{MemoryOp, MemoryOutput};
 use crate::policy::ModelPolicy;
-use crate::registry::{AgentModelUpdate, AgentUpdate, NewAgent, NewTrigger, Position, TaskUpdate};
+use crate::registry::{
+    AgentModelUpdate, AgentUpdate, MAX_OPTIONS, NewAgent, NewTrigger, Position, TaskUpdate,
+};
 use crate::supervisor::{Supervisor, SupervisorError};
 use argos_core::protocol::{AgentStatus, Origin};
 use argos_core::{
@@ -33,6 +35,14 @@ pub fn tools_for(level: Level, policy: &ModelPolicy) -> Vec<Tool> {
     }
     let profiles: Vec<&String> = policy.profiles.keys().collect();
     for tool in &mut tools {
+        if tool.name == "escalate_to_user" {
+            tool.schema["properties"]["options"] = json!({
+                "type": "array",
+                "items": {"type": "string"},
+                "maxItems": MAX_OPTIONS,
+                "description": "Réponses courtes proposées en boutons (ex. [\"Approuver\", \"Refuser\"]) quand la décision s'y prête ; l'utilisateur peut toujours répondre librement.",
+            });
+        }
         if tool.name == "configure_agent" {
             tool.schema["additionalProperties"] = json!(false);
             tool.schema["minProperties"] = json!(2);
@@ -323,6 +333,15 @@ fn level_tools(level: Level) -> Vec<Tool> {
                 &["agent", "message"],
             ),
             tool(
+                "answer_escalation",
+                "Transmet à l'Agent la réponse que l'utilisateur t'a donnée à son escalade (e-…), et la clôt.",
+                &[
+                    ("escalation", "Identifiant de l'escalade (e-…)."),
+                    ("answer", "La réponse de l'utilisateur, fidèlement."),
+                ],
+                &["escalation", "answer"],
+            ),
+            tool(
                 "inspect_agent",
                 "État d'un de tes Agents : son board (missions, tâches) et ses Workers.",
                 &[("agent", AGENT_REF)],
@@ -464,7 +483,7 @@ fn level_tools(level: Level) -> Vec<Tool> {
             ),
             tool(
                 "escalate_to_user",
-                "Demande l'aide de l'utilisateur (information manquante, décision qui lui revient). L'Assistant le préviendra.",
+                "Demande l'aide de l'utilisateur (information manquante, décision qui lui revient). L'Assistant le préviendra ; sa réponse t'arrivera plus tard comme un message.",
                 &[("question", "La question, avec le contexte nécessaire.")],
                 &["question"],
             ),
@@ -674,11 +693,16 @@ pub async fn call(
         (Level::Assistant, "assign_mission") => assign_mission(supervisor, caller, args).await,
         (Level::Assistant, "prioritize_mission") => {
             let mission = own_mission(supervisor, caller, text(args, "mission")?)?;
-            supervisor
-                .registry()
-                .reposition_mission(&mission, position(args)?)
+            let parked = supervisor
+                .prioritize_mission(&mission, position(args)?)
+                .await
                 .map_err(said)?;
-            Ok(format!("Mission {mission} déplacée."))
+            Ok(match parked.len() {
+                0 => format!("Mission {mission} déplacée."),
+                n => format!(
+                    "Mission {mission} déplacée ; {n} Worker(s) mis au repos par préemption."
+                ),
+            })
         }
         (Level::Assistant, "cancel_mission") => cancel_mission(supervisor, caller, args).await,
         (Level::Agent, "board") => {
@@ -778,6 +802,10 @@ pub async fn call(
                     .registry()
                     .set_mission_state(&mission.id, MissionState::Done)
                     .map_err(said)?;
+                supervisor
+                    .resume_preempted(&mission.id)
+                    .await
+                    .map_err(said)?;
                 journal(
                     supervisor,
                     &caller.id,
@@ -835,13 +863,39 @@ pub async fn call(
             .await
         }
         (Level::Agent, "escalate_to_user") => {
+            let options: Vec<String> = match args.get("options") {
+                None | Some(Value::Null) => vec![],
+                Some(options) => serde_json::from_value(options.clone())
+                    .map_err(|_| "options : une liste de textes courts".to_string())?,
+            };
+            let escalation = supervisor
+                .open_escalation(&caller.id, text(args, "question")?, &options)
+                .map_err(said)?;
+            let choices = match escalation.options.as_slice() {
+                [] => String::new(),
+                options => format!(" · choix : {}", options.join(" / ")),
+            };
             deliver(
                 supervisor,
                 caller,
                 "Escalade pour l'utilisateur",
-                text(args, "question")?,
+                &format!("{}\n\n({}{choices})", escalation.question, escalation.id),
             )
             .await
+        }
+        (Level::Assistant, "answer_escalation") => {
+            let escalation = supervisor
+                .registry()
+                .escalation(text(args, "escalation")?)
+                .map_err(said)?;
+            let answered = supervisor
+                .answer_escalation(&escalation.id, text(args, "answer")?)
+                .await
+                .map_err(said)?;
+            Ok(format!(
+                "Réponse transmise ; escalade {} close.",
+                answered.id
+            ))
         }
         (Level::Worker, "escalate_to_agent") => {
             deliver(supervisor, caller, "Question", text(args, "question")?).await
@@ -1240,6 +1294,7 @@ async fn cancel_mission(
     for worker in &workers {
         supervisor.stop(worker).await.map_err(said)?;
     }
+    supervisor.resume_preempted(&id).await.map_err(said)?;
     journal(supervisor, &caller.id, &format!("mission {id} annulée"));
     journal(
         supervisor,
@@ -1639,6 +1694,7 @@ mod tests {
         assert!(names(Level::Agent).contains(&"spawn_worker"));
         assert!(names(Level::Agent).contains(&"add_task"));
         assert!(names(Level::Agent).contains(&"escalate_to_user"));
+        assert!(names(Level::Assistant).contains(&"answer_escalation"));
         assert_eq!(
             names(Level::Worker),
             vec!["report_to_agent", "escalate_to_agent"]

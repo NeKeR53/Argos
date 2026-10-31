@@ -3,7 +3,8 @@
 # Le contenu du message choisit le comportement : SLOW attend une interruption,
 # TOOL utilise un outil, CRASH sort en erreur, HANG bloque avec un process enfant,
 # FULL rapporte un contexte rempli à 90 %, QUOTA un quota épuisé, STREAM répond en
-# fragments (stream_event) avant le message complet.
+# fragments (stream_event) avant le message complet. Un bloc image en entrée fait
+# répondre « image reçue ».
 # Les arguments reçus sont écrits dans .fake-args (répertoire de travail).
 set -u
 printf '%s\n' "$@" > .fake-args
@@ -67,6 +68,10 @@ while IFS= read -r line; do
       turn=$((turn + 1))
       assistant_text
       printf '{"type":"result","subtype":"success","is_error":false,"result":"reply %s","session_id":"%s","total_cost_usd":0.001,"usage":{"input_tokens":90,"output_tokens":2},"modelUsage":{"fake":{"contextWindow":100}}}\n' "$turn" "$session" ;;
+    *'"type":"image"'*)
+      turn=$((turn + 1))
+      printf '{"type":"assistant","message":{"content":[{"type":"text","text":"image reçue"}]},"session_id":"%s"}\n' "$session"
+      result success ;;
     *)
       turn=$((turn + 1))
       assistant_text

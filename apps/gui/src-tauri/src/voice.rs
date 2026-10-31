@@ -11,6 +11,9 @@
 //! - [`EVENT_VOICE`] : un `argos_voice::VoiceEvent` tel quel (`{"type": "partial", …}`) ;
 //! - [`EVENT_VOICE_TRANSCRIPT`] : `{"text", "simulated"}`, transcription finale d'un appui
 //!   (ou injectée par `voice_simulate` en debug), que le front envoie à l'Assistant.
+//!
+//! En écoute mains libres, un énoncé détecté se présente au front comme un appui : un
+//! `push-to-talk` pressé à la détection (barge-in), relâché à la fin, puis sa transcription.
 
 use crate::shell::{self, VoiceMode};
 use argos_voice::{VoiceConfig, VoiceEngine, VoiceError, VoiceEvent};
@@ -59,6 +62,8 @@ pub struct Voice {
     ptt: Mutex<Option<Sender<bool>>>,
     /// Push-to-talk tenu : la répétition de touche ne rouvre rien.
     held: Mutex<bool>,
+    /// Écoute mains libres active.
+    hands_free: Mutex<bool>,
     /// `[gui] speak_typed_replies` : lire aussi les réponses aux demandes tapées.
     pub speak_typed_replies: bool,
 }
@@ -69,6 +74,7 @@ pub struct VoiceInfo {
     #[serde(flatten)]
     pub status: VoiceStatus,
     pub speak_typed_replies: bool,
+    pub hands_free: bool,
 }
 
 impl Voice {
@@ -79,6 +85,7 @@ impl Voice {
             orb: Arc::default(),
             ptt: Mutex::new(None),
             held: Mutex::new(false),
+            hands_free: Mutex::new(false),
             speak_typed_replies,
         }
     }
@@ -87,6 +94,7 @@ impl Voice {
         VoiceInfo {
             status: locked(&self.status).clone(),
             speak_typed_replies: self.speak_typed_replies,
+            hands_free: *locked(&self.hands_free),
         }
     }
 
@@ -144,9 +152,12 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, config: Option<&str>) {
                 };
                 *locked(&voice.engine) = Some(Arc::clone(&engine));
                 forward_events(&app, &engine, Arc::clone(&voice.orb));
-                *locked(&voice.ptt) = Some(spawn_ptt_worker(app.clone(), engine));
+                *locked(&voice.ptt) = Some(spawn_ptt_worker(app.clone(), Arc::clone(&engine)));
                 eprintln!("voix : prête");
                 set_status(&app, VoiceStatus::Ready);
+                if config.hands_free {
+                    set_hands_free(&app, true).await;
+                }
             }
             Err(error) => {
                 eprintln!("voix : {error}");
@@ -177,6 +188,36 @@ fn forward_events<R: Runtime>(app: &AppHandle<R>, engine: &VoiceEngine, orb: Arc
                 eprintln!("voix : {message}");
             }
             let _ = app.emit(EVENT_VOICE, &event);
+            // Mains libres : l'énoncé se présente au front comme un appui de push-to-talk.
+            match &event {
+                VoiceEvent::HandsFreeStarted => {
+                    let _ = app.emit(
+                        shell::EVENT_PUSH_TO_TALK,
+                        shell::PushToTalk { pressed: true },
+                    );
+                    let (mode, level) = locked(&orb).press();
+                    shell::set_voice_state(&app, mode, level);
+                }
+                VoiceEvent::HandsFreeHeard { text } => {
+                    let (mode, level) = locked(&orb).release();
+                    shell::set_voice_state(&app, mode, level);
+                    let _ = app.emit(
+                        shell::EVENT_PUSH_TO_TALK,
+                        shell::PushToTalk { pressed: false },
+                    );
+                    // Un bruit sans parole nette : rien à envoyer, ni « Rien entendu » à afficher.
+                    if !text.trim().is_empty() {
+                        let _ = app.emit(
+                            EVENT_VOICE_TRANSCRIPT,
+                            Transcript {
+                                text: text.clone(),
+                                simulated: false,
+                            },
+                        );
+                    }
+                }
+                _ => {}
+            }
             let state = locked(&orb).apply(&event);
             if let Some((mode, level)) = state {
                 shell::set_voice_state(&app, mode, level);
@@ -273,6 +314,26 @@ pub fn simulate<R: Runtime>(app: &AppHandle<R>, text: String) {
             simulated: true,
         },
     );
+}
+
+/// Active ou coupe l'écoute mains libres ; rend l'état obtenu (coupée si le micro refuse).
+pub async fn set_hands_free<R: Runtime>(app: &AppHandle<R>, on: bool) -> bool {
+    let Some(voice) = app.try_state::<Voice>() else {
+        return false;
+    };
+    let Some(engine) = voice.engine() else {
+        return false;
+    };
+    if let Err(error) = engine.set_hands_free(on).await {
+        report(app, &error);
+    }
+    let active = engine.hands_free().await;
+    *locked(&voice.hands_free) = active;
+    eprintln!(
+        "voix : écoute mains libres {}",
+        if active { "active" } else { "coupée" }
+    );
+    active
 }
 
 pub fn speak_delta<R: Runtime>(app: &AppHandle<R>, text: &str) {

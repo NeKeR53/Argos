@@ -109,6 +109,7 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
             policy: config.models.clone(),
             nodes: nodes.clone(),
             worker_access: config.workers.access,
+            preempt: config.board.preempt,
         },
     );
     nodes.connect(supervisor.clone(), ssh_program());

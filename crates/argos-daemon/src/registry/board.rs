@@ -269,6 +269,22 @@ impl Registry {
             .optional()?)
     }
 
+    /// Les tâches en cours chez un Worker qui ne relèvent pas de cette mission : celles
+    /// qu'une préemption met au repos quand la mission passe en tête (D14).
+    pub fn tasks_outside_mission(&self, agent: &AgentId, mission: &str) -> Result<Vec<Task>> {
+        let mut statement = self.db.prepare(&format!(
+            "SELECT {} FROM tasks
+             WHERE agent = ?1 AND state = 'in_progress' AND worker IS NOT NULL
+               AND (mission IS NULL OR mission != ?2)
+             ORDER BY rowid",
+            TASK_COLUMNS.join(", ")
+        ))?;
+        let tasks = statement
+            .query_map(params![agent.as_str(), mission], task_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(tasks)
+    }
+
     pub fn reposition_task(&self, id: &str, position: Position) -> Result<()> {
         let task = self.task(id)?;
         self.reposition("tasks", &task.agent, id, position)

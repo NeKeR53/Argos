@@ -58,6 +58,9 @@ pub enum ToNode {
     Send {
         session: u64,
         text: String,
+        /// Images jointes (entrée native du moteur) ; absent des hubs plus anciens.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<crate::engine::Image>,
     },
     Interrupt {
         session: u64,

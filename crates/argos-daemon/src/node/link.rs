@@ -260,7 +260,11 @@ impl Nodes {
                         command = commands.recv() => {
                             let closed = command.is_none();
                             let order = match command {
-                                Some(Command::Send(text)) => ToNode::Send { session, text },
+                                Some(Command::Send(message)) => ToNode::Send {
+                                    session,
+                                    text: message.text,
+                                    images: message.images,
+                                },
                                 Some(Command::Interrupt) => ToNode::Interrupt { session },
                                 Some(Command::Kill) => ToNode::Kill { session },
                                 // Handle abandonné : comme en local, la session est parkée.

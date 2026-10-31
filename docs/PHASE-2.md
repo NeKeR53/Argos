@@ -50,5 +50,9 @@ Objectif (D26–D28) : l'Assistant et les Agents montrent à l'utilisateur des p
 
 - Une page peut encore *naviguer* elle-même vers une URL externe (`location = …`) : la CSP ne l'empêche pas. Dans l'app Tauri, il faudra intercepter ces navigations côté Rust (phase 3, avec la fenêtre de l'overlay).
 - La fréquence des messages du pont n'est pas bornée, seulement leur taille.
-- Envoyer une image *vers* un agent n'est pas encore possible : le daemon ne transmet que du texte.
+- **Pièces jointes** (console → agent) : `send` accepte `attachments` (nom, type, base64 ; 8 au plus, 10 Mo chacune). Le trombone, le glisser-déposer ou le collage d'une capture les ajoutent. Module `argos_daemon::attachments` :
+  - les images (png, jpeg, gif, webp) partent en entrée native du moteur : blocs `image` pour Claude, `{"type":"image","url":"data:…"}` pour Codex (vérifié sur le schéma de `codex app-server` 0.164) ;
+  - un fichier texte de 100 Kio au plus est recopié dans le message ;
+  - un autre fichier (PDF…) est enregistré dans `$ARGOS_HOME/attachments/<agent>/`, et l'agent reçoit son chemin. Vers un agent d'un autre nœud, seuls les images et le texte passent.
+  - Une surface ne peut toujours pas envoyer d'image. Le rejeu après un repli de modèle ne renvoie que le texte.
 - Aucune ressource externe dans une page (pas de CDN) : les bibliothèques doivent être en ligne.

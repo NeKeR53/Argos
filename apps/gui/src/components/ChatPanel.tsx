@@ -3,8 +3,8 @@
 // seule (D2) et n'a pas de surface.
 
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
-import type { AgentId, AgentStatus, Command, Origin, Reply, SurfaceDoc, SurfaceMeta } from "../protocol";
+import { useEffect, useLayoutEffect, useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import type { AgentId, AgentStatus, Command, Escalation, Origin, Reply, SurfaceDoc, SurfaceMeta } from "../protocol";
 import {
   displayName,
   isAddressable,
@@ -14,8 +14,10 @@ import {
 } from "../state";
 import { formatUsage, outcomeLabel } from "../format";
 import { classifyInput } from "../inputs";
+import { admit, pastedName, toAttachment } from "../attachments";
 import { threadItems, toolsSummary, type ToolEntry } from "../threadView";
 import { Avatar } from "./Avatar";
+import { EscalationTray } from "./EscalationTray";
 import { SurfaceView } from "./SurfaceView";
 
 interface Props {
@@ -23,6 +25,8 @@ interface Props {
   /** Agent parent d'un Worker, pour y renvoyer l'utilisateur. */
   parent: AgentStatus | null;
   thread: ThreadEntry[];
+  /** Escalades ouvertes à montrer ici, avec leurs choix (D12). */
+  escalations: Escalation[];
   /** Surfaces de l'agent (jamais pour un Worker), leur code et leur flux. */
   surfaces: SurfaceMeta[];
   surfaceDocs: Record<string, SurfaceDoc>;
@@ -144,6 +148,14 @@ export function ChatPanel(props: Props) {
             busy={agent.busy}
             onReply={() => setReplyTick((tick) => tick + 1)}
             canReply={addressable}
+          />
+
+          <EscalationTray
+            escalations={props.escalations}
+            connected={connected}
+            send={send}
+            nameOf={nameOf}
+            showAgent={agent.level === "assistant"}
           />
 
           {addressable && (
@@ -345,6 +357,7 @@ function Entry({
           from={entry.from}
           sent={entry.console}
           voice={entry.voice ?? false}
+          attachments={entry.attachments}
           nameOf={nameOf}
         />
       );
@@ -397,9 +410,12 @@ function InputEntry({
   from,
   sent,
   voice,
+  attachments,
   nameOf,
 }: {
   text: string;
+  /** Pièces jointes d'un message parti d'ici. */
+  attachments?: string[];
   from: Origin | null;
   sent: ConsoleSend | null;
   /** Demande faite à la voix. */
@@ -419,6 +435,13 @@ function InputEntry({
       <div className="bubble">
         {label && <div className="input-tag">{label}</div>}
         {body}
+        {attachments && attachments.length > 0 && (
+          <div className="bubble-attachments">
+            {attachments.map((name, index) => (
+              <span key={`${name}-${index}`} className="attachment-chip">{name}</span>
+            ))}
+          </div>
+        )}
       </div>
       {note && <div className="entry-note">{note}</div>}
     </div>
@@ -432,25 +455,95 @@ function Composer({
   focusTick,
 }: Pick<Props, "agent" | "connected" | "send"> & { focusTick: number }) {
   const [text, setText] = useState("");
+  // Pièces jointes en attente d'envoi, et la raison d'un refus.
+  const [files, setFiles] = useState<File[]>([]);
+  const [refused, setRefused] = useState<string | null>(null);
+  const [reading, setReading] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const field = useRef<HTMLTextAreaElement>(null);
+  const picker = useRef<HTMLInputElement>(null);
 
   // Nouvel agent affiché, ou « Répondre » : la saisie prend le focus.
   useEffect(() => field.current?.focus(), [focusTick]);
 
-  const submit = (event?: FormEvent) => {
+  const add = (added: File[]) => {
+    if (added.length === 0) return;
+    const admitted = admit(files, added);
+    setFiles(admitted.files);
+    setRefused(admitted.refused);
+  };
+
+  const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     const message = text.trim();
-    if (!message || !connected) return;
-    if (send({ command: "send", agent: agent.id, text: message })) setText("");
+    if ((!message && files.length === 0) || !connected || reading) return;
+    if (files.length === 0) {
+      if (send({ command: "send", agent: agent.id, text: message })) setText("");
+      return;
+    }
+    setReading(true);
+    try {
+      const attachments = await Promise.all(files.map(toAttachment));
+      if (send({ command: "send", agent: agent.id, text: message, attachments })) {
+        setText("");
+        setFiles([]);
+        setRefused(null);
+      }
+    } catch {
+      setRefused("Lecture d'une pièce jointe impossible");
+    } finally {
+      setReading(false);
+    }
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     // Entrée envoie, Maj+Entrée va à la ligne (sauf composition IME en cours).
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) submit(event);
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) void submit(event);
+  };
+
+  // Une image collée (capture d'écran) devient une pièce jointe ; le texte se colle normalement.
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const pasted = Array.from(event.clipboardData.files);
+    if (pasted.length === 0) return;
+    event.preventDefault();
+    add(pasted.map((file, index) => pastedName(file, files.length + index)));
   };
 
   return (
-    <form className="composer" onSubmit={submit}>
+    <form
+      className="composer"
+      data-dragging={dragging || undefined}
+      onSubmit={(event) => void submit(event)}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes("Files")) return;
+        event.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(event) => {
+        if (event.dataTransfer.files.length === 0) return;
+        event.preventDefault();
+        setDragging(false);
+        add(Array.from(event.dataTransfer.files));
+      }}
+    >
+      {(files.length > 0 || refused) && (
+        <div className="composer-attachments">
+          {files.map((file, index) => (
+            <span key={`${file.name}-${index}`} className="attachment-chip" title={`${file.name} (${file.type || "fichier"})`}>
+              {file.name}
+              <button
+                type="button"
+                aria-label={`Retirer ${file.name}`}
+                onClick={() => setFiles((current) => current.filter((_, at) => at !== index))}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          {refused && <span className="attachment-refused">{refused}</span>}
+        </div>
+      )}
       <textarea
         ref={field}
         value={text}
@@ -460,8 +553,31 @@ function Composer({
         disabled={!connected}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
       />
       <div className="composer-actions">
+        <input
+          ref={picker}
+          type="file"
+          multiple
+          hidden
+          onChange={(event) => {
+            add(Array.from(event.target.files ?? []));
+            event.target.value = "";
+          }}
+        />
+        <button
+          type="button"
+          className="icon-button"
+          aria-label="Joindre des fichiers"
+          title="Joindre des fichiers (images, texte, PDF…) — ou glissez-les, ou collez une capture"
+          disabled={!connected}
+          onClick={() => picker.current?.click()}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="m20.5 11.5-8.1 8.1a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" />
+          </svg>
+        </button>
         {agent.busy && (
           <button
             type="button"
@@ -472,8 +588,12 @@ function Composer({
             Interrompre
           </button>
         )}
-        <button type="submit" className="button button-primary" disabled={!connected || !text.trim()}>
-          Envoyer
+        <button
+          type="submit"
+          className="button button-primary"
+          disabled={!connected || reading || (!text.trim() && files.length === 0)}
+        >
+          {reading ? "Lecture…" : "Envoyer"}
         </button>
       </div>
     </form>

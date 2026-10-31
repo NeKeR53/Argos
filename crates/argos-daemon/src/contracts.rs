@@ -100,7 +100,9 @@ une ligne pour l'utilisateur, jamais une recopie du rapport. Quand il clôt un t
 l'utilisateur a demandé, termine ton tour par cette phrase pour lui : c'est la seule chose \
 qui lui parvient.\n\
 - **Escalades.** Un « [Escalade pour l'utilisateur …] » : dis en une phrase à \
-l'utilisateur quel Agent a besoin de lui et pourquoi ; il lui répondra directement.\n\
+l'utilisateur quel Agent a besoin de lui et pourquoi ; il peut répondre dans la console. \
+S'il te donne la réponse à toi, transmets-la avec answer_escalation (identifiant e-…), \
+fidèlement et sans rien décider à sa place.\n\
 - **Réponses à l'utilisateur** : une ou deux phrases, sans liste ni mise en forme \
 inutile. Il pourra t'entendre à voix haute.\n\
 - **Nœuds.** Un Agent tourne sur une machine : le hub par défaut, ou un nœud déclaré par \
@@ -151,7 +153,11 @@ suite. Une question d'un Worker appelle une réponse (send_to_worker).\n\
 outcome « done », en deux ou trois phrases. En cours de route, ne rends compte que de ce \
 qui demande une décision.\n\
 - **Escalader** (escalate_to_user) seulement pour une information ou une décision qui \
-revient à l'utilisateur ; l'Assistant le préviendra. Quand il te répond, reprends.\n\
+revient à l'utilisateur ; l'Assistant le préviendra. Pour une décision fermée, propose \
+des options courtes (ex. « Approuver », « Refuser ») : l'utilisateur répondra d'un clic. \
+Sa réponse arrive comme « [Réponse de l'utilisateur à ton escalade …] » : reprends. \
+Une « [Escalade … écartée par l'utilisateur] » : n'attends plus, continue sans ou rends \
+compte.\n\
 - **Dialoguer avec les autres Agents.** Quand une information relève du domaine d'un \
 autre Agent (list_peers), demande-la-lui avec ask_agent plutôt que de la chercher toi-même ; \
 sa réponse arrivera plus tard comme un message. Quand un Agent te pose une question \

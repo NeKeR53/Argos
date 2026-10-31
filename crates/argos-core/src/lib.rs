@@ -350,6 +350,41 @@ impl Trigger {
     }
 }
 
+/// Où en est une escalade vers l'utilisateur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EscalationState {
+    /// Attend la réponse de l'utilisateur.
+    Open,
+    /// L'utilisateur a répondu ; la réponse a été remise à l'Agent.
+    Answered,
+    /// L'utilisateur l'a écartée sans répondre ; l'Agent en est prévenu.
+    Dismissed,
+}
+
+text_form!(EscalationState {
+    Open => "open",
+    Answered => "answered",
+    Dismissed => "dismissed",
+});
+
+/// Question qu'un Agent pose à l'utilisateur (D12, D35), gardée jusqu'à sa réponse :
+/// la console la montre avec ses choix et la renvoie à l'Agent sans passer par un LLM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Escalation {
+    pub id: String,
+    /// L'Agent qui attend la réponse.
+    pub agent: AgentId,
+    pub question: String,
+    /// Réponses courtes proposées (ex. « Approuver », « Refuser ») ; vide pour une
+    /// réponse libre seulement.
+    pub options: Vec<String>,
+    pub state: EscalationState,
+    pub answer: Option<String>,
+    pub created_at: u64,
+    pub resolved_at: Option<u64>,
+}
+
 /// Issue d'un tour d'agent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]

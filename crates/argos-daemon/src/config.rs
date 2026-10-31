@@ -42,6 +42,12 @@ listen = "127.0.0.1:7879"
 # Seul l'Assistant reste en lecture seule.
 access = "full"
 
+[board]
+# Préemption (D14) : quand une mission passe en tête du board d'un Agent, ses Workers
+# occupés à une tâche moins prioritaire sont mis au repos, puis reprennent d'eux-mêmes
+# quand cette mission est close ou annulée.
+preempt = false
+
 # Autres nœuds (D32, D33) : le hub s'y connecte, l'Assistant peut y placer des Agents.
 # Sur le nœud, lancer `argos-daemon node` (voir son node.toml) ; son jeton est dans
 # $ARGOS_HOME/node-token.
@@ -77,6 +83,15 @@ pub struct Config {
     pub nodes: BTreeMap<String, NodeConfig>,
     #[serde(default)]
     pub workers: WorkersConfig,
+    #[serde(default)]
+    pub board: BoardConfig,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct BoardConfig {
+    /// Préemption des Workers moins prioritaires (D14), désactivée par défaut.
+    #[serde(default)]
+    pub preempt: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

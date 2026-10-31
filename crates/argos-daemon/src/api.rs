@@ -3,6 +3,7 @@
 
 use crate::events;
 use crate::node::token_in;
+use crate::registry::Position;
 use crate::supervisor::Supervisor;
 use argos_core::protocol::{Command, Origin, Reply, Request, ServerMessage};
 use argos_core::{AgentId, Level, PROTOCOL_VERSION};
@@ -131,9 +132,48 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         Command::Board { agent } => Reply::Board {
             board: supervisor.registry().board(&agent).map_err(said)?,
         },
-        Command::Send { agent, text } => {
+        Command::PrioritizeMission { mission } => {
+            let agent = supervisor.registry().mission(&mission).map_err(said)?.agent;
+            let mut affected = vec![agent];
+            affected.extend(
+                supervisor
+                    .prioritize_mission(&mission, Position::Top)
+                    .await
+                    .map_err(said)?,
+            );
+            done(affected)
+        }
+        Command::Escalations => Reply::Escalations {
+            escalations: supervisor.registry().escalations().map_err(said)?,
+        },
+        Command::AnswerEscalation { escalation, answer } => {
+            let escalation = supervisor
+                .answer_escalation(&escalation, &answer)
+                .await
+                .map_err(said)?;
+            done(vec![escalation.agent])
+        }
+        Command::DismissEscalation { escalation } => {
+            let escalation = supervisor
+                .dismiss_escalation(&escalation)
+                .await
+                .map_err(said)?;
+            done(vec![escalation.agent])
+        }
+        Command::Send {
+            agent,
+            text,
+            attachments,
+        } => {
             addressable(supervisor, &agent)?;
-            supervisor.send(&agent, text).await.map_err(said)?;
+            if attachments.is_empty() {
+                supervisor.send(&agent, text).await.map_err(said)?;
+            } else {
+                supervisor
+                    .send_with_attachments(&agent, &text, &attachments)
+                    .await
+                    .map_err(said)?;
+            }
             done(vec![agent])
         }
         Command::Interrupt { agent } => {

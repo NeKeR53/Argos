@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { AgentStatus, Origin, ServerMessage, Trigger } from "./protocol";
+import type { AgentStatus, Escalation, Origin, ServerMessage, Trigger } from "./protocol";
 import { parseServerMessage } from "./protocol";
 import {
   attention,
   initialState,
+  openEscalations,
   reduce,
   selectedAgent,
   treeOf,
@@ -579,4 +580,36 @@ it("associe la sortie d’un outil à son appel sans ajouter une ligne", () => {
   const state = run(tree, start, end);
   expect(state.threads.a0).toHaveLength(1);
   expect(state.threads.a0[0]).toMatchObject({ kind: "tool", name: "shell", input: "pwd", output: "/tmp", finished: true });
+});
+
+describe("escalades actionnables", () => {
+  const open: Escalation = {
+    id: "e-1", agent: "dom", question: "Couper le chauffage ?", options: ["Approuver", "Refuser"],
+    state: "open", answer: null, created_at: 2, resolved_at: null,
+  };
+  const other = { ...open, id: "e-0", agent: "compta", question: "Quel compte ?", options: [], created_at: 1 };
+
+  it("se lisent, se mettent à jour et se montrent chez l'Assistant et chez leur Agent", () => {
+    let state = run(
+      connected,
+      tree,
+      server({ type: "reply", id: 2, reply: { kind: "escalations", escalations: [open, other] } }),
+    );
+    expect(openEscalations(state, assistant).map((e) => e.id)).toEqual(["e-0", "e-1"]);
+    expect(openEscalations(state, domotique).map((e) => e.id)).toEqual(["e-1"]);
+
+    state = reduce(state, server({
+      type: "event",
+      event: { type: "escalation_updated", escalation: { ...open, state: "answered", answer: "Refuser", resolved_at: 3 } },
+    }));
+    expect(openEscalations(state, domotique)).toEqual([]);
+    expect(state.inbox?.["e-1"].answer).toBe("Refuser");
+    // Une escalade ne touche pas au board.
+    expect(state.boardRevisions).toEqual({});
+  });
+
+  it("refuse un état inconnu", () => {
+    const frame = { type: "event", event: { type: "escalation_updated", escalation: { ...open, state: "lost" } } };
+    expect(() => parseServerMessage(JSON.stringify(frame))).toThrow();
+  });
 });
