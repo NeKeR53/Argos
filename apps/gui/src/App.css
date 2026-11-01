@@ -1492,3 +1492,8 @@ textarea {
 .profile-name { font-weight: 500; font-size: 13px; }
 .profile-chain { margin: 6px 0 0; padding-left: 18px; font-size: 12px; display: grid; gap: 2px; }
 .profile-chain .muted { color: var(--text-muted); font-size: 11px; }
+
+/* Mises à jour (D46) : la version proposée, ses notes, et la pastille de la barre latérale. */
+.update-card { display: grid; gap: 6px; }
+.update-card a { color: var(--accent); font-size: 12px; margin-left: 6px; }
+.update-notes { margin: 0; max-height: 160px; overflow: auto; padding: 8px 12px; border-radius: 6px; background: var(--surface-2); font-family: var(--mono); font-size: 11.5px; line-height: 1.5; white-space: pre-wrap; }

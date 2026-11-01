@@ -118,6 +118,16 @@ fn quit_app(app: AppHandle) {
     });
 }
 
+/// Relance l'app après une mise à jour (D46) : le binaire remplacé sur le disque prend la
+/// place de celui qui tourne.
+#[tauri::command]
+fn restart_app(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        voice::shutdown(&app).await;
+        app.restart();
+    });
+}
+
 /// Raccourcis globaux en vigueur, et les erreurs d'enregistrement du démarrage.
 pub struct Shortcuts {
     config: std::sync::Mutex<daemon::GuiConfig>,
@@ -279,6 +289,7 @@ macro_rules! handler {
             probe_daemon,
             toggle_console,
             quit_app,
+            restart_app,
             commands::set_voice_state,
             commands::shortcuts,
             commands::set_shortcut,

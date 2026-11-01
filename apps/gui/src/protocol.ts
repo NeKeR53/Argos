@@ -249,7 +249,26 @@ export type Command =
   /** Copie locale, sur le hub, du workspace d'un Agent placé sur un nœud. */
   | { command: "open_sync"; agent: AgentId; local: string; excludes: string[] }
   /** Ferme une synchro ; les deux copies restent en place. */
-  | { command: "close_sync"; sync: string };
+  | { command: "close_sync"; sync: string }
+  /** Cherche une version plus récente d'Argos (D46) ; `refresh` ignore le cache d'une heure. */
+  | { command: "check_update"; refresh?: boolean }
+  /** Installe la dernière version puis relance le daemon ; l'avancement se lit avec `check_update`. */
+  | { command: "apply_update" };
+
+export type UpdateStep = "downloading" | "installing" | "restarting" | "done" | "failed";
+const UPDATE_STEPS: UpdateStep[] = ["downloading", "installing", "restarting", "done", "failed"];
+
+/** Mises à jour d'Argos vues par le daemon (`UpdateStatus`, D46). */
+export interface UpdateStatus {
+  /** Version du daemon qui répond. */
+  current: string;
+  /** Version plus récente publiée pour cette plateforme. */
+  available: { version: string; notes: string; url: string } | null;
+  /** Pourquoi la recherche a échoué. */
+  error: string | null;
+  /** La dernière installation lancée : son étape, puis son issue. */
+  progress: { version: string; step: UpdateStep; message: string; at: number } | null;
+}
 
 export type SyncState = "idle" | "syncing" | "offline" | "error";
 
@@ -337,6 +356,7 @@ export type Reply =
   | { kind: "syncs"; syncs: SyncStatus[] }
   | { kind: "sync"; sync: SyncStatus }
   | { kind: "models"; profiles: ProfileInfo[]; models: { engine: EngineKind; model: string }[] }
+  | { kind: "update"; update: UpdateStatus }
   | { kind: "done"; affected: AgentId[] }
   | { kind: "error"; message: string };
 
@@ -524,6 +544,18 @@ function checkReply(reply: Record<string, unknown>) {
         });
       });
       break;
+    case "update": {
+      const update = object(reply.update, "reply.update");
+      string(update.current, "update.current");
+      if (update.available !== null) string(object(update.available, "update.available").version, "available.version");
+      if (update.progress !== null) {
+        const progress = object(update.progress, "update.progress");
+        if (!UPDATE_STEPS.includes(progress.step as UpdateStep)) {
+          throw new ProtocolError(`étape de mise à jour inconnue : ${String(progress.step)}`);
+        }
+      }
+      break;
+    }
     case "done":
       array(reply.affected, "reply.affected");
       break;

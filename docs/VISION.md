@@ -144,6 +144,16 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
   - **Réponse libre à une escalade** : en citant le message qui l'annonce, en texte ou en vocal.
   - **Limite assumée** : les conversations avec un bot ne sont pas chiffrées de bout en bout, Telegram peut les lire.
 
+## 13 sexies. Installation et mises à jour
+
+- **D46 — Installation guidée et mises à jour maison** (décidé le 2026-11-01). Un point d'entrée par système installe Argos depuis la dernière release ; le daemon sait ensuite se mettre à jour, avec l'app.
+  - **Installeur** : `install.sh` (macOS, Linux) et `install.ps1` (Windows) détectent le système et l'architecture, téléchargent l'archive de la release et vérifient sa somme SHA-256, installent l'app et le daemon, déclarent le service (launchd, systemd user ; aucun sous Windows, où `Argos.cmd` lance le daemon), puis écrivent `install.toml` à côté du daemon : où sont l'app et le service.
+  - **Configuration confiée à l'IA, chemin déterministe à défaut** : si `claude` ou `codex` est présent et que l'utilisateur accepte, l'installeur lui passe la consigne de `argos-daemon setup prompt` (moteur et authentification, droits, voix, mot de déclenchement, Telegram, micro macOS) ; l'IA demande avant d'installer quoi que ce soit et ne voit jamais un jeton. Sinon quelques questions. Dans les deux cas, la config s'édite par `argos-daemon config set`, qui garde les commentaires et refuse un fichier invalide.
+  - **Mises à jour, solution maison plutôt que `tauri-plugin-updater`** : le plugin ne remplace que l'app (pas le daemon, son service ni la config), attend ses propres paquets (`.app.tar.gz`, installeur NSIS/MSI, AppImage) et une signature minisign obligatoire. Argos publie des archives app + daemon non signées : le daemon les lit telles quelles.
+  - **Déroulé** : `argos-daemon update` cherche parmi les releases (préversions comprises) une version plus haute ayant l'archive de la plateforme ; `update apply` la télécharge, vérifie la somme, fait dire sa version au nouveau daemon avant de toucher à rien, remplace l'app puis les fichiers déjà présents à côté du daemon puis le daemon (l'ancien gardé en `.previous`), fait migrer la config par le nouveau binaire (`config init`, ancien fichier gardé), et relance le service. Depuis la console, le daemon lance ce même process, détaché de son groupe pour survivre à sa propre relance ; l'avancement passe par `$ARGOS_HOME/updates/status.json`. La console propose la version, suit l'installation et relance l'app une fois remplacée.
+  - **Migrations de config** : reconnues à ce qu'elles trouvent dans le fichier, idempotentes, quel que soit l'écart de versions. Première : `[telegram]` devient `[channels.telegram]`.
+  - **Limite assumée** : la somme SHA-256 vient de la même release que l'archive : elle protège d'un fichier corrompu, pas d'un compte GitHub compromis. Une signature des sommes (minisign) viendra avec la signature des binaires.
+
 ## 14. Phases
 
 1. **Noyau local** — Mac seul, sans voix : daemon, sessions persistantes + parking, hiérarchie, serveur MCP de contrôle, boards, mémoire, politique de modèles basique ; GUI console + fenêtres d'agents en chat texte. Réussite : on parle à l'Assistant en texte, il crée un Agent, l'Agent lance des Workers, l'arbre est visible, le stop fonctionne.

@@ -117,6 +117,8 @@ struct Inner {
     syncs: crate::sync::Syncs,
     /// Canaux de discussion actifs (D45).
     channels: crate::channels::Channels,
+    /// Recherche et installation des mises à jour d'Argos (D46).
+    updates: crate::update::Updates,
     /// Modèles lus auprès des harnais, et quand (voir `discover_models`).
     catalog: Mutex<Option<(Instant, Vec<argos_core::protocol::ModelRef>)>>,
     events: broadcast::Sender<DaemonEvent>,
@@ -149,6 +151,7 @@ impl Supervisor {
                 memory: Memory::new(settings.home.join("memory")),
                 syncs: crate::sync::Syncs::new(settings.home.join("sync")),
                 channels: crate::channels::Channels::default(),
+                updates: crate::update::Updates::new(settings.home.clone()),
                 catalog: Mutex::default(),
                 events,
                 generations: AtomicU64::new(0),
@@ -1206,6 +1209,10 @@ impl Supervisor {
     /// Les canaux de discussion (D45), enregistrés au démarrage du daemon.
     pub fn channels(&self) -> &crate::channels::Channels {
         &self.inner.channels
+    }
+
+    pub fn updates(&self) -> &crate::update::Updates {
+        &self.inner.updates
     }
 
     /// Signale un événement aux consoles (synchros, avis du daemon).

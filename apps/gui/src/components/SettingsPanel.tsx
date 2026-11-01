@@ -1,12 +1,13 @@
 // Réglages de la console, ouverts depuis le ⚙ de la barre du haut : connexion, voix (état
-// et essai sans micro), raccourcis et globe, canaux de discussion, nœuds et profils de
-// modèles. Ce qui n'a pas à rester sous les yeux. Les canaux et les profils se lisent ici ;
+// et essai sans micro), mises à jour, raccourcis et globe, canaux de discussion, nœuds et
+// profils de modèles. Ce qui n'a pas à rester sous les yeux. Les canaux et les profils se lisent ici ;
 // ils se règlent dans config.toml.
 
 import { useEffect, useState, type ReactNode } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { ChannelCapabilities, ChannelStatus, NodeStatus, ProfileInfo } from "../protocol";
 import type { Connection } from "../state";
+import type { Updates } from "../updates";
 import { simulateVoice } from "../useVoiceView";
 import { voiceReason, voiceStatusLabel, type VoiceInfo, type VoiceStatus } from "../voice";
 
@@ -16,6 +17,7 @@ interface Props {
   nodes: NodeStatus[] | null;
   channels: ChannelStatus[] | null;
   profiles: ProfileInfo[] | null;
+  updates: Updates;
   connected: boolean;
   /** Essai de la voix sans micro : app Tauri de dev seulement. */
   voiceTrial: boolean;
@@ -61,6 +63,10 @@ export function SettingsPanel(props: Props) {
             <VoiceTrial disabled={!connected} />
           </div>
         )}
+      </SettingsGroup>
+
+      <SettingsGroup title="Mises à jour">
+        <UpdateRow updates={props.updates} connected={connected} />
       </SettingsGroup>
 
       <SettingsGroup title="Interface">
@@ -220,6 +226,79 @@ function ChannelCard({ channel }: { channel: ChannelStatus }) {
       </dl>
     </li>
   );
+}
+
+/** Version installée, version disponible, avancement d'une installation (D46). */
+function UpdateRow({ updates, connected }: { updates: Updates; connected: boolean }) {
+  const { view } = updates;
+  const checkButton = (
+    <button type="button" className="button" disabled={!connected || updates.checking} onClick={updates.check}>
+      {updates.checking ? "Recherche…" : "Vérifier"}
+    </button>
+  );
+  switch (view.kind) {
+    case "unknown":
+      return <p className="settings-empty">{connected ? "Lecture…" : "Hors ligne."}</p>;
+    case "up_to_date":
+      return (
+        <div className="settings-row">
+          <span>Argos {view.version} est à jour</span>
+          {checkButton}
+        </div>
+      );
+    case "error":
+      return (
+        <div className="settings-row">
+          <span className="settings-detail">Recherche impossible : {view.message}</span>
+          {checkButton}
+        </div>
+      );
+    case "available":
+      return (
+        <div className="update-card">
+          <div className="settings-row">
+            <span>
+              Argos {view.version} est disponible{" "}
+              <a href={view.url} target="_blank" rel="noreferrer">
+                notes de version
+              </a>
+            </span>
+            <button type="button" className="button button-primary" disabled={!connected} onClick={updates.apply}>
+              Installer
+            </button>
+          </div>
+          {view.notes.trim() && <pre className="update-notes">{view.notes.trim()}</pre>}
+          <p className="settings-hint">
+            Remplace l'app et le daemon, migre config.toml (l'ancien est gardé), puis relance le daemon : les sessions en cours sont mises au repos et reprendront. Sur macOS, la permission du micro peut être à redonner après la mise à jour.
+          </p>
+        </div>
+      );
+    case "installing":
+      return (
+        <div className="settings-row" role="status">
+          <span>{view.version ? `Installation d'Argos ${view.version}…` : "Mise à jour…"}</span>
+          <span className="settings-detail">{connected ? view.message : "redémarrage du daemon…"}</span>
+        </div>
+      );
+    case "failed":
+      return (
+        <div className="settings-row">
+          <span className="settings-detail">Échec de la mise à jour vers {view.version} : {view.message}</span>
+          {checkButton}
+        </div>
+      );
+    case "relaunch":
+      return (
+        <div className="settings-row">
+          <span>
+            Argos {view.version} est installé ; cette fenêtre est encore en {view.app}.
+          </span>
+          <button type="button" className="button button-primary" onClick={updates.relaunch}>
+            Relancer l'app
+          </button>
+        </div>
+      );
+  }
 }
 
 /** Dev seulement : une phrase « dite » sans micro, pour essayer toute la boucle vocale. */
