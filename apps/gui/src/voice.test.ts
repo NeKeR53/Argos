@@ -58,6 +58,19 @@ describe("lecture des réponses", () => {
     expect(actions).toEqual([{ type: "speak", text: "Il fait " }, { type: "speak", text: "20 degrés." }, { type: "finish" }]);
   });
 
+  it("ne lit rien d'une demande venue d'un canal, ni les rapports qui suivent", () => {
+    const report: DaemonEvent = { type: "input", agent: "a0", from: { kind: "agent", agent: "a1" }, text: "[Rapport de Maison]\nFait." };
+    const fromPhone = [input("[Canal telegram, message vocal transcrit]\nAllume"), message("Je m'en occupe."), done, report, message("C'est allumé."), done];
+    expect(play(IDLE_PLAN, fromPhone, true).actions).toEqual([]);
+  });
+
+  it("relit les rapports dès que l'utilisateur revient au Mac", () => {
+    const report: DaemonEvent = { type: "input", agent: "a0", from: { kind: "agent", agent: "a1" }, text: "[Rapport de Maison]\nFait." };
+    const away = play(IDLE_PLAN, [input("[Canal telegram]\nAllume"), done]).plan;
+    const { actions } = play(away, [input("tapé à la console"), done, report, message("C'est allumé."), done]);
+    expect(actions).toEqual([{ type: "speak", text: "C'est allumé." }, { type: "finish" }]);
+  });
+
   it("ne lit pas le tour d'une autre demande arrivée avant celle faite à la voix", () => {
     const sent = voiceSent(IDLE_PLAN, "à la voix");
     const { plan, actions } = play(sent, [input("tapé avant"), delta("pour l'autre"), done]);

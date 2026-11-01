@@ -62,9 +62,17 @@ export interface SpeechPlan {
   speaking: boolean;
   /** Le message en cours est arrivé en fragments (son texte complet est déjà lu). */
   streamed: boolean;
+  /**
+   * La dernière demande de l'utilisateur est venue d'un canal de discussion (D45) : il
+   * n'est pas devant le Mac, les réponses aux rapports d'Agents ne sont pas lues ici.
+   */
+  away: boolean;
 }
 
-export const IDLE_PLAN: SpeechPlan = { awaiting: [], speaking: false, streamed: false };
+export const IDLE_PLAN: SpeechPlan = { awaiting: [], speaking: false, streamed: false, away: false };
+
+/** Préfixe d'un message reçu sur un canal de discussion (`[Canal <id>]`). */
+const CHANNEL_PREFIX = "[Canal ";
 
 export type SpeechAction = { type: "speak"; text: string } | { type: "finish" } | { type: "stop" };
 
@@ -74,7 +82,7 @@ export type SpeechAction = { type: "speak"; text: string } | { type: "finish" } 
  * de l'orbe pas encore établie au premier usage), la première réponse serait muette.
  */
 export function voiceSent(plan: SpeechPlan, text: string): SpeechPlan {
-  return { ...plan, awaiting: [...plan.awaiting, text], speaking: true, streamed: false };
+  return { ...plan, awaiting: [...plan.awaiting, text], speaking: true, streamed: false, away: false };
 }
 
 /** Nouvel appui du push-to-talk : la lecture en cours est coupée, la suite du tour aussi. */
@@ -94,10 +102,17 @@ export function onAssistantEvent(
   switch (event.type) {
     case "input": {
       // Un retour d’agent ouvre un nouveau tour de l’Assistant. Sa réponse doit être
-      // audible, même si le tour de la demande vocale initiale est déjà terminé.
+      // audible, même si le tour de la demande vocale initiale est déjà terminé, sauf si
+      // l'utilisateur a écrit depuis un canal : la réponse part là-bas.
       if (event.from.kind === "agent") {
-        return { plan: { ...plan, speaking: true, streamed: false }, actions: [] };
+        return { plan: { ...plan, speaking: !plan.away, streamed: false }, actions: [] };
       }
+      // Une demande venue d'un canal reçoit sa réponse sur ce canal : rien n'est lu, même
+      // avec speak_typed_replies, et la lecture en cours n'est pas coupée.
+      if (event.from.kind === "user" && event.text.startsWith(CHANNEL_PREFIX)) {
+        return { plan: { ...plan, speaking: false, streamed: false, away: true }, actions: [] };
+      }
+      if (event.from.kind === "user") plan = { ...plan, away: false };
       const index = event.from.kind === "user" ? plan.awaiting.indexOf(event.text) : -1;
       if (index < 0) return speakAll
         ? { plan: { ...plan, speaking: true, streamed: false }, actions: [{ type: "stop" }] }
