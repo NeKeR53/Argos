@@ -9,7 +9,8 @@ on:
         options:
           - macos
           - windows
-          - both
+          - linux
+          - all
         default: macos
         required: true
 
@@ -18,7 +19,7 @@ permissions:
 
 jobs:
   macos:
-    if: inputs.platform == 'macos' || inputs.platform == 'both'
+    if: inputs.platform == 'macos' || inputs.platform == 'all'
     strategy:
       fail-fast: false
       matrix:
@@ -47,7 +48,7 @@ jobs:
           retention-days: 14
 
   windows:
-    if: inputs.platform == 'windows' || inputs.platform == 'both'
+    if: inputs.platform == 'windows' || inputs.platform == 'all'
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +73,31 @@ jobs:
           path: |
             target/distribution/windows-x64/Argos-Windows-x64.zip
             target/distribution/windows-x64/SHA256SUMS-windows.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+  linux:
+    if: inputs.platform == 'linux' || inputs.platform == 'all'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libssl-dev libfuse2 file
+      - name: Build Linux application and daemon
+        run: ./scripts/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: argos-linux-x86_64-unsigned
+          path: target/distribution/linux-x86_64/
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

@@ -39,7 +39,7 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft >/tmp/argos-release-state 2>/dev/null; then
             test "$(cat /tmp/argos-release-state)" = true || { echo 'Cette version est déjà publiée.'; exit 1; }
           else
-            printf '%s\n' 'Archives non signées. Windows : extraire entièrement le ZIP puis lancer Argos.cmd. La voix locale est incluse sous Windows ; Codex ou Claude doit être installé et authentifié séparément. Sur macOS, la voix nécessite une installation séparée. Windows n’a pas encore été validé sur une machine réelle.' > /tmp/argos-release-notes.txt
+            printf '%s\n' 'Archives non signées pour macOS (Apple Silicon et Intel), Windows x64 et Linux x86_64. Windows : extraire entièrement le ZIP puis lancer Argos.cmd ; la voix locale est incluse. macOS : lancer Lancer-Argos.command. Linux : extraire l’archive puis lancer Argos/lancer-argos.sh. Sur macOS et Linux, la voix nécessite une installation séparée. Codex ou Claude doit être installé et authentifié séparément. Windows et Linux n’ont pas encore été validés sur une machine réelle. Voir le README pour l’installation détaillée.' > /tmp/argos-release-notes.txt
             gh release create "$GITHUB_REF_NAME" --draft --title "Argos $GITHUB_REF_NAME" --notes-file /tmp/argos-release-notes.txt --verify-tag
           fi
   macos:
@@ -101,8 +101,34 @@ jobs:
         run: |
           gh release upload "$env:GITHUB_REF_NAME" target/distribution/windows-x64/Argos-Windows-x64.zip target/distribution/windows-x64/SHA256SUMS-windows.txt --clobber
           if ($LASTEXITCODE -ne 0) { throw 'Téléversement des fichiers Windows échoué.' }
+  linux:
+    permissions:
+      contents: write
+    needs: version
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/gui/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libssl-dev libfuse2 file
+      - run: ./scripts/package-linux.sh
+      - name: Upload Linux archive to draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd target/distribution/linux-x86_64
+          sha256sum -c SHA256SUMS-linux-x86_64.txt
+          gh release upload "$GITHUB_REF_NAME" Argos-Linux-x86_64.tar.gz SHA256SUMS-linux-x86_64.txt --clobber
   release:
-    needs: [macos, windows]
+    needs: [macos, windows, linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -118,7 +144,7 @@ jobs:
           python3 - <<'PY'
           import json
           with open('/tmp/argos-release.json') as f: release = json.load(f)
-          expected = {'Argos-macOS-arm64.zip', 'Argos-macOS-x86_64.zip', 'Argos-Windows-x64.zip', 'SHA256SUMS-macos-arm64.txt', 'SHA256SUMS-macos-x86_64.txt', 'SHA256SUMS-windows.txt'}
+          expected = {'Argos-macOS-arm64.zip', 'Argos-macOS-x86_64.zip', 'Argos-Windows-x64.zip', 'Argos-Linux-x86_64.tar.gz', 'SHA256SUMS-macos-arm64.txt', 'SHA256SUMS-macos-x86_64.txt', 'SHA256SUMS-windows.txt', 'SHA256SUMS-linux-x86_64.txt'}
           uploaded = {a['name'] for a in release['assets'] if a['state'] == 'uploaded' and a['size'] > 0}
           if not release['isDraft'] or expected - uploaded:
               raise SystemExit(f'Brouillon incomplet : {expected - uploaded}')

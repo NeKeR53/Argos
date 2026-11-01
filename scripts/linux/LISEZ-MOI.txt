@@ -1,0 +1,15 @@
+ARGOS POUR LINUX X64
+
+Décompressez l'archive (tar -xzf Argos-Linux-x86_64.tar.gz) puis lancez
+Argos/lancer-argos.sh. Le daemon démarre en arrière-plan, puis l'application
+(AppImage) s'ouvre. L'application et le daemon utilisent ~/.argos (ou ARGOS_HOME).
+Installez et authentifiez Codex ou Claude séparément.
+
+L'AppImage demande FUSE 2 (paquet libfuse2 ou libfuse2t64 sur Ubuntu). À défaut :
+  ./Argos.AppImage --appimage-extract-and-run
+La transcription Whisper et la voix Kokoro ne sont pas incluses : leur installation
+et configuration restent nécessaires pour la voix. Le globe dans le Dock est réservé
+à macOS.
+
+Ce paquet n'est pas signé et n'a pas encore été validé sur une machine Linux réelle.
+Installez uniquement une version de confiance.
