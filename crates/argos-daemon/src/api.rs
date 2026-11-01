@@ -270,6 +270,13 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         Command::CloseSync { sync } => Reply::Sync {
             sync: supervisor.syncs().close(supervisor, &sync).await?,
         },
+        Command::CheckUpdate { refresh } => Reply::Update {
+            update: supervisor.updates().status(refresh).await,
+        },
+        Command::ApplyUpdate => {
+            supervisor.updates().apply()?;
+            done(vec![])
+        }
         Command::Models => Reply::Models {
             profiles: supervisor.policy().profiles_info(),
             models: supervisor.discover_models().await,

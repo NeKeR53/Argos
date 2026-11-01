@@ -31,6 +31,7 @@ dans [VISION](docs/VISION.md).
 ## Sommaire
 
 - [Installation](#installation)
+- [Mettre à jour](#mettre-à-jour)
 - [Premier lancement et configuration](#premier-lancement-et-configuration)
 - [Déclencheurs](#déclencheurs)
 - [Déclencheurs personnalisés](#déclencheurs-personnalisés)
@@ -39,6 +40,52 @@ dans [VISION](docs/VISION.md).
 - [Documentation](#documentation)
 
 ## Installation
+
+### Installation guidée (recommandée)
+
+Une commande télécharge la dernière release, vérifie sa somme SHA-256, installe l'app et
+le daemon, puis lance la configuration :
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/NeKeR53/Argos/main/install.sh | bash   # macOS, Linux
+```
+
+```powershell
+irm https://raw.githubusercontent.com/NeKeR53/Argos/main/install.ps1 | iex           # Windows
+```
+
+| Système | App | Daemon | Service |
+| --- | --- | --- | --- |
+| macOS | `/Applications/Argos.app` (sinon `~/Applications`) | `~/Library/Application Support/Argos/bin/argos-daemon` | agent launchd `argos-hub` |
+| Linux | `~/.local/share/argos/Argos.AppImage` | `~/.local/share/argos/argos-daemon` (lien dans `~/.local/bin`) | unité systemd utilisateur `argos-hub`, si disponible |
+| Windows | `%LOCALAPPDATA%\Argos\app\Argos.exe` | même dossier | aucun : `Argos.cmd` (raccourcis Démarrer et Bureau) lance le daemon |
+
+Les données restent dans `~/.argos` (`%LOCALAPPDATA%\Argos\data` sous Windows). Le script
+écrit à côté du daemon un `install.toml` qui dit où sont l'app et le service : les mises à
+jour s'en servent.
+
+**Configuration.** Si `claude` ou `codex` est installé, le script propose de lui confier la
+suite : il vérifie l'authentification du moteur, choisit le moteur et le modèle de
+l'Assistant, installe la voix locale si vous le voulez (Whisper, Kokoro), règle le mot de
+déclenchement et Telegram, et explique la permission du micro sur macOS. Il demande avant
+d'installer quoi que ce soit ; un jeton se colle soi-même dans le fichier indiqué. Sa
+consigne est celle de `argos-daemon setup prompt`. Sans IA (ou avec `--no-ai`), le script
+pose quelques questions et indique ce qui reste à faire.
+
+Options de `install.sh` : `--version vX.Y.Z`, `--archive FICHIER --sums FICHIER` (archive
+déjà téléchargée), `--no-ai`, `--no-setup`, `--no-service`, `--no-launch`, `--yes` ;
+`install.ps1` a les mêmes en `-Version`, `-Archive`, `-Sums`, `-NoAi`, `-NoSetup`,
+`-NoLaunch`, `-Yes`. Relancé sur une installation existante, le script la met à jour.
+
+La configuration se modifie ensuite sans perdre ses commentaires :
+
+```bash
+argos-daemon config set assistant.engine codex
+argos-daemon config set voice.wake_word '"Jarvis"'
+argos-daemon config init      # crée config.toml, ou le migre vers le format de cette version
+```
+
+L'installation à la main, décrite ci-dessous, reste possible.
 
 ### 1. Installer un moteur
 
@@ -144,6 +191,34 @@ systemctl --user enable --now argos-hub                                # Linux
 ```
 
 Le fichier pointe vers le binaire à son emplacement actuel : gardez-le à cet endroit.
+
+## Mettre à jour
+
+La console propose les nouvelles versions : une pastille « Mise à jour disponible » en bas
+de la liste des conversations, et **Réglages → Mises à jour** avec les notes de version et
+un bouton **Installer**. En ligne de commande :
+
+```bash
+argos-daemon update          # cherche une version plus récente
+argos-daemon update apply    # l'installe
+```
+
+L'installation télécharge l'archive de la plateforme et vérifie sa somme SHA-256, vérifie
+que le nouveau daemon démarre, remplace l'app, les lanceurs voisins puis le daemon (l'ancien
+reste à côté, `argos-daemon.previous`), migre `config.toml` (l'ancien est gardé en
+`config.toml.avant-<version>`) et relance le daemon : `launchctl kickstart` ou
+`systemctl --user restart` pour le service, sinon arrêt puis relance du daemon démarré par
+l'app. Les sessions en cours sont mises au repos et reprennent. La console propose ensuite
+**Relancer l'app**. L'avancement et le journal sont dans `~/.argos/updates/`.
+
+Sans `install.toml`, la mise à jour devine l'installation : l'app à côté du daemon (archive
+décompressée), sinon dans `/Applications` ou `~/Applications` ; le service s'il existe
+(`~/Library/LaunchAgents/argos-hub.plist`, `~/.config/systemd/user/argos-hub.service`).
+
+Sur macOS, les versions ne sont pas signées par Apple : après une mise à jour, macOS peut
+oublier la permission du micro. Si la voix ne capte plus rien, retirez Argos dans Réglages
+Système → Confidentialité et sécurité → Microphone puis réautorisez-le ; l'app réessaie le
+micro toutes les 15 s.
 
 ## Premier lancement et configuration
 

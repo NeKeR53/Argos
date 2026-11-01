@@ -356,6 +356,7 @@ function onReply(state: AppState, id: number, reply: Reply): AppState {
     case "models":
       return { ...next, profiles: [{ name: "harnais", description: "", models: reply.models }] };
     case "capabilities":
+    case "update":
       return next;
     case "function_result":
       // Le résultat revient à la surface appelante, sans alimenter le chat de l'agent.
@@ -875,6 +876,10 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `Synchro du workspace de ${target(command.agent)}`;
     case "close_sync":
       return `Fermeture de la synchro ${command.sync}`;
+    case "check_update":
+      return "Recherche de mise à jour";
+    case "apply_update":
+      return "Mise à jour d'Argos";
   }
 }
 

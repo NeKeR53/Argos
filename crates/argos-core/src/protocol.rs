@@ -154,6 +154,15 @@ pub enum Command {
     CloseSync {
         sync: String,
     },
+    /// Cherche une version plus récente d'Argos parmi les releases publiées (D46). Sans
+    /// `refresh`, une réponse de moins d'une heure peut resservir.
+    CheckUpdate {
+        #[serde(default)]
+        refresh: bool,
+    },
+    /// Installe la dernière version : app, daemon, configuration, puis relance du daemon.
+    /// Répond tout de suite ; l'avancement se lit avec `check_update`.
+    ApplyUpdate,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -219,6 +228,9 @@ pub enum Reply {
         profiles: Vec<ProfileInfo>,
         models: Vec<ModelRef>,
     },
+    Update {
+        update: UpdateStatus,
+    },
     /// Commande exécutée ; `affected` liste les agents touchés (stop, retrait…).
     Done {
         affected: Vec<AgentId>,
@@ -270,6 +282,57 @@ pub struct ChannelCapabilities {
     pub voice_out: bool,
     pub buttons: bool,
     pub attachments: bool,
+}
+
+/// Mises à jour d'Argos vues par le daemon (D46).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateStatus {
+    /// Version du daemon qui répond.
+    pub current: String,
+    /// Version plus récente publiée pour cette plateforme, s'il y en a une.
+    pub available: Option<ReleaseInfo>,
+    /// Pourquoi la recherche a échoué : réseau, plateforme sans archive…
+    pub error: Option<String>,
+    /// La dernière installation lancée : son étape, puis son issue.
+    pub progress: Option<UpdateProgress>,
+}
+
+/// Une release publiée.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseInfo {
+    pub version: String,
+    /// Notes de version, en Markdown.
+    pub notes: String,
+    /// Page de la release.
+    pub url: String,
+}
+
+/// Avancement d'une installation, écrit par le process qui l'applique.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateProgress {
+    /// Version installée.
+    pub version: String,
+    pub step: UpdateStep,
+    pub message: String,
+    /// Secondes depuis l'époque.
+    pub at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateStep {
+    Downloading,
+    Installing,
+    Restarting,
+    Done,
+    Failed,
+}
+
+impl UpdateStep {
+    /// L'installation est finie, réussie ou non.
+    pub fn finished(self) -> bool {
+        matches!(self, Self::Done | Self::Failed)
+    }
 }
 
 /// Un canal de discussion configuré (`[channels.<id>]`) et son état.
@@ -442,6 +505,34 @@ mod tests {
         assert_eq!(
             serde_json::to_value(Origin::User).unwrap(),
             json!({"kind": "user"})
+        );
+    }
+
+    #[test]
+    fn updates_are_checked_then_applied() {
+        let check: Request =
+            serde_json::from_value(json!({"id": 1, "command": "check_update"})).unwrap();
+        assert_eq!(check.command, Command::CheckUpdate { refresh: false });
+        let apply: Request =
+            serde_json::from_value(json!({"id": 2, "command": "apply_update"})).unwrap();
+        assert_eq!(apply.command, Command::ApplyUpdate);
+        let reply = Reply::Update {
+            update: UpdateStatus {
+                current: "0.3.0".into(),
+                available: None,
+                error: None,
+                progress: Some(UpdateProgress {
+                    version: "0.4.0".into(),
+                    step: UpdateStep::Restarting,
+                    message: "relance du daemon".into(),
+                    at: 1,
+                }),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&reply).unwrap(),
+            json!({"kind": "update", "update": {"current": "0.3.0", "available": null, "error": null,
+                "progress": {"version": "0.4.0", "step": "restarting", "message": "relance du daemon", "at": 1}}})
         );
     }
 

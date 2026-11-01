@@ -218,6 +218,8 @@ pub enum ConfigError {
     Policy(String),
     #[error("{0}")]
     Node(String),
+    #[error("config.toml : {0}")]
+    Edit(String),
 }
 
 impl Config {
@@ -243,6 +245,127 @@ impl Config {
         }
         Ok(config)
     }
+}
+
+/// Ce que `argos-daemon config init` a fait du fichier.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Init {
+    Created,
+    /// Migré ; l'ancien fichier est gardé sous ce nom.
+    Migrated {
+        changes: Vec<String>,
+        backup: std::path::PathBuf,
+    },
+    UpToDate,
+}
+
+/// Crée la configuration par défaut, ou migre une configuration existante vers le format
+/// de cette version (D46) en gardant ses commentaires. L'installeur et la mise à jour
+/// l'appellent avec le nouveau binaire ; le fichier migré doit encore se lire.
+pub fn init(path: &Path) -> Result<Init, ConfigError> {
+    if !path.exists() {
+        Config::load_or_create(path)?;
+        return Ok(Init::Created);
+    }
+    let text = fs::read_to_string(path)?;
+    let Some((migrated, changes)) = migrate(&text)? else {
+        Config::load_or_create(path)?;
+        return Ok(Init::UpToDate);
+    };
+    let config: Config = toml::from_str(&migrated)?;
+    config.models.check().map_err(ConfigError::Policy)?;
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".avant-{}", env!("CARGO_PKG_VERSION")));
+    let backup = path.with_file_name(name);
+    fs::copy(path, &backup)?;
+    fs::write(path, migrated)?;
+    Ok(Init::Migrated { changes, backup })
+}
+
+/// Migrations du format, chacune reconnue à ce qu'elle trouve dans le fichier : elles
+/// s'appliquent quel que soit l'écart de versions, et deux passes ne changent rien.
+pub fn migrate(text: &str) -> Result<Option<(String, Vec<String>)>, ConfigError> {
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|error: toml_edit::TomlError| ConfigError::Edit(error.to_string()))?;
+    let mut changes = Vec::new();
+
+    // 0.3 : l'ancienne section [telegram] devient le canal [channels.telegram] (D45).
+    let has_channel = doc
+        .get("channels")
+        .and_then(|channels| channels.get("telegram"))
+        .is_some();
+    if !has_channel && doc.get("telegram").is_some_and(|item| item.is_table()) {
+        let old = doc
+            .remove("telegram")
+            .and_then(|item| item.into_table().ok());
+        if let Some(old) = old {
+            let mut table = toml_edit::Table::new();
+            table.insert("type", toml_edit::value("telegram"));
+            for (key, item) in old.iter() {
+                table.insert(key, item.clone());
+            }
+            table.decor_mut().clone_from(old.decor());
+            if let Some(position) = old.position() {
+                table.set_position(Some(position));
+            }
+            let channels = doc
+                .entry("channels")
+                .or_insert_with(|| {
+                    let mut channels = toml_edit::Table::new();
+                    channels.set_implicit(true);
+                    toml_edit::Item::Table(channels)
+                })
+                .as_table_mut()
+                .ok_or_else(|| ConfigError::Edit("channels n'est pas une table".into()))?;
+            channels.insert("telegram", toml_edit::Item::Table(table));
+            changes.push("[telegram] devient [channels.telegram] (type = \"telegram\")".into());
+        }
+    }
+
+    Ok((!changes.is_empty()).then(|| (doc.to_string(), changes)))
+}
+
+/// `argos-daemon config set <clé> <valeur>` : change une valeur en gardant le reste du
+/// fichier et ses commentaires. `clé` est un chemin pointé (`assistant.engine`) ; la
+/// valeur est lue comme une valeur TOML (`true`, `30`, `"texte"`), sinon comme du texte.
+/// Le résultat doit rester une configuration valide.
+pub fn set(path: &Path, key: &str, value: &str) -> Result<(), ConfigError> {
+    let mut doc: toml_edit::DocumentMut = fs::read_to_string(path)?
+        .parse()
+        .map_err(|error: toml_edit::TomlError| ConfigError::Edit(error.to_string()))?;
+    let parts: Vec<&str> = key.split('.').collect();
+    let (last, tables) = parts
+        .split_last()
+        .filter(|(last, _)| !last.is_empty())
+        .ok_or_else(|| ConfigError::Edit(format!("clé invalide : {key}")))?;
+    let mut table = doc.as_table_mut();
+    for part in tables {
+        table = table
+            .entry(part)
+            .or_insert_with(toml_edit::table)
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Edit(format!("{part} n'est pas une section")))?;
+    }
+    let parsed = value
+        .parse::<toml_edit::Value>()
+        .unwrap_or_else(|_| value.into());
+    match table.get_mut(last).and_then(|item| item.as_value_mut()) {
+        // Garder le commentaire de fin de ligne.
+        Some(existing) => {
+            let decor = existing.decor().clone();
+            *existing = parsed;
+            *existing.decor_mut() = decor;
+        }
+        None => {
+            table.insert(last, toml_edit::value(parsed));
+        }
+    }
+    let text = doc.to_string();
+    let config: Config = toml::from_str(&text)?;
+    config.models.check().map_err(ConfigError::Policy)?;
+    fs::write(path, text)?;
+    Ok(())
 }
 
 /// Jeton exigé par l'API, lu dans `path` ou créé (lisible par l'utilisateur seul).
@@ -386,6 +509,75 @@ mod tests {
             Config::load_or_create(&path),
             Err(ConfigError::Parse(_))
         ));
+    }
+
+    #[test]
+    fn the_old_telegram_section_is_migrated_once_with_its_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let old = "[assistant]\nengine = \"claude\"\n[api]\nlisten = \"127.0.0.1:9000\"\n\n\
+                   # Mon bot\n[telegram]\nchat_id = 42 # moi\n\n[board]\npreempt = true\n";
+        fs::write(&path, old).unwrap();
+
+        let Init::Migrated { changes, backup } = init(&path).unwrap() else {
+            panic!("migration attendue");
+        };
+        assert_eq!(changes.len(), 1);
+        assert_eq!(fs::read_to_string(&backup).unwrap(), old);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("[telegram]"), "{text}");
+        assert!(
+            text.contains(
+                "# Mon bot\n[channels.telegram]\ntype = \"telegram\"\nchat_id = 42 # moi"
+            ),
+            "{text}"
+        );
+        // L'ordre des sections est gardé.
+        assert!(
+            text.find("[channels.telegram]") < text.find("[board]"),
+            "{text}"
+        );
+        let config = Config::load_or_create(&path).unwrap();
+        assert!(config.channels.contains_key("telegram"));
+        assert!(config.board.preempt);
+
+        assert_eq!(init(&path).unwrap(), Init::UpToDate);
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+    }
+
+    #[test]
+    fn init_creates_the_default_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        assert_eq!(init(&path).unwrap(), Init::Created);
+        assert_eq!(init(&path).unwrap(), Init::UpToDate);
+    }
+
+    #[test]
+    fn set_changes_one_value_and_keeps_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        init(&path).unwrap();
+        set(&path, "assistant.engine", "codex").unwrap();
+        set(&path, "assistant.model", "gpt-6.1-sol").unwrap();
+        set(&path, "board.preempt", "true").unwrap();
+        set(&path, "voice.wake_word", "Jarvis").unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("engine = \"codex\"            # \"claude\" ou \"codex\""),
+            "{text}"
+        );
+        assert!(text.contains("# Configuration du daemon Argos."));
+        let config = Config::load_or_create(&path).unwrap();
+        assert_eq!(config.assistant.engine, EngineKind::Codex);
+        assert_eq!(config.assistant.model.as_deref(), Some("gpt-6.1-sol"));
+        assert!(config.board.preempt);
+        assert!(text.contains("[voice]\nwake_word = \"Jarvis\""), "{text}");
+
+        // Une valeur qui casserait la configuration est refusée, le fichier reste.
+        assert!(set(&path, "assistant.engine", "gemini").is_err());
+        assert!(set(&path, "assistant.", "x").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
     }
 
     #[test]

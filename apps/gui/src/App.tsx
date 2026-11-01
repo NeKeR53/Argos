@@ -18,6 +18,7 @@ import {
 } from "./state";
 import { useDaemon } from "./useDaemon";
 import { useVoiceView } from "./useVoiceView";
+import { useUpdates, wantsAttention } from "./updates";
 import { voiceReason } from "./voice";
 import { NotificationCenter } from "./components/NotificationCenter";
 import { AgentContextPanel } from "./components/AgentContextPanel";
@@ -64,6 +65,7 @@ export default function App() {
   const [retiring, setRetiring] = useState<AgentStatus | null>(null);
   const connected = state.connection.status === "connected";
   const agent = selectedAgent(state);
+  const updates = useUpdates(connected, request);
   // Conversations : l'Assistant et les Agents, dans l'ordre du registre.
   const agents = state.order.map((id) => state.agents[id]).filter((candidate): candidate is AgentStatus => !!candidate);
 
@@ -137,6 +139,11 @@ export default function App() {
           />
           <footer className="sidebar-foot">
             {!connected && <ConnectionStatus connection={state.connection} compact />}
+            {wantsAttention(updates.view) && (
+              <button type="button" className="update-pill" onClick={() => setSettingsOpen(true)}>
+                {updates.view.kind === "relaunch" ? "Relancer pour finir la mise à jour" : updates.view.kind === "installing" ? "Mise à jour en cours…" : "Mise à jour disponible"}
+              </button>
+            )}
             {voiceStatus?.status === "failed" && (
               <span className="voice-badge" data-status="failed" title={voiceReason(voiceStatus) ?? undefined}>
                 Voix en panne
@@ -166,6 +173,7 @@ export default function App() {
               nodes={state.nodes}
               channels={state.channels}
               profiles={state.profiles}
+              updates={updates}
               connected={connected}
               voiceTrial={VOICE_TRIAL}
               onShortcuts={() => setEditingShortcuts(true)}

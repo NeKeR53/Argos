@@ -21,6 +21,12 @@ Les archives ne sont pas signées ; celles de macOS ne sont pas notariées. Wind
 et Linux doivent encore être validés sur une machine réelle. Claude ou Codex doit être installé
 et authentifié séparément sur chaque plateforme.
 
+Les noms des archives et des fichiers de sommes sont un contrat : `install.sh`,
+`install.ps1` et `argos-daemon update` (D46) les cherchent tels quels dans la release, et
+un test du daemon vérifie que le workflow les publie. Le daemon de l'archive doit répondre
+à `argos-daemon version` par la version du tag : la mise à jour le vérifie avant
+d'installer.
+
 Le workflow manuel **Build binaries** permet également de construire des artefacts
 sans publier de release (`macos`, `windows`, `linux` ou `all`).
 

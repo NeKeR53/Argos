@@ -16,13 +16,108 @@ type Failure = Box<dyn std::error::Error>;
 #[tokio::main]
 async fn main() -> Result<(), Failure> {
     let home = argos_home()?;
+    let mode = std::env::args().nth(1);
+    if matches!(mode.as_deref(), Some("version" | "--version")) {
+        println!("{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     std::fs::create_dir_all(&home)?;
-    match std::env::args().nth(1).as_deref() {
+    match mode.as_deref() {
         None | Some("hub") => hub(home).await,
         Some("node") => node(home).await,
         Some("service") => service(home),
-        Some(other) => Err(format!("mode inconnu : {other} (hub, node ou service)").into()),
+        Some("update") => update(home).await,
+        Some("config") => config(home),
+        Some("setup") => setup(home),
+        Some(other) => Err(format!(
+            "mode inconnu : {other} (hub, node, service, update, config, setup ou version)"
+        )
+        .into()),
     }
+}
+
+/// `update [check]` : cherche une version plus récente ; `update apply` l'installe (D46).
+async fn update(home: PathBuf) -> Result<(), Failure> {
+    use argos_daemon::update;
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    match args.first().map(String::as_str) {
+        None | Some("check") => {
+            let current = env!("CARGO_PKG_VERSION");
+            match update::find().await? {
+                Some(candidate) => {
+                    println!(
+                        "Argos {} est disponible (installé : {current}).",
+                        candidate.version
+                    );
+                    println!("{}", candidate.page);
+                    if !candidate.notes.trim().is_empty() {
+                        println!("\n{}", candidate.notes.trim());
+                    }
+                    println!("\nPour l'installer : argos-daemon update apply");
+                }
+                None => println!("Argos {current} est à jour."),
+            }
+            Ok(())
+        }
+        Some("apply") => {
+            let restart_pid = match args.iter().position(|arg| arg == "--restart-pid") {
+                Some(index) => Some(
+                    args.get(index + 1)
+                        .and_then(|pid| pid.parse().ok())
+                        .ok_or("--restart-pid attend un numéro de process")?,
+                ),
+                None => None,
+            };
+            // L'avancement, issue comprise, est déjà écrit au fil de l'installation.
+            update::apply(&home, update::ApplyOptions { restart_pid }).await?;
+            Ok(())
+        }
+        _ => Err("usage : argos-daemon update [check|apply]".into()),
+    }
+}
+
+/// `config init` : crée ou migre `config.toml` ; `config set <clé> <valeur>` : change une
+/// valeur en gardant les commentaires.
+fn config(home: PathBuf) -> Result<(), Failure> {
+    use argos_daemon::config::{self, Init};
+    let path = home.join("config.toml");
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["init"] => {
+            match config::init(&path)? {
+                Init::Created => println!("configuration créée : {}", path.display()),
+                Init::UpToDate => println!("configuration à jour : {}", path.display()),
+                Init::Migrated { changes, backup } => {
+                    println!("configuration migrée : {}", path.display());
+                    for change in changes {
+                        println!("- {change}");
+                    }
+                    println!("ancienne version gardée dans {}", backup.display());
+                }
+            }
+            Ok(())
+        }
+        ["set", key, value] => {
+            config::set(&path, key, value)?;
+            println!("{key} = {value}");
+            Ok(())
+        }
+        ["path"] => {
+            println!("{}", path.display());
+            Ok(())
+        }
+        _ => Err("usage : argos-daemon config <init|set <clé> <valeur>|path>".into()),
+    }
+}
+
+/// `setup prompt` : la consigne que l'installeur confie à `claude` ou `codex` (D46).
+fn setup(home: PathBuf) -> Result<(), Failure> {
+    use argos_daemon::update::Layout;
+    if std::env::args().nth(2).as_deref() != Some("prompt") {
+        return Err("usage : argos-daemon setup prompt".into());
+    }
+    print!("{}", argos_daemon::setup::prompt(&home, &Layout::detect()?));
+    Ok(())
 }
 
 /// `service <systemd|launchd> [hub|node]` : écrit le fichier de service qui lance ce
