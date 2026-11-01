@@ -4,11 +4,11 @@ Le workflow GitHub Actions **Build and publish release** se déclenche à la ré
 d'un tag tel que `v0.1.0`. La version du tag doit correspondre aux versions dans
 `Cargo.toml`, `apps/gui/package.json` et `apps/gui/src-tauri/tauri.conf.json`.
 Il crée une release en brouillon, construit les archives sur macOS Apple Silicon,
-macOS Intel et Windows x64, puis publie la release uniquement lorsque les trois
-archives et leurs sommes SHA-256 sont disponibles. Les versions `0.x` et les tags
+macOS Intel, Windows x64 et Linux x86_64, puis publie la release uniquement lorsque
+les quatre archives et leurs sommes SHA-256 sont disponibles. Les versions `0.x` et les tags
 avec suffixe sont publiés comme préversions. En cas d'échec, le brouillon reste
 disponible et l'exécution peut être relancée depuis GitHub Actions.
-Si seules les étapes finales ont échoué et que les six fichiers sont déjà présents,
+Si seules les étapes finales ont échoué et que les huit fichiers sont déjà présents,
 le workflow manuel **Publish completed release draft** vérifie ces fichiers et publie
 le brouillon sans reconstruire les archives.
 
@@ -18,11 +18,11 @@ git push origin v0.1.0
 ```
 
 Les archives ne sont pas signées ; celles de macOS ne sont pas notariées. Windows
-doit encore être validé sur une machine réelle. Claude ou Codex doit être installé
+et Linux doivent encore être validés sur une machine réelle. Claude ou Codex doit être installé
 et authentifié séparément sur chaque plateforme.
 
 Le workflow manuel **Build binaries** permet également de construire des artefacts
-sans publier de release.
+sans publier de release (`macos`, `windows`, `linux` ou `all`).
 
 ## macOS Apple Silicon et Intel
 
@@ -58,3 +58,20 @@ Le daemon et Whisper utilisent des jobs Windows pour arrêter les processus desc
 le jeton est créé avec une ACL limitée à son propriétaire. Codex utilise un lien
 matériel vers `auth.json` quand ce fichier existe : le dossier utilisateur et les
 données Argos doivent alors se trouver sur le même volume NTFS.
+
+## Linux x86_64
+
+Sur Ubuntu 22.04 ou plus récent, avec Rust, Node.js, npm et les dépendances de Tauri 2 :
+
+```sh
+sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+  librsvg2-dev patchelf libasound2-dev libssl-dev libfuse2 file
+./scripts/package-linux.sh
+```
+
+Le dossier `target/distribution/linux-x86_64` contient `Argos-Linux-x86_64.tar.gz`
+et sa somme SHA-256. L'archive contient un dossier `Argos/` avec l'application en
+AppImage, le daemon, `lancer-argos.sh` et un `LISEZ-MOI.txt`. Le lanceur démarre le
+daemon s'il n'écoute pas déjà sur `127.0.0.1:7878`, puis ouvre l'AppImage. Comme sur
+macOS, la voix locale n'est pas incluse ; le globe dans le Dock et la synthèse `say`
+(canal Telegram en vocal) sont propres à macOS.

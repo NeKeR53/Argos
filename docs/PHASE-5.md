@@ -31,4 +31,6 @@ Objectif (D29–D31) : des agents stimulés par des événements, même au repos
 - **MQTT** : en attendant, le webhook couvre Home Assistant.
 - **Déclencheurs déportés** : un déclencheur tourne sur le hub, même pour un Agent placé sur un autre nœud (voir docs/PHASE-4.md).
 
+Le guide utilisateur des déclencheurs, avec des recettes pour brancher une source personnalisée par webhook ou dossier surveillé, est dans le [README](../README.md#déclencheurs).
+
 La **console** est faite (phase 3 de la GUI) : un panneau liste les déclencheurs d'un agent avec leur prochaine échéance, et permet d'actionner, suspendre et supprimer.
