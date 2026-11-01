@@ -5,7 +5,8 @@ use crate::events;
 use crate::node::token_in;
 use crate::registry::Position;
 use crate::supervisor::Supervisor;
-use argos_core::protocol::{Command, Origin, Reply, Request, ServerMessage};
+use crate::surface_web;
+use argos_core::protocol::{Command, Reply, Request, ServerMessage};
 use argos_core::{AgentId, Level, PROTOCOL_VERSION};
 use futures_util::{SinkExt, StreamExt};
 use std::fmt::Display;
@@ -201,46 +202,23 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
         Command::Surface { surface } => Reply::Surface {
             surface: supervisor.registry().surface(&surface).map_err(said)?,
         },
-        Command::SurfaceSend { surface, text } => {
-            let meta = supervisor.registry().surface_meta(&surface).map_err(said)?;
-            let message = format!(
-                "[Depuis la surface « {} » ({})]\n{text}",
-                meta.title, meta.id
-            );
-            supervisor
-                .deliver(&meta.agent, Origin::User, message)
-                .await
-                .map_err(said)?;
-            done(vec![meta.agent])
-        }
+        Command::SurfaceSend { surface, text } => done(vec![
+            surface_web::surface_send(supervisor, &surface, &text).await?,
+        ]),
         Command::SurfaceEmit {
             surface,
             name,
             payload,
-        } => {
-            let meta = supervisor.registry().surface_meta(&surface).map_err(said)?;
-            let message = format!(
-                "[Événement « {name} » de la surface « {} » ({})]\n{payload}",
-                meta.title, meta.id
-            );
-            supervisor
-                .deliver(&meta.agent, Origin::User, message)
-                .await
-                .map_err(said)?;
-            done(vec![meta.agent])
-        }
+        } => done(vec![
+            surface_web::surface_emit(supervisor, &surface, &name, &payload).await?,
+        ]),
         Command::SurfaceCall {
             surface,
             function,
             arguments,
-        } => {
-            let meta = supervisor.registry().surface_meta(&surface).map_err(said)?;
-            Reply::FunctionResult {
-                result: supervisor
-                    .call_function(&meta.agent, &meta.agent, &function, arguments)
-                    .await?,
-            }
-        }
+        } => Reply::FunctionResult {
+            result: surface_web::surface_call(supervisor, &surface, &function, arguments).await?,
+        },
         Command::Triggers { agent } => Reply::Triggers {
             triggers: supervisor.registry().triggers_of(&agent).map_err(said)?,
         },

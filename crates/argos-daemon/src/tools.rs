@@ -1080,9 +1080,11 @@ pub async fn call(
                 .map_err(said)?;
             let id = surface.id.clone();
             supervisor.publish_surface(surface, false);
-            Ok(format!(
-                "Surface {id} créée ; l'utilisateur la voit dans un onglet."
-            ))
+            let mut reply = format!("Surface {id} créée ; l'utilisateur la voit dans un onglet.");
+            if let Some(url) = supervisor.surface_url(&id) {
+                reply.push_str(&format!(" Elle s'ouvre aussi dans un navigateur : {url}"));
+            }
+            Ok(reply)
         }
         (Level::Assistant | Level::Agent, "surface_update") => {
             let id = own_surface(supervisor, caller, text(args, "surface")?)?;
@@ -1108,6 +1110,17 @@ pub async fn call(
             if surfaces.is_empty() {
                 return Ok("Aucune surface pour l'instant.".into());
             }
+            let surfaces: Vec<Value> = surfaces
+                .into_iter()
+                .map(|surface| {
+                    let url = supervisor.surface_url(&surface.id);
+                    let mut entry = json!(surface);
+                    if let Some(url) = url {
+                        entry["url"] = Value::from(url);
+                    }
+                    entry
+                })
+                .collect();
             Ok(json!(surfaces).to_string())
         }
         (Level::Assistant | Level::Agent, "surface_delete") => {

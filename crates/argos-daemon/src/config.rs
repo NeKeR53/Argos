@@ -35,6 +35,13 @@ listen = "127.0.0.1:7878"
 # Adresse du serveur MCP par lequel les agents pilotent leurs enfants. Locale seulement.
 listen = "127.0.0.1:7879"
 
+[surfaces]
+# Serveur HTTP local des surfaces : chacune s'ouvre aussi dans un navigateur, à
+# http://127.0.0.1:7890/surfaces/<id>, dans le même bac à sable que dans la console.
+# Sans authentification : tout ce qui tourne sur cette machine peut les lire et parler
+# aux agents par leur pont. Locale seulement.
+listen = "127.0.0.1:7890"
+
 [workers]
 # Ces droits s’appliquent aussi aux Agents, qui exécutent directement par défaut.
 # Droits des Workers : "full" (ceux de l'utilisateur : commandes, réseau, installations,
@@ -87,6 +94,8 @@ pub struct Config {
     pub api: ApiConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub surfaces: SurfacesConfig,
     /// Politique de modèles (D22) ; celle par défaut si la section manque.
     #[serde(default)]
     pub models: ModelPolicy,
@@ -162,6 +171,19 @@ impl Default for McpConfig {
     fn default() -> Self {
         Self {
             listen: SocketAddr::from(([127, 0, 0, 1], 7879)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SurfacesConfig {
+    pub listen: SocketAddr,
+}
+
+impl Default for SurfacesConfig {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([127, 0, 0, 1], 7890)),
         }
     }
 }

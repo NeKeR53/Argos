@@ -6,7 +6,7 @@ use argos_daemon::node::runner::{self, RunnerSettings};
 use argos_daemon::registry::{Registry, RegistryError};
 use argos_daemon::supervisor::{Supervisor, SupervisorSettings};
 use argos_daemon::telegram::Telegram;
-use argos_daemon::{api, events, mcp};
+use argos_daemon::{api, events, mcp, surface_web};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::net::TcpListener;
@@ -101,6 +101,8 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     let nodes = Nodes::new(config.nodes.clone());
     let mcp_listener = TcpListener::bind(config.mcp.listen).await?;
     let mcp_url = format!("http://{}", mcp_listener.local_addr()?);
+    let surfaces_listener = TcpListener::bind(config.surfaces.listen).await?;
+    let surfaces_url = format!("http://{}", surfaces_listener.local_addr()?);
     let supervisor = Supervisor::new(
         registry,
         SupervisorSettings {
@@ -108,6 +110,7 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
             user_codex_home: user_home().join(".codex"),
             programs: program_overrides(),
             mcp_url: Some(mcp_url.clone()),
+            surfaces_url: Some(surfaces_url.clone()),
             policy: config.models.clone(),
             nodes: nodes.clone(),
             worker_access: config.workers.access,
@@ -126,6 +129,7 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
         token_path.display()
     );
     println!("serveur MCP des agents sur {mcp_url}/mcp/<jeton de session>");
+    println!("surfaces dans le navigateur sur {surfaces_url}/");
 
     tokio::spawn(events::Events::new(supervisor.clone()).run());
     tokio::spawn(argos_daemon::channels::follow(
@@ -158,6 +162,7 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     tokio::select! {
         served = api::serve(listener, supervisor.clone(), token) => served?,
         served = mcp::serve(mcp_listener, supervisor.clone()) => served?,
+        served = surface_web::serve(surfaces_listener, supervisor.clone()) => served?,
         _ = tokio::signal::ctrl_c() => println!("arrêt demandé : parking des sessions en cours"),
     }
     supervisor.shutdown().await;

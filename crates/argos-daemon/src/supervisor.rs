@@ -49,6 +49,8 @@ pub struct SupervisorSettings {
     /// Adresse du serveur MCP d'Argos (`http://127.0.0.1:7879`). Sans elle, les agents
     /// tournent sans les outils d'Argos.
     pub mcp_url: Option<String>,
+    /// Adresse du serveur des surfaces (`http://127.0.0.1:7890`), s'il écoute.
+    pub surfaces_url: Option<String>,
     /// Politique de modèles : profils, replis, plafonds (D22).
     pub policy: ModelPolicy,
     /// Les autres nœuds, où tournent les agents qui y sont placés (D32).
@@ -188,6 +190,12 @@ impl Supervisor {
     /// Adresse du serveur HTTP du daemon (MCP et webhooks), s'il écoute.
     pub fn mcp_url(&self) -> Option<&str> {
         self.inner.settings.mcp_url.as_deref()
+    }
+
+    /// Adresse d'une surface dans un navigateur, si le serveur des surfaces écoute.
+    pub fn surface_url(&self, surface: &str) -> Option<String> {
+        let base = self.inner.settings.surfaces_url.as_deref()?;
+        Some(format!("{base}/surfaces/{surface}"))
     }
 
     pub fn policy(&self) -> &ModelPolicy {

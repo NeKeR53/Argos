@@ -83,6 +83,7 @@ fn world_custom(policy: ModelPolicy, preempt: bool) -> World {
             (EngineKind::Codex, fixture("fake-codex")),
         ]),
         mcp_url: None,
+        surfaces_url: None,
         policy,
         nodes: Default::default(),
         worker_access: Default::default(),

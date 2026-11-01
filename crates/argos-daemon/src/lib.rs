@@ -15,6 +15,7 @@ pub mod node;
 pub mod policy;
 pub mod registry;
 pub mod supervisor;
+pub mod surface_web;
 pub mod sync;
 pub mod telegram;
 pub mod tools;

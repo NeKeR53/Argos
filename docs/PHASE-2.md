@@ -46,6 +46,18 @@ Objectif (D26–D28) : l'Assistant et les Agents montrent à l'utilisateur des p
   - Coût : 0,009 $.
 - **Vérifications du sous-agent sur faux CLI** : une requête réseau depuis la page est bloquée, un envoi depuis le chat de la surface arrive à l'agent avec son préfixe, un `emit` aussi, la page se recharge à une nouvelle version, la suppression fonctionne.
 
+## Dans un navigateur (2026-11-01, D28)
+
+- **Serveur HTTP du hub** (`argos_daemon::surface_web`), sur `[surfaces] listen` (défaut `127.0.0.1:7890`) :
+  - `GET /` : les surfaces de l'Assistant et des Agents, par agent ;
+  - `GET /surfaces/<id>` : page hôte, barre de titre et iframe `sandbox="allow-scripts"` ; le code de l'agent y est composé comme par `buildSrcdoc` (même CSP, `markdown.js` et `sdk.js` repris tels quels par `include_str!`) ;
+  - `GET /surfaces/<id>/ws` : le pont. Le daemon envoie `page` (méta et `srcdoc`, à nouveau à chaque version), `feed` (tout l'historique à la connexion, avec `busy`, puis ligne à ligne), `call_result`, `deleted` ; la page envoie `send`, `emit`, `call`, bornés comme au pont de la console.
+- **Le flux** est tenu par le daemon depuis son démarrage (500 lignes par surface) : textes partis de la surface (reconnus à leur préfixe, d'où qu'ils viennent), messages de l'agent, état du tour, données poussées. Une page rechargée ou ouverte plus tard retrouve la conversation ; un redémarrage du daemon la vide.
+- **Garde-fous sans authentification** : `Host` limité à `127.0.0.1`, `localhost`, `[::1]` ; `Origin` d'un WebSocket égale à celle de la page ; `frame-ancestors 'none'` et `X-Frame-Options: DENY` ; `no-store`.
+- **Lien** : `surface_create` rend l'adresse de la surface, `surface_list` la donne pour chacune ; le daemon affiche celle de l'index au démarrage.
+- **Tests** : `tests/surface_web.rs` (index et page hôte, hôte et origine étrangers refusés, pont de bout en bout) et 3 tests unitaires.
+- **Pas encore** : un bouton « Ouvrir dans le navigateur » dans la console ; un hub distant (VPS, D32) sert sur *sa* boucle locale, il faudra un tunnel SSH vers ce port.
+
 ## Limites
 
 - Une page peut encore *naviguer* elle-même vers une URL externe (`location = …`) : la CSP ne l'empêche pas. Dans l'app Tauri, il faudra intercepter ces navigations côté Rust (phase 3, avec la fenêtre de l'overlay).

@@ -64,6 +64,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
 - **D26 — Chaque agent possède plusieurs surfaces** de deux natures : **cockpit** (vivant, bidirectionnel, mis à jour en direct) et **artifact** (snapshot autonome).
 - **D27 — Hébergées par l'app**, jamais par un serveur lancé par l'agent. L'agent fournit HTML/CSS/JS via un outil ; un SDK injecté fournit un composant chat standard (markdown + images) et le bridge `argos.send` / `argos.on`.
 - **D28 — Sandbox** : webview avec CSP stricte, aucun accès système, seul le bridge.
+  - **Aussi dans un navigateur** (décidé le 2026-11-01) : le daemon sert chaque surface sur la boucle locale (`[surfaces] listen`, défaut `http://127.0.0.1:7890/surfaces/<id>`, index sur `/`). La page servie n'est qu'un hôte : même iframe bac à sable, même CSP, même SDK ; le pont passe par un WebSocket propre à la surface, qui ne permet que `send`, `emit`, `call` et le flux de la page. **Sans authentification** (choix de l'utilisateur) : tout process de la machine peut lire les surfaces et parler aux agents par ce pont. Restent refusés : un `Host` qui ne nomme pas la boucle locale (DNS rebinding), un WebSocket ouvert par une page d'une autre origine, l'encadrement des pages.
 
 ## 10. Événements
 
