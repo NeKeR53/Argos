@@ -71,7 +71,7 @@ checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
 name = "argos-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -80,7 +80,7 @@ dependencies = [
 
 [[package]]
 name = "argos-daemon"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argos-core",
  "axum",
@@ -108,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "argos-gui"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argos-core",
  "argos-voice",
@@ -127,7 +127,7 @@ dependencies = [
 
 [[package]]
 name = "argos-voice"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argos-core",
  "cpal",
