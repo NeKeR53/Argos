@@ -5,6 +5,7 @@
 mod common;
 
 use argos_core::EscalationState;
+use argos_core::SurfaceKind;
 use argos_core::protocol::{DaemonEvent, Origin};
 use argos_daemon::channels::ChannelConfig;
 use argos_daemon::telegram::bot::Bot;
@@ -12,7 +13,7 @@ use argos_daemon::telegram::speech::Speech;
 use argos_daemon::telegram::{SpeechConfig, Telegram, TelegramConfig};
 use axum::body::Bytes;
 use axum::http::Uri;
-use common::world::{World, poll, turn_completed, until, world};
+use common::world::{World, poll, turn_completed, until, world, world_sharing_surfaces};
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use std::os::unix::fs::PermissionsExt;
@@ -337,6 +338,112 @@ async fn quoting_an_escalation_answers_it_in_free_text() {
         .await;
     let answered = w.supervisor.registry().escalation(&escalation.id).unwrap();
     assert_eq!(answered.answer.as_deref(), Some("Archives 2026"));
+}
+
+#[tokio::test]
+async fn a_photo_and_a_document_reach_the_assistant_as_attachments() {
+    let mut w = world();
+    let fake = bridge(&w, Some(CHAT)).await;
+    let assistant = w.assistant.id.clone();
+
+    // Une photo : la plus grande taille, en image native, légende comprise.
+    fake.push(message(
+        1,
+        CHAT,
+        json!({
+            "photo": [{"file_id": "petite"}, {"file_id": "grande", "file_size": 8}],
+            "caption": "Qu'est-ce que c'est ?",
+        }),
+    ));
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent, text, .. }
+            if *agent == assistant
+                && text == "[Canal telegram]\nQu'est-ce que c'est ?\n\n[Image jointe : photo-101.jpg]")
+    })
+    .await;
+    assert!(
+        fake.sent("getFile")
+            .iter()
+            .any(|body| body.contains("grande"))
+    );
+    // Le faux Claude accuse réception de l'image, et sa réponse revient sur le canal.
+    fake.wait_for("sendMessage", "image reçue").await;
+
+    // Un PDF : enregistré sur le hub, l'Assistant en reçoit le chemin.
+    fake.push(message(
+        2,
+        CHAT,
+        json!({"document": {"file_id": "d1", "file_name": "devis.pdf", "mime_type": "application/pdf"}}),
+    ));
+    let saved = poll(|| {
+        std::fs::read_dir(w.home.path().join("attachments").join(assistant.as_str()))
+            .ok()?
+            .next()
+            .map(|entry| entry.unwrap().path())
+    })
+    .await;
+    assert!(saved.to_string_lossy().ends_with("-devis.pdf"));
+    assert_eq!(std::fs::read(&saved).unwrap(), b"OGG-RECU");
+
+    // Trop lourd : refusé sans téléchargement.
+    fake.push(message(
+        3,
+        CHAT,
+        json!({"document": {"file_id": "lourd", "file_name": "film.mov", "file_size": 50_000_000}}),
+    ));
+    fake.wait_for("sendMessage", "Fichier trop lourd").await;
+    assert!(
+        fake.sent("getFile")
+            .iter()
+            .all(|body| !body.contains("lourd"))
+    );
+}
+
+#[tokio::test]
+async fn a_new_surface_is_announced_with_its_keyless_link() {
+    let w = world_sharing_surfaces();
+    let fake = bridge(&w, Some(CHAT)).await;
+    let surface = w
+        .supervisor
+        .registry()
+        .add_surface(&w.agent.id, SurfaceKind::Cockpit, "Lumières", "<p>ok</p>")
+        .unwrap();
+    w.supervisor.publish_surface(surface.clone(), false);
+
+    let announce = fake
+        .wait_for("sendMessage", "Domotique a créé la surface « Lumières »")
+        .await;
+    assert!(announce.contains(&format!("http://mac.local:7890/surfaces/{}", surface.id)));
+    assert!(!announce.contains("?k="));
+
+    // Une nouvelle version n'est pas annoncée à nouveau.
+    let updated = w
+        .supervisor
+        .registry()
+        .update_surface(&surface.id, Some("<p>v2</p>"), None)
+        .unwrap();
+    w.supervisor.publish_surface(updated, false);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let announces = fake
+        .sent("sendMessage")
+        .into_iter()
+        .filter(|body| body.contains("a créé la surface"))
+        .count();
+    assert_eq!(announces, 1);
+}
+
+#[tokio::test]
+async fn surfaces_open_only_on_the_mac_are_not_announced() {
+    let w = world();
+    let fake = bridge(&w, Some(CHAT)).await;
+    let surface = w
+        .supervisor
+        .registry()
+        .add_surface(&w.agent.id, SurfaceKind::Cockpit, "Lumières", "<p>ok</p>")
+        .unwrap();
+    w.supervisor.publish_surface(surface, false);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(fake.sent("sendMessage").is_empty());
 }
 
 /// Vrais programmes : synthétise une phrase puis la retranscrit. Demande ffmpeg,

@@ -13,10 +13,13 @@
 pub mod bot;
 pub mod speech;
 
+use crate::attachments;
 use crate::channels::Channel;
 use crate::supervisor::Supervisor;
-use argos_core::protocol::{ChannelCapabilities, DaemonEvent, Origin};
-use argos_core::{AgentId, Escalation, EscalationState};
+use argos_core::protocol::{Attachment, ChannelCapabilities, DaemonEvent, Origin};
+use argos_core::{AgentId, Escalation, EscalationState, SurfaceMeta};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use bot::{Bot, MAX_CAPTION, Update};
 use futures_util::future::BoxFuture;
 use serde::Deserialize;
@@ -33,7 +36,7 @@ pub const CAPABILITIES: ChannelCapabilities = ChannelCapabilities {
     voice_in: true,
     voice_out: true,
     buttons: true,
-    attachments: false,
+    attachments: true,
 };
 /// Attente d'un long polling.
 const POLL_WAIT: Duration = Duration::from_secs(50);
@@ -49,6 +52,10 @@ pub struct TelegramConfig {
     /// Signaler les escalades sur ce canal.
     #[serde(default = "yes")]
     pub escalations: bool,
+    /// Envoyer le lien de chaque nouvelle surface, quand les surfaces sont ouvertes aux
+    /// autres appareils du réseau.
+    #[serde(default = "yes")]
+    pub surfaces: bool,
     /// Fichier du jeton du bot ; par défaut `$ARGOS_HOME/<id>-token`.
     #[serde(default)]
     pub token_file: Option<PathBuf>,
@@ -271,6 +278,9 @@ impl Telegram {
             Some(allowed) if allowed != chat => return,
             Some(_) => {}
         }
+        if !message.photo.is_empty() || message.document.is_some() {
+            return self.receive_file(chat, message).await;
+        }
         let (text, voice) = if let Some(text) = message.text {
             if text.trim() == "/start" {
                 self.say(chat, "Argos t'écoute : écris-moi ou envoie un vocal.")
@@ -292,7 +302,10 @@ impl Telegram {
             }
         } else {
             return self
-                .say(chat, "Je ne lis que le texte et les vocaux pour l'instant.")
+                .say(
+                    chat,
+                    "Je lis le texte, les vocaux, les photos et les documents, pas encore ce type de message.",
+                )
                 .await;
         };
         let quoted = message
@@ -306,6 +319,65 @@ impl Telegram {
         let delivered = self
             .supervisor
             .deliver(&self.assistant, Origin::User, format!("{prefix}\n{text}"))
+            .await;
+        if let Err(error) = delivered {
+            self.say(chat, &format!("Argos n'a pas pu transmettre : {error}"))
+                .await;
+        }
+    }
+
+    /// Une photo ou un document, légende comprise : remis à l'Assistant en pièce jointe
+    /// (voir [`crate::attachments`]).
+    async fn receive_file(&self, chat: i64, message: bot::Message) {
+        let id = message.message_id;
+        let (file, name, media_type) = match (message.photo.into_iter().last(), message.document) {
+            // La plus grande taille ; Telegram recompresse les photos en JPEG.
+            (Some(photo), _) => (photo, format!("photo-{id}.jpg"), "image/jpeg".to_string()),
+            (None, Some(document)) => {
+                let name = document
+                    .file_name
+                    .clone()
+                    .unwrap_or_else(|| format!("document-{id}"));
+                let media_type = document.mime_type.clone().unwrap_or_default();
+                (document, name, media_type)
+            }
+            (None, None) => return,
+        };
+        if file
+            .file_size
+            .is_some_and(|size| size > attachments::MAX_BYTES as u64)
+        {
+            let limit = attachments::MAX_BYTES / (1024 * 1024);
+            return self
+                .say(chat, &format!("Fichier trop lourd : {limit} Mo au plus."))
+                .await;
+        }
+        self.bot.action(chat, "typing").await;
+        let bytes = match self.bot.download(&file.file_id).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("telegram : fichier illisible : {error}");
+                return self
+                    .say(
+                        chat,
+                        &format!("Je n'ai pas pu récupérer ce fichier : {error}"),
+                    )
+                    .await;
+            }
+        };
+        let attachment = Attachment {
+            name,
+            media_type,
+            data: STANDARD.encode(bytes),
+        };
+        let prefix = crate::channels::prefix(&self.id, false);
+        let text = match message.caption.as_deref().map(str::trim) {
+            Some(caption) if !caption.is_empty() => format!("{prefix}\n{caption}"),
+            _ => prefix,
+        };
+        let delivered = self
+            .supervisor
+            .send_with_attachments(&self.assistant, &text, &[attachment])
             .await;
         if let Err(error) = delivered {
             self.say(chat, &format!("Argos n'a pas pu transmettre : {error}"))
@@ -361,11 +433,12 @@ impl Telegram {
         locked(&self.escalations).get(&message_id).cloned()
     }
 
-    /// Suit les escalades ouvertes, pour les annoncer une fois chacune.
+    /// Suit les escalades ouvertes et les surfaces créées, pour les annoncer une fois
+    /// chacune.
     async fn follow(
         self: Arc<Self>,
         mut events: broadcast::Receiver<DaemonEvent>,
-        outgoing: mpsc::UnboundedSender<Escalation>,
+        outgoing: mpsc::UnboundedSender<Announce>,
     ) {
         let mut announced = HashSet::new();
         loop {
@@ -374,23 +447,55 @@ impl Telegram {
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => return,
             };
-            if let DaemonEvent::EscalationUpdated { escalation } = event
-                && self.config.escalations
-                && escalation.state == EscalationState::Open
-                && announced.insert(escalation.id.clone())
-                && outgoing.send(escalation).is_err()
-            {
+            let due = match event {
+                DaemonEvent::EscalationUpdated { escalation }
+                    if self.config.escalations
+                        && escalation.state == EscalationState::Open
+                        && announced.insert(escalation.id.clone()) =>
+                {
+                    Announce::Escalation(escalation)
+                }
+                DaemonEvent::SurfaceUpdated {
+                    surface,
+                    deleted: false,
+                } if self.config.surfaces
+                    && surface.version == 1
+                    && announced.insert(surface.id.clone()) =>
+                {
+                    Announce::Surface(surface)
+                }
+                _ => continue,
+            };
+            if outgoing.send(due).is_err() {
                 return;
             }
         }
     }
 
-    async fn send(self: Arc<Self>, mut queue: mpsc::UnboundedReceiver<Escalation>) {
-        while let Some(escalation) = queue.recv().await {
-            if let Some(chat) = self.config.chat_id {
-                self.announce(chat, &escalation).await;
+    async fn send(self: Arc<Self>, mut queue: mpsc::UnboundedReceiver<Announce>) {
+        while let Some(due) = queue.recv().await {
+            let Some(chat) = self.config.chat_id else {
+                continue;
+            };
+            match due {
+                Announce::Escalation(escalation) => self.announce(chat, &escalation).await,
+                Announce::Surface(surface) => self.announce_surface(chat, &surface).await,
             }
         }
+    }
+
+    /// Le lien d'une nouvelle surface, s'il s'ouvre depuis le téléphone : il ne porte pas
+    /// la clé, l'appareil doit être associé.
+    async fn announce_surface(&self, chat: i64, surface: &SurfaceMeta) {
+        let Some(url) = self.supervisor.shared_surface_url(&surface.id) else {
+            return;
+        };
+        let text = format!(
+            "{} a créé la surface « {} » :\n{url}",
+            self.name(&surface.agent),
+            surface.title
+        );
+        self.say(chat, &text).await;
     }
 
     /// Envoie en vocal, le texte en légende ; en texte seul si la synthèse échoue, ce que
@@ -458,6 +563,12 @@ impl Telegram {
             .and_then(|record| record.charter.map(|charter| charter.name))
             .unwrap_or_else(|| agent.to_string())
     }
+}
+
+/// Ce que le pont annonce de lui-même.
+enum Announce {
+    Escalation(Escalation),
+    Surface(SurfaceMeta),
 }
 
 impl Channel for Telegram {

@@ -26,6 +26,7 @@ Parler à l'Assistant depuis son téléphone, en texte ou en vocal, et y recevoi
    type = "telegram"
    chat_id = 123456789
    escalations = true     # signaler les escalades, options en boutons
+   surfaces = true        # envoyer le lien de chaque nouvelle surface
    max_per_hour = 30      # envois de l'Assistant au-delà desquels le daemon refuse
    ```
 
@@ -42,19 +43,21 @@ Les vocaux demandent `ffmpeg` et `whisper-cli` (`brew install ffmpeg whisper-cpp
 - **Vocal** : téléchargé, converti en WAV 16 kHz par `ffmpeg`, transcrit par `whisper-cli` (environ 1 s avec large-v3-turbo), puis remis préfixé `[Canal <id>, message vocal transcrit]`. Un vocal vide ou illisible reçoit une réponse qui le dit.
 - **Envois** : la réponse finale d'un tour ouvert depuis Telegram y revient d'elle-même, en vocal pour un vocal, sauf si l'Assistant a appelé `channel_send` pendant ce tour. Il s'en sert pour répondre ailleurs ou écrire de lui-même, et voit les canaux avec `channel_list`. Les outils d'Argos sont chargés d'emblée (`alwaysLoad`) : différés par Claude Code, l'Assistant n'en voyait que le nom et ne les appelait pas. En vocal, le texte est synthétisé (`say -o`, ou Kokoro vers un WAV), encodé en Ogg/Opus et envoyé, le texte en légende ; au-delà de 1 024 caractères, il suit dans un message séparé. Une synthèse en échec retombe sur le texte, et l'Assistant en est averti. Au-delà de `max_per_hour` envois dans l'heure glissante, le daemon refuse.
 - **Orbe du Mac** : elle ne lit pas à voix haute la réponse à un message venu de Telegram, ni celles qui suivent les rapports d'Agents, tant que l'utilisateur ne revient pas à la console ou à l'orbe.
+- **Photos et documents** : la plus grande taille d'une photo, ou le document, est téléchargé (10 Mo au plus, sinon refusé sans téléchargement) et remis à l'Assistant en pièce jointe, légende comprise, comme depuis la console (`argos_daemon::attachments`) : une image part en entrée native du moteur, un petit fichier texte est recopié, un autre (PDF…) est enregistré dans `$ARGOS_HOME/attachments/<assistant>/` et l'Assistant en reçoit le chemin.
+- **Surfaces** : le lien de chaque nouvelle surface (version 1) est envoyé une fois, sans clé : seul un appareil associé l'ouvre (voir [PHASE-2](PHASE-2.md), « Dans un navigateur »). Rien n'est envoyé quand les surfaces n'écoutent que la boucle locale. `surfaces = false` coupe ces annonces.
 - **Escalades** : chaque escalade ouverte est annoncée une fois, avec le nom de l'Agent et ses options en boutons. Un bouton répond avec l'option choisie ; citer le message de l'escalade y répond en texte libre ou en vocal.
 - **Fichiers de travail** : `$ARGOS_HOME/<id>/`, un dossier par vocal, effacé après usage.
 - **Jeton** : il fait partie de chaque URL de l'API ; les erreurs réseau sont rendues sans l'URL pour qu'il n'apparaisse dans aucun journal.
 
 ## Tests
 
-- `cargo test -p argos-daemon --test telegram` : faux serveur Telegram (axum), faux `ffmpeg`, `whisper-cli` et `say`, faux Claude. Couvre le texte, le vocal, le renvoi de la réponse, les envois de l'Assistant par `channel_send`, les inconnus, l'identifiant donné quand `chat_id` manque, les boutons et la réponse en citant.
+- `cargo test -p argos-daemon --test telegram` : faux serveur Telegram (axum), faux `ffmpeg`, `whisper-cli` et `say`, faux Claude. Couvre le texte, le vocal, les photos et documents (trop lourds compris), l'annonce des nouvelles surfaces, le renvoi de la réponse, les envois de l'Assistant par `channel_send`, les inconnus, l'identifiant donné quand `chat_id` manque, les boutons et la réponse en citant.
 - `real_speech_round_trip` (ignoré) : vrais programmes, synthèse puis transcription. `ARGOS_WHISPER_MODEL=… cargo test -p argos-daemon --test telegram real_speech -- --ignored` ; `ARGOS_TTS=kokoro` avec `ARGOS_KOKORO_PYTHON`, `ARGOS_KOKORO_MODEL` et `ARGOS_KOKORO_VOICES` essaie Kokoro. Vérifié le 2026-10-31 avec `say` et Kokoro.
 
 ## Limites et suites
 
 - Les conversations avec un bot ne sont pas chiffrées de bout en bout : Telegram peut les lire.
-- Ni photo ni document : le bot répond qu'il ne lit que le texte et les vocaux.
+- Ni vidéo, ni sticker, ni position : le bot répond qu'il ne lit pas encore ce type de message. Une photo ou un document vers un Assistant placé sur un autre nœud : seuls les images et le texte passent.
 - Une escalade répondue ailleurs garde ses boutons sur Telegram ; un bouton périmé reçoit le refus du daemon.
 - Le pont n'existe que sur le hub et suppose macOS pour `say`.
 - Essayé le 2026-10-31 avec un vrai bot : identifiant donné à `/start`, puis aller-retour texte avec l'Assistant. Le vocal réel depuis le téléphone reste à essayer.

@@ -44,6 +44,13 @@ pub struct Message {
     pub voice: Option<FileRef>,
     #[serde(default)]
     pub audio: Option<FileRef>,
+    /// Une photo, en plusieurs tailles, de la plus petite à la plus grande.
+    #[serde(default)]
+    pub photo: Vec<FileRef>,
+    #[serde(default)]
+    pub document: Option<FileRef>,
+    #[serde(default)]
+    pub caption: Option<String>,
     #[serde(default)]
     pub reply_to_message: Option<Box<Message>>,
 }
@@ -56,6 +63,12 @@ pub struct Chat {
 #[derive(Debug, Deserialize)]
 pub struct FileRef {
     pub file_id: String,
+    #[serde(default)]
+    pub file_size: Option<u64>,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
