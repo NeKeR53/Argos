@@ -62,7 +62,7 @@ impl Stage {
                 user_codex_home: PathBuf::from(std::env::var("HOME").unwrap()).join(".codex"),
                 programs: HashMap::new(),
                 mcp_url: Some(mcp_url),
-                surfaces_url: None,
+                surfaces: None,
                 policy: cheap_policy(),
                 nodes: Default::default(),
                 worker_access: Default::default(),

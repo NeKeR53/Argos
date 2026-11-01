@@ -49,8 +49,8 @@ pub struct SupervisorSettings {
     /// Adresse du serveur MCP d'Argos (`http://127.0.0.1:7879`). Sans elle, les agents
     /// tournent sans les outils d'Argos.
     pub mcp_url: Option<String>,
-    /// Adresse du serveur des surfaces (`http://127.0.0.1:7890`), s'il écoute.
-    pub surfaces_url: Option<String>,
+    /// Liens vers les surfaces dans un navigateur, si leur serveur écoute.
+    pub surfaces: Option<crate::surface_web::Links>,
     /// Politique de modèles : profils, replis, plafonds (D22).
     pub policy: ModelPolicy,
     /// Les autres nœuds, où tournent les agents qui y sont placés (D32).
@@ -194,8 +194,13 @@ impl Supervisor {
 
     /// Adresse d'une surface dans un navigateur, si le serveur des surfaces écoute.
     pub fn surface_url(&self, surface: &str) -> Option<String> {
-        let base = self.inner.settings.surfaces_url.as_deref()?;
-        Some(format!("{base}/surfaces/{surface}"))
+        Some(self.inner.settings.surfaces.as_ref()?.surface(surface))
+    }
+
+    /// Le lien d'une surface, s'il s'ouvre depuis un autre appareil du réseau.
+    pub fn shared_surface_url(&self, surface: &str) -> Option<String> {
+        let links = self.inner.settings.surfaces.as_ref()?;
+        links.shared().then(|| links.surface(surface))
     }
 
     pub fn policy(&self) -> &ModelPolicy {

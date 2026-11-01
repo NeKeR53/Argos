@@ -120,7 +120,7 @@ async fn hub(nodes: BTreeMap<String, NodeConfig>) -> Hub {
                 (EngineKind::Codex, fixture("fake-codex")),
             ]),
             mcp_url: Some(format!("http://{}", mcp.local_addr().unwrap())),
-            surfaces_url: None,
+            surfaces: None,
             policy: ModelPolicy::default(),
             nodes: nodes.clone(),
             worker_access: argos_daemon::engine::Access::Full,

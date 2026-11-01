@@ -33,16 +33,29 @@ pub fn world() -> World {
 
 /// Le même monde, avec une politique de modèles donnée.
 pub fn world_with(policy: ModelPolicy) -> World {
-    world_custom(policy, false)
+    world_custom(policy, false, None)
+}
+
+/// Le même monde, surfaces ouvertes aux autres appareils sur `http://mac.local:7890`.
+#[allow(dead_code)]
+pub fn world_sharing_surfaces() -> World {
+    let links = argos_daemon::surface_web::Links {
+        base: "http://mac.local:7890".into(),
+    };
+    world_custom(ModelPolicy::default(), false, Some(links))
 }
 
 /// Le même monde, préemption des Workers active (D14).
 #[allow(dead_code)]
 pub fn world_preempting() -> World {
-    world_custom(ModelPolicy::default(), true)
+    world_custom(ModelPolicy::default(), true, None)
 }
 
-fn world_custom(policy: ModelPolicy, preempt: bool) -> World {
+fn world_custom(
+    policy: ModelPolicy,
+    preempt: bool,
+    surfaces: Option<argos_daemon::surface_web::Links>,
+) -> World {
     let home = tempfile::tempdir().unwrap();
     let registry = Registry::open_in_memory().unwrap();
     let assistant = registry
@@ -83,7 +96,7 @@ fn world_custom(policy: ModelPolicy, preempt: bool) -> World {
             (EngineKind::Codex, fixture("fake-codex")),
         ]),
         mcp_url: None,
-        surfaces_url: None,
+        surfaces,
         policy,
         nodes: Default::default(),
         worker_access: Default::default(),

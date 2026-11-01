@@ -108,7 +108,7 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 11] = [
+const MIGRATIONS: [&str; 12] = [
     AGENTS_SCHEMA,
     board::SCHEMA,
     PROFILE_COLUMN,
@@ -120,6 +120,7 @@ const MIGRATIONS: [&str; 11] = [
     "CREATE TABLE agent_capabilities (agent TEXT PRIMARY KEY REFERENCES agents(id), config TEXT NOT NULL);",
     escalations::SCHEMA,
     syncs::SCHEMA,
+    surfaces::BUILDER_COLUMN,
 ];
 
 /// v3 : profil de la politique de modèles (T8).

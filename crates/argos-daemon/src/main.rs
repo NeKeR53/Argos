@@ -102,7 +102,11 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     let mcp_listener = TcpListener::bind(config.mcp.listen).await?;
     let mcp_url = format!("http://{}", mcp_listener.local_addr()?);
     let surfaces_listener = TcpListener::bind(config.surfaces.listen).await?;
-    let surfaces_url = format!("http://{}", surfaces_listener.local_addr()?);
+    let devices = surface_web::Devices::open(&home)?;
+    let surfaces_address = surfaces_listener.local_addr()?;
+    let surfaces = surface_links(&config.surfaces, surfaces_address);
+    // Pas d'association quand le serveur n'écoute que la boucle locale.
+    let pairing = surfaces.shared().then(|| surfaces.clone());
     let supervisor = Supervisor::new(
         registry,
         SupervisorSettings {
@@ -110,7 +114,7 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
             user_codex_home: user_home().join(".codex"),
             programs: program_overrides(),
             mcp_url: Some(mcp_url.clone()),
-            surfaces_url: Some(surfaces_url.clone()),
+            surfaces: Some(surfaces.clone()),
             policy: config.models.clone(),
             nodes: nodes.clone(),
             worker_access: config.workers.access,
@@ -129,7 +133,12 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
         token_path.display()
     );
     println!("serveur MCP des agents sur {mcp_url}/mcp/<jeton de session>");
-    println!("surfaces dans le navigateur sur {surfaces_url}/");
+    println!(
+        "surfaces dans le navigateur sur http://127.0.0.1:{}/ (associer un autre appareil : \
+         QR code sur cette page), {}/ (appareils associés)",
+        surfaces_address.port(),
+        surfaces.base
+    );
 
     tokio::spawn(events::Events::new(supervisor.clone()).run());
     tokio::spawn(argos_daemon::channels::follow(
@@ -162,11 +171,47 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     tokio::select! {
         served = api::serve(listener, supervisor.clone(), token) => served?,
         served = mcp::serve(mcp_listener, supervisor.clone()) => served?,
-        served = surface_web::serve(surfaces_listener, supervisor.clone()) => served?,
+        served = surface_web::serve(surfaces_listener, supervisor.clone(), devices, pairing) => served?,
         _ = tokio::signal::ctrl_c() => println!("arrêt demandé : parking des sessions en cours"),
     }
     supervisor.shutdown().await;
     Ok(())
+}
+
+/// Liens des surfaces : `public_url`, sinon le nom Bonjour de la machine ; la boucle
+/// locale si le serveur n'écoute qu'elle.
+fn surface_links(
+    config: &argos_daemon::config::SurfacesConfig,
+    address: std::net::SocketAddr,
+) -> surface_web::Links {
+    if address.ip().is_loopback() {
+        return surface_web::Links {
+            base: format!("http://{address}"),
+        };
+    }
+    let base = config.public_url.clone().unwrap_or_else(|| {
+        let host = local_hostname().unwrap_or_else(|| "127.0.0.1".into());
+        format!("http://{host}:{}", address.port())
+    });
+    surface_web::Links {
+        base: base.trim_end_matches('/').into(),
+    }
+}
+
+/// `<nom>.local` sur macOS (`scutil --get LocalHostName`), sinon le nom d'hôte.
+fn local_hostname() -> Option<String> {
+    let read = |program: &str, args: &[&str]| {
+        let output = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()?;
+        let name = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        (output.status.success() && !name.is_empty()).then_some(name)
+    };
+    if let Some(name) = read("scutil", &["--get", "LocalHostName"]) {
+        return Some(format!("{name}.local"));
+    }
+    read("hostname", &[])
 }
 
 /// Répertoire de données du daemon : `$ARGOS_HOME`, sinon `~/.argos`.

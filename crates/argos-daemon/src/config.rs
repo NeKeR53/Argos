@@ -36,11 +36,16 @@ listen = "127.0.0.1:7878"
 listen = "127.0.0.1:7879"
 
 [surfaces]
-# Serveur HTTP local des surfaces : chacune s'ouvre aussi dans un navigateur, à
-# http://127.0.0.1:7890/surfaces/<id>, dans le même bac à sable que dans la console.
-# Sans authentification : tout ce qui tourne sur cette machine peut les lire et parler
-# aux agents par leur pont. Locale seulement.
-listen = "127.0.0.1:7890"
+# Serveur HTTP des surfaces : chacune s'ouvre aussi dans un navigateur, dans le même bac
+# à sable que dans la console, depuis ce Mac ou un autre appareil du réseau local.
+# Depuis ce Mac (127.0.0.1), sans clé. Un autre appareil s'associe une fois en scannant
+# le QR code de http://127.0.0.1:7890/, ou en tapant le code affiché dessous ; il garde
+# son propre secret en cookie. Les liens des agents ne portent aucune clé. Cette même
+# page liste les appareils, révoque chacun et renouvelle le code.
+# "127.0.0.1:7890" pour ce Mac seulement.
+listen = "0.0.0.0:7890"
+# Adresse des liens donnés par les agents ; par défaut http://<nom Bonjour>.local:<port>.
+# public_url = "http://192.168.1.20:7890"
 
 [workers]
 # Ces droits s’appliquent aussi aux Agents, qui exécutent directement par défaut.
@@ -73,6 +78,7 @@ preempt = false
 # type = "telegram"
 # chat_id = 123456789
 # escalations = true               # signaler les escalades, avec leurs réponses en boutons
+# surfaces = true                  # envoyer le lien de chaque nouvelle surface (appareil associé)
 # max_per_hour = 30                # envois de l'Assistant au-delà desquels le daemon refuse
 "#;
 
@@ -178,12 +184,15 @@ impl Default for McpConfig {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SurfacesConfig {
     pub listen: SocketAddr,
+    #[serde(default)]
+    pub public_url: Option<String>,
 }
 
 impl Default for SurfacesConfig {
     fn default() -> Self {
         Self {
-            listen: SocketAddr::from(([127, 0, 0, 1], 7890)),
+            listen: SocketAddr::from(([0, 0, 0, 0], 7890)),
+            public_url: None,
         }
     }
 }

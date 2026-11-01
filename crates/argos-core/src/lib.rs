@@ -280,6 +280,10 @@ pub struct SurfaceMeta {
     pub agent: AgentId,
     pub kind: SurfaceKind,
     pub title: String,
+    /// L'agent qui l'a déployée pour `agent`, s'il en est un autre ; il peut encore la
+    /// modifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builder: Option<AgentId>,
     /// Incrémentée à chaque nouveau code : la GUI recharge la page.
     pub version: u64,
     pub created_at: u64,

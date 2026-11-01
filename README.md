@@ -397,8 +397,11 @@ Agent placé sur un autre nœud. Le détail est dans [PHASE-5](docs/PHASE-5.md).
 - **Canaux** : parler à l'Assistant depuis Telegram, en texte ou en vocal ; il répond là
   où on lui a parlé et y signale les escalades. Voir [TELEGRAM](docs/TELEGRAM.md).
 - **Surfaces** : pages HTML créées par les agents, cockpits vivants ou résultats figés.
-  Elles s'ouvrent aussi dans un navigateur, sur <http://127.0.0.1:7890/> (sans
-  authentification : tout ce qui tourne sur la machine peut y accéder).
+  Elles s'ouvrent aussi dans un navigateur : <http://127.0.0.1:7890/> sur le Mac, ou
+  depuis un autre appareil du réseau local, associé une fois en scannant le QR code de
+  cette page (ou en tapant son code) ; il ouvre ensuite les liens que donnent les agents,
+  et s'installe sur l'écran d'accueil. Chaque appareil se révoque depuis cette page (voir
+  `[surfaces]` dans `config.toml`).
 - **Fonctions publiées** : actions HTTP déterministes qu'un Agent publie et que les
   autres appellent sans tour de modèle. Voir [FUNCTIONS](docs/FUNCTIONS.md).
 - **Escalades** : quand un agent a besoin de vous, il pose une question à options,

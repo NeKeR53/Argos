@@ -1,5 +1,6 @@
-//! Serveur HTTP local des surfaces : chacune s'ouvre aussi dans un navigateur, à
-//! `http://127.0.0.1:7890/surfaces/<id>` (D27–D28).
+//! Serveur HTTP des surfaces : chacune s'ouvre aussi dans un navigateur, sur le Mac
+//! (`http://127.0.0.1:7890/surfaces/<id>`) ou depuis un autre appareil du réseau local
+//! (`http://<mac>.local:7890/surfaces/<id>?k=<jeton>`) (D27–D28).
 //!
 //! La page servie n'est qu'un hôte : elle place le code de l'agent dans le même iframe bac
 //! à sable que la console (`allow-scripts` seul, CSP sans réseau, SDK injecté) et relaie
@@ -7,25 +8,40 @@
 //! différence. Ce WebSocket ne fait que ce que fait le pont de la console : `send`,
 //! `emit`, `call`, et le flux de la page.
 //!
-//! Sans authentification (choix de l'utilisateur) : tout ce qui tourne sur la machine peut
-//! lire les surfaces et parler aux agents par leur pont. Pour qu'un site web ouvert dans
-//! le navigateur ne le puisse pas, l'en-tête `Host` doit nommer la boucle locale (contre
-//! le DNS rebinding), un WebSocket ouvert par une page doit venir de cette origine, et les
-//! pages refusent d'être encadrées.
+//! Accès :
+//! - depuis la machine elle-même (pair et `Host` sur la boucle locale), sans jeton : tout
+//!   ce qui y tourne peut lire les surfaces et parler aux agents par leur pont ;
+//! - sinon, un appareil associé ([`devices`]) : il a scanné une fois le QR code de
+//!   l'index, affiché sur la machine seulement, ou tapé le code court qui l'accompagne.
+//!   Il garde son propre secret en cookie et se révoque seul. Les liens que donnent les
+//!   agents ne portent aucune clé : ils peuvent passer par une messagerie sans ouvrir
+//!   l'accès.
+//!
+//! Chaque page s'installe sur l'écran d'accueil (manifeste et icône).
+//!
+//! Dans les deux cas, un WebSocket ouvert par une page doit venir de l'origine de la page,
+//! et les pages refusent d'être encadrées. Un `Host` étranger sans jeton est refusé (contre
+//! le DNS rebinding).
+
+mod devices;
+
+pub use devices::Devices;
 
 use crate::supervisor::Supervisor;
 use argos_core::protocol::DaemonEvent;
 use argos_core::{AgentId, Level, SurfaceDoc, SurfaceMeta};
 use axum::Router;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Path, Request, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::extract::{ConnectInfo, Extension};
+use axum::extract::{Form, Path, Request, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{HashMap, VecDeque};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
@@ -47,27 +63,101 @@ const MARKDOWN: &str = include_str!("../../../apps/gui/src/surface/markdown.js")
 const SDK: &str = include_str!("../../../apps/gui/src/surface/sdk.js");
 const HOST_SCRIPT: &str = include_str!("surface_web/host.js");
 const STYLE: &str = include_str!("surface_web/style.css");
+/// L'icône de l'app ; les PNG en sont tirés, fond plein, pour l'écran d'accueil.
+const ICON_SVG: &str = include_str!("../../../apps/gui/src-tauri/icons/icon.svg");
+const ICON_180: &[u8] = include_bytes!("surface_web/icon-180.png");
+const ICON_512: &[u8] = include_bytes!("surface_web/icon-512.png");
+/// Ce que sert la garde sans association : les icônes et la saisie du code.
+const PUBLIC: [&str; 4] = ["/icon.svg", "/icon-180.png", "/icon-512.png", "/pair"];
 
-pub async fn serve(listener: TcpListener, supervisor: Supervisor) -> std::io::Result<()> {
-    let feeds = Feeds::default();
-    tokio::spawn(feeds.clone().follow(supervisor.clone()));
-    axum::serve(listener, router(supervisor, feeds)).await
+/// Cookie qui garde le secret d'un appareil associé.
+const COOKIE: &str = "argos_surfaces";
+
+/// Adresses des surfaces vues des autres appareils, sans jeton : un appareil non associé
+/// qui les ouvre est refusé.
+#[derive(Debug, Clone)]
+pub struct Links {
+    /// `http://<mac>.local:7890`, ou `http://127.0.0.1:7890` en écoute locale seule.
+    pub base: String,
 }
 
-pub fn router(supervisor: Supervisor, feeds: Feeds) -> Router {
+impl Links {
+    pub fn surface(&self, id: &str) -> String {
+        format!("{}/surfaces/{id}", self.base)
+    }
+
+    /// Les liens s'ouvrent depuis un autre appareil : la base ne nomme pas la boucle locale.
+    pub fn shared(&self) -> bool {
+        let host = self
+            .base
+            .split_once("://")
+            .map_or(self.base.as_str(), |(_, rest)| rest);
+        !is_loopback_name(host.split('/').next().unwrap_or_default())
+    }
+
+    /// Lien d'association d'un appareil, montré en QR code sur la machine seulement.
+    pub fn pairing(&self, token: &str) -> String {
+        format!("{}/?k={token}", self.base)
+    }
+}
+
+/// `pairing` : adresses vues des autres appareils, pour le QR code d'association de
+/// l'index ; `None` quand le serveur n'écoute que la boucle locale.
+pub async fn serve(
+    listener: TcpListener,
+    supervisor: Supervisor,
+    devices: Devices,
+    pairing: Option<Links>,
+) -> std::io::Result<()> {
+    let feeds = Feeds::default();
+    tokio::spawn(feeds.clone().follow(supervisor.clone()));
+    axum::serve(
+        listener,
+        router(supervisor, feeds, devices, pairing)
+            .into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+}
+
+pub fn router(
+    supervisor: Supervisor,
+    feeds: Feeds,
+    devices: Devices,
+    pairing: Option<Links>,
+) -> Router {
+    let web = Web {
+        supervisor,
+        feeds,
+        devices,
+        pairing,
+    };
     Router::new()
         .route("/", get(index))
+        .route("/manifest.webmanifest", get(index_manifest))
+        .route("/icon.svg", get(icon_svg))
+        .route("/icon-180.png", get(|| async { png(ICON_180) }))
+        .route("/icon-512.png", get(|| async { png(ICON_512) }))
+        .route("/pair", post(pair))
+        .route("/devices/{id}/revoke", post(revoke))
+        .route("/pairing/renew", post(renew))
         .route("/surfaces/{id}", get(page))
+        .route("/surfaces/{id}/manifest.webmanifest", get(manifest))
         .route("/surfaces/{id}/ws", get(socket))
-        .layer(middleware::from_fn(local_only))
-        .with_state(Web { supervisor, feeds })
+        .layer(middleware::from_fn_with_state(web.clone(), guard))
+        .with_state(web)
 }
 
 #[derive(Clone)]
 struct Web {
     supervisor: Supervisor,
     feeds: Feeds,
+    devices: Devices,
+    pairing: Option<Links>,
 }
+
+/// Requête de la machine elle-même, posée par la garde : elle seule voit le QR code.
+#[derive(Clone, Copy)]
+struct Local(bool);
 
 // --- Flux des pages ---------------------------------------------------------------
 
@@ -227,29 +317,109 @@ fn sent_from_surface(text: &str) -> Option<(String, &str)> {
     id.starts_with("s-").then(|| (id.to_string(), body))
 }
 
-// --- Garde de la boucle locale -----------------------------------------------------
+// --- Garde ------------------------------------------------------------------------
 
-/// Refuse un `Host` qui ne nomme pas la boucle locale et un WebSocket ouvert par une page
-/// d'une autre origine ; interdit d'encadrer les pages.
-async fn local_only(request: Request, next: Next) -> Response {
-    let Some(host) = local_host(request.headers()) else {
-        return (
-            StatusCode::FORBIDDEN,
-            "hôte refusé : utiliser 127.0.0.1 ou localhost",
-        )
-            .into_response();
+/// Laisse passer la machine elle-même ou un appareil associé ; associe un nouvel appareil
+/// qui présente la clé (lien du QR code) ; refuse une requête d'une autre origine et un
+/// POST sans origine ; interdit d'encadrer les pages.
+async fn guard(State(web): State<Web>, mut request: Request, next: Next) -> Response {
+    let Some(host) = request_host(request.headers()) else {
+        return (StatusCode::BAD_REQUEST, "en-tête Host invalide").into_response();
     };
-    if let Some(origin) = request.headers().get(header::ORIGIN)
-        && origin.to_str().ok() != Some(format!("http://{host}").as_str())
-    {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0);
+    let local = peer.is_some_and(|peer| peer.ip().is_loopback()) && is_loopback_name(&host);
+    let path = request.uri().path().to_string();
+    let public = PUBLIC.contains(&path.as_str());
+    let secret = cookie(request.headers(), COOKIE);
+    let known = secret.is_some_and(|secret| web.devices.recognize(secret));
+    let in_link = query_key(request.uri().query()).is_some_and(|key| web.devices.is_key(key));
+    // Cookie d'avant l'association par appareil : la clé elle-même.
+    let legacy = !known && secret.is_some_and(|secret| web.devices.is_key(secret));
+    if !(local || known || in_link || legacy || public) {
+        return secured(unpaired(&path, None));
+    }
+    let origin = request.headers().get(header::ORIGIN);
+    let foreign = origin
+        .is_some_and(|origin| origin.to_str().ok() != Some(format!("http://{host}").as_str()));
+    if foreign || (request.method() == Method::POST && origin.is_none()) {
         return (StatusCode::FORBIDDEN, "origine refusée").into_response();
     }
-    let mut response = next.run(request).await;
+    if (in_link || legacy) && !(local || known) {
+        // Nouvel appareil : son propre secret en cookie, la clé quitte l'adresse.
+        return secured(match web.devices.pair(user_agent(request.headers())) {
+            Ok(secret) => paired(&path, &secret),
+            Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+        });
+    }
+    if in_link {
+        return secured(see_other(&path));
+    }
+    request.extensions_mut().insert(Local(local));
+    secured(next.run(request).await)
+}
+
+fn see_other(location: &str) -> Response {
+    (
+        StatusCode::SEE_OTHER,
+        [(header::LOCATION, location.to_string())],
+    )
+        .into_response()
+}
+
+/// Redirige vers `location` en posant le secret d'un appareil tout juste associé.
+fn paired(location: &str, secret: &str) -> Response {
+    let mut response = see_other(location);
+    let value = format!("{COOKIE}={secret}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax");
+    if let Ok(value) = HeaderValue::from_str(&value) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+fn user_agent(headers: &HeaderMap) -> &str {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+}
+
+/// Page d'un appareil non associé : comment l'associer, et la saisie du code court.
+fn unpaired(next: &str, error: Option<&str>) -> Response {
+    let error = error
+        .map(|error| {
+            format!(
+                "<p class=\"error\" role=\"alert\">{}</p>",
+                escape_html(error)
+            )
+        })
+        .unwrap_or_default();
+    let body = format!(
+        "<!doctype html>\n<html lang=\"fr\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <title>Argos</title><style>{STYLE}</style></head><body class=\"index\"><main>\
+         <h1>Appareil non associé</h1>\
+         <p>Sur le Mac, ouvre <b>http://127.0.0.1:7890/</b> et scanne le QR code avec cet \
+         appareil, puis rouvre ce lien. Ou tape ici le code affiché sous le QR code :</p>\
+         {error}<form class=\"pair\" method=\"post\" action=\"/pair\">\
+         <input name=\"code\" placeholder=\"ABCD-EFGH\" autocomplete=\"one-time-code\" \
+         autocapitalize=\"characters\" spellcheck=\"false\" required aria-label=\"Code d'association\">\
+         <input type=\"hidden\" name=\"next\" value=\"{next}\">\
+         <button>Associer</button></form></main></body></html>",
+        next = escape_html(next),
+    );
+    (StatusCode::UNAUTHORIZED, Html(body)).into_response()
+}
+
+fn secured(mut response: Response) -> Response {
     let headers = response.headers_mut();
     headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    // Pas `no-referrer` : un formulaire de la page enverrait `Origin: null`.
     headers.insert(
         header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
+        HeaderValue::from_static("same-origin"),
     );
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
@@ -259,14 +429,37 @@ async fn local_only(request: Request, next: Next) -> Response {
     response
 }
 
-/// L'en-tête `Host` s'il nomme la boucle locale (`127.0.0.1`, `localhost`, `[::1]`).
-fn local_host(headers: &HeaderMap) -> Option<String> {
+/// L'en-tête `Host`, s'il n'a que des caractères d'un nom ou d'une adresse : il est
+/// recopié dans la CSP et comparé à l'origine.
+fn request_host(headers: &HeaderMap) -> Option<String> {
     let host = headers.get(header::HOST)?.to_str().ok()?;
+    let valid = !host.is_empty()
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'));
+    valid.then(|| host.to_string())
+}
+
+/// `127.0.0.1`, `localhost` ou `[::1]`, avec ou sans port.
+fn is_loopback_name(host: &str) -> bool {
     let name = match host.rsplit_once(':') {
         Some((name, port)) if port.chars().all(|c| c.is_ascii_digit()) => name,
         _ => host,
     };
-    matches!(name, "127.0.0.1" | "localhost" | "[::1]").then(|| host.to_string())
+    matches!(name, "127.0.0.1" | "localhost" | "[::1]")
+}
+
+fn query_key(query: Option<&str>) -> Option<&str> {
+    query?.split('&').find_map(|pair| pair.strip_prefix("k="))
+}
+
+fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .find_map(|pair| pair.trim().strip_prefix(name)?.strip_prefix('='))
 }
 
 /// Politique des pages hôtes. L'iframe `srcdoc` en hérite et y ajoute la sienne, plus
@@ -274,14 +467,14 @@ fn local_host(headers: &HeaderMap) -> Option<String> {
 fn host_csp(host: &str) -> String {
     format!(
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; \
-         img-src data: blob:; font-src data:; media-src data: blob:; \
-         connect-src 'self' ws://{host}; frame-ancestors 'none'; form-action 'none'; \
-         base-uri 'none'"
+         img-src 'self' data: blob:; font-src data:; media-src data: blob:; \
+         connect-src 'self' ws://{host}; manifest-src 'self'; frame-ancestors 'none'; \
+         form-action 'self'; base-uri 'none'"
     )
 }
 
 fn html_page(headers: &HeaderMap, body: String) -> Response {
-    let host = local_host(headers).unwrap_or_default();
+    let host = request_host(headers).unwrap_or_default();
     let mut response = Html(body).into_response();
     if let Ok(value) = HeaderValue::from_str(&host_csp(&host)) {
         response
@@ -294,7 +487,11 @@ fn html_page(headers: &HeaderMap, body: String) -> Response {
 // --- Pages --------------------------------------------------------------------------
 
 /// Les surfaces de l'Assistant et des Agents, par agent.
-async fn index(State(web): State<Web>, headers: HeaderMap) -> Response {
+async fn index(
+    State(web): State<Web>,
+    Extension(Local(local)): Extension<Local>,
+    headers: HeaderMap,
+) -> Response {
     let agents = match web.supervisor.tree() {
         Ok(agents) => agents,
         Err(error) => {
@@ -330,15 +527,185 @@ async fn index(State(web): State<Web>, headers: HeaderMap) -> Response {
     if sections.is_empty() {
         sections = "<p class=\"muted\">Aucune surface pour l'instant.</p>".into();
     }
+    if local && let Some(links) = &web.pairing {
+        sections.push_str(&pairing_section(&web.devices, links));
+    }
     html_page(
         &headers,
         format!(
             "<!doctype html>\n<html lang=\"fr\"><head><meta charset=\"utf-8\">\
              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-             <title>Surfaces · Argos</title><style>{STYLE}</style></head>\
-             <body class=\"index\"><main><h1>Surfaces</h1>{sections}</main></body></html>"
+             <title>Surfaces · Argos</title>{app}<style>{STYLE}</style></head>\
+             <body class=\"index\"><main><h1>Surfaces</h1>{sections}</main></body></html>",
+            app = app_head("Argos", "/manifest.webmanifest"),
         ),
     )
+}
+
+/// Ce qu'il faut pour installer la page sur l'écran d'accueil. Le manifeste est demandé
+/// avec le cookie de l'appareil (`use-credentials`) ; les icônes sont publiques.
+fn app_head(title: &str, manifest: &str) -> String {
+    format!(
+        "<link rel=\"manifest\" href=\"{manifest}\" crossorigin=\"use-credentials\">\
+         <link rel=\"icon\" href=\"/icon.svg\" type=\"image/svg+xml\">\
+         <link rel=\"apple-touch-icon\" href=\"/icon-180.png\">\
+         <meta name=\"apple-mobile-web-app-capable\" content=\"yes\">\
+         <meta name=\"mobile-web-app-capable\" content=\"yes\">\
+         <meta name=\"apple-mobile-web-app-title\" content=\"{title}\">\
+         <meta name=\"theme-color\" content=\"#ffffff\" media=\"(prefers-color-scheme: light)\">\
+         <meta name=\"theme-color\" content=\"#1d1d20\" media=\"(prefers-color-scheme: dark)\">",
+        title = escape_html(title),
+    )
+}
+
+fn web_manifest(name: &str, start_url: &str) -> Response {
+    let manifest = json!({
+        "name": name,
+        "short_name": name,
+        "start_url": start_url,
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#f2e9df",
+        "theme_color": "#f2e9df",
+        "icons": [
+            {"src": "/icon-180.png", "sizes": "180x180", "type": "image/png"},
+            {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"},
+            {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
+        ],
+    });
+    (
+        [(header::CONTENT_TYPE, "application/manifest+json")],
+        manifest.to_string(),
+    )
+        .into_response()
+}
+
+async fn index_manifest() -> Response {
+    web_manifest("Surfaces · Argos", "/")
+}
+
+async fn manifest(State(web): State<Web>, Path(id): Path<String>) -> Response {
+    match web.supervisor.registry().surface_meta(&id) {
+        Ok(meta) => web_manifest(&meta.title, &format!("/surfaces/{}", meta.id)),
+        Err(_) => (StatusCode::NOT_FOUND, "surface inconnue").into_response(),
+    }
+}
+
+async fn icon_svg() -> Response {
+    ([(header::CONTENT_TYPE, "image/svg+xml")], ICON_SVG).into_response()
+}
+
+fn png(bytes: &'static [u8]) -> Response {
+    ([(header::CONTENT_TYPE, "image/png")], bytes).into_response()
+}
+
+#[derive(Deserialize)]
+struct PairForm {
+    code: String,
+    #[serde(default)]
+    next: String,
+}
+
+/// Le code court tapé sur un appareil non associé.
+async fn pair(State(web): State<Web>, headers: HeaderMap, Form(form): Form<PairForm>) -> Response {
+    // Seulement un chemin de ce serveur : pas de redirection vers un autre site.
+    let next = if form.next.starts_with('/')
+        && !form.next.starts_with("//")
+        && !form.next.contains('\\')
+    {
+        form.next
+    } else {
+        "/".into()
+    };
+    if let Err(error) = web.devices.try_code(&form.code) {
+        return unpaired(&next, Some(error));
+    }
+    match web.devices.pair(user_agent(&headers)) {
+        Ok(secret) => paired(&next, &secret),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+/// Révoque un appareil, depuis la machine seulement.
+async fn revoke(
+    State(web): State<Web>,
+    Extension(Local(local)): Extension<Local>,
+    Path(id): Path<String>,
+) -> Response {
+    if !local {
+        return (StatusCode::FORBIDDEN, "depuis la machine seulement").into_response();
+    }
+    match web.devices.revoke(&id) {
+        Ok(true) => see_other("/#appareils"),
+        Ok(false) => (StatusCode::NOT_FOUND, "appareil inconnu").into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+/// Nouvelle clé d'association, depuis la machine seulement.
+async fn renew(State(web): State<Web>, Extension(Local(local)): Extension<Local>) -> Response {
+    if !local {
+        return (StatusCode::FORBIDDEN, "depuis la machine seulement").into_response();
+    }
+    match web.devices.renew() {
+        Ok(()) => see_other("/#associer"),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response(),
+    }
+}
+
+/// QR code d'association et code court, qui portent la clé, d'où leur affichage sur la
+/// machine seulement ; puis les appareils associés, chacun révocable.
+fn pairing_section(devices: &Devices, links: &Links) -> String {
+    let link = links.pairing(&devices.key());
+    let code = match qrcode::QrCode::new(link.as_bytes()) {
+        Ok(code) => code
+            .render::<qrcode::render::svg::Color>()
+            .min_dimensions(220, 220)
+            .quiet_zone(true)
+            .build(),
+        Err(_) => String::new(),
+    };
+    let mut list = String::new();
+    for device in devices.list().iter().rev() {
+        list.push_str(&format!(
+            "<li><span class=\"name\">{name}</span>\
+             <span class=\"muted\">associé le {paired} · vu le {seen}</span>\
+             <span class=\"spacer\"></span>\
+             <form method=\"post\" action=\"/devices/{id}/revoke\"><button>Révoquer</button></form></li>",
+            name = escape_html(&device.name),
+            paired = date(device.paired_at),
+            seen = date(device.last_seen),
+            id = escape_html(&device.id),
+        ));
+    }
+    let list = if list.is_empty() {
+        "<p class=\"muted\">Aucun appareil associé.</p>".to_string()
+    } else {
+        format!("<ul>{list}</ul>")
+    };
+    format!(
+        "<section class=\"pairing\" id=\"associer\"><h2>Associer un appareil</h2>\
+         <p class=\"muted\">Scanne ce code avec l'appareil photo d'un appareil du même réseau. \
+         Il pourra ensuite ouvrir les liens des surfaces que te donnent les agents. Ce code \
+         donne l'accès : ne le montre qu'à tes appareils, et ne l'envoie pas par message.</p>\
+         <div class=\"qr\">{code}</div>\
+         <p class=\"muted\">Sans appareil photo, ou dans une surface installée sur l'écran \
+         d'accueil : ouvre le lien et tape <b class=\"code\">{short}</b>.</p>\
+         <form method=\"post\" action=\"/pairing/renew\"><button>Renouveler le code</button> \
+         <span class=\"muted\">l'ancien QR code ne servira plus ; les appareils associés le restent.</span></form>\
+         </section>\
+         <section class=\"devices\" id=\"appareils\"><h2>Appareils associés</h2>{list}</section>",
+        short = devices.code(),
+    )
+}
+
+/// Date et heure locales d'un instant Unix.
+fn date(seconds: i64) -> String {
+    use chrono::TimeZone;
+    chrono::Local
+        .timestamp_opt(seconds, 0)
+        .single()
+        .map_or_else(String::new, |at| at.format("%d/%m/%Y à %H:%M").to_string())
 }
 
 fn agent_name(record: &argos_core::AgentRecord) -> String {
@@ -361,7 +728,7 @@ async fn page(State(web): State<Web>, Path(id): Path<String>, headers: HeaderMap
         format!(
             "<!doctype html>\n<html lang=\"fr\"><head><meta charset=\"utf-8\">\
              <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
-             <title>{title}</title><style>{STYLE}</style></head>\
+             <title>{title}</title>{app}<style>{STYLE}</style></head>\
              <body class=\"host\"><header class=\"bar\"><a href=\"/\" class=\"home\">Surfaces</a>\
              <span class=\"kind\" data-kind=\"{kind}\">{kind}</span>\
              <span class=\"title\">{title}</span><span class=\"muted\" id=\"version\">{id} · v{version}</span>\
@@ -373,6 +740,10 @@ async fn page(State(web): State<Web>, Path(id): Path<String>, headers: HeaderMap
             id = escape_html(&meta.id),
             version = meta.version,
             config = script_json(&json!({ "surface": meta.id })),
+            app = app_head(
+                &meta.title,
+                &format!("/surfaces/{}/manifest.webmanifest", meta.id)
+            ),
         ),
     )
 }
@@ -659,6 +1030,7 @@ mod tests {
             agent: AgentId::new("a-1"),
             kind: argos_core::SurfaceKind::Cockpit,
             title: "Tableau (v2)".into(),
+            builder: None,
             version: 1,
             created_at: 0,
             updated_at: 0,
@@ -672,17 +1044,24 @@ mod tests {
     }
 
     #[test]
-    fn only_loopback_hosts_are_served() {
-        let host = |value: &str| {
-            let mut headers = HeaderMap::new();
-            headers.insert(header::HOST, HeaderValue::from_str(value).unwrap());
-            local_host(&headers)
-        };
-        assert_eq!(host("127.0.0.1:7890").as_deref(), Some("127.0.0.1:7890"));
-        assert_eq!(host("localhost:7890").as_deref(), Some("localhost:7890"));
-        assert_eq!(host("[::1]:7890").as_deref(), Some("[::1]:7890"));
-        assert_eq!(host("evil.example:7890"), None);
-        assert_eq!(host("127.0.0.1.evil.example"), None);
+    fn hosts_keys_and_cookies_are_read_strictly() {
+        assert!(is_loopback_name("127.0.0.1:7890"));
+        assert!(is_loopback_name("localhost"));
+        assert!(is_loopback_name("[::1]:7890"));
+        assert!(!is_loopback_name("mac.local:7890"));
+        assert!(!is_loopback_name("127.0.0.1.evil.example"));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("mac.local:7890; x"));
+        assert_eq!(request_host(&headers), None);
+
+        assert_eq!(query_key(Some("a=1&k=abc")), Some("abc"));
+        assert_eq!(query_key(Some("kk=abc")), None);
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("x=1; argos_surfaces=abc"),
+        );
+        assert_eq!(cookie(&headers, COOKIE), Some("abc"));
     }
 
     #[test]
@@ -693,6 +1072,7 @@ mod tests {
                 agent: AgentId::new("a-1"),
                 kind: argos_core::SurfaceKind::Artifact,
                 title: "</script><b>".into(),
+                builder: None,
                 version: 3,
                 created_at: 0,
                 updated_at: 0,

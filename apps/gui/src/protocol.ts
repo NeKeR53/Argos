@@ -118,6 +118,8 @@ export interface SurfaceMeta {
   agent: AgentId;
   kind: SurfaceKind;
   title: string;
+  /** L'agent qui l'a déployée pour `agent`, s'il en est un autre. */
+  builder?: AgentId;
   /** Incrémentée à chaque nouveau code : la page se recharge. */
   version: number;
   created_at: number;

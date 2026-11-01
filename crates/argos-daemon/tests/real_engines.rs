@@ -90,7 +90,7 @@ async fn calls_argos_tools(engine: EngineKind, model: &str) {
             user_codex_home,
             programs: HashMap::new(),
             mcp_url: Some(mcp_url),
-            surfaces_url: None,
+            surfaces: None,
             policy: argos_daemon::policy::ModelPolicy::default(),
             nodes: Default::default(),
             worker_access: Default::default(),

@@ -193,12 +193,20 @@ fn surface_tools() -> Vec<Tool> {
                 ("kind", "cockpit ou artifact."),
                 ("title", "Titre court, affiché dans l'onglet."),
                 ("html", "La page complète : HTML, CSS et JS en ligne."),
+                (
+                    "agent",
+                    "Pour déployer la page chez un autre agent : son nom (ou son id, ou « Assistant »). Elle lui appartient : les messages et événements de la page lui arrivent, il la pilote. Tu peux encore la modifier. Par défaut, toi.",
+                ),
+                (
+                    "brief",
+                    "Avec agent : ce que l'agent destinataire doit savoir pour la piloter (ce que la page envoie, les données qu'elle attend par surface_push, les fonctions qu'elle appelle).",
+                ),
             ],
             &["kind", "title", "html"],
         ),
         tool(
             "surface_update",
-            "Remplace le code et/ou le titre d'une de tes surfaces ; la page se recharge chez l'utilisateur.",
+            "Remplace le code et/ou le titre d'une de tes surfaces, ou d'une surface que tu as déployée pour un autre agent ; la page se recharge chez l'utilisateur.",
             &[
                 ("surface", SURFACE_REF),
                 ("html", "Le nouveau code complet."),
@@ -212,10 +220,15 @@ fn surface_tools() -> Vec<Tool> {
             &[("surface", SURFACE_REF), ("data", "Les données, en JSON.")],
             &["surface", "data"],
         ),
-        tool("surface_list", "Liste tes surfaces.", &[], &[]),
+        tool(
+            "surface_list",
+            "Liste tes surfaces et celles que tu as déployées pour d'autres agents (champ builder).",
+            &[],
+            &[],
+        ),
         tool(
             "surface_delete",
-            "Supprime une de tes surfaces.",
+            "Supprime une de tes surfaces, ou une surface que tu as déployée pour un autre agent.",
             &[("surface", SURFACE_REF)],
             &["surface"],
         ),
@@ -1074,13 +1087,58 @@ pub async fn call(
         (Level::Assistant | Level::Agent, "surface_create") => {
             let kind = text(args, "kind")?.parse().map_err(said)?;
             let html = raw(args, "html")?;
+            let owner = match optional(args, "agent") {
+                Some(reference) => surface_owner(supervisor, reference)?,
+                None => caller.clone(),
+            };
             let surface = supervisor
                 .registry()
-                .add_surface(&caller.id, kind, text(args, "title")?, html)
+                .add_surface_for(
+                    &owner.id,
+                    Some(&caller.id),
+                    kind,
+                    text(args, "title")?,
+                    html,
+                )
                 .map_err(said)?;
             let id = surface.id.clone();
+            let title = surface.title.clone();
             supervisor.publish_surface(surface, false);
-            let mut reply = format!("Surface {id} créée ; l'utilisateur la voit dans un onglet.");
+            let mut reply = if owner.id == caller.id {
+                format!("Surface {id} créée ; l'utilisateur la voit dans un onglet.")
+            } else {
+                // Le destinataire apprend qu'il a une page à piloter, et comment.
+                let brief = optional(args, "brief")
+                    .map(|brief| format!("\n{brief}"))
+                    .unwrap_or_default();
+                send_as(
+                    supervisor,
+                    caller,
+                    &owner.id,
+                    format!(
+                        "[Surface « {title} » ({id}) déployée pour toi par {}]{brief}\n\
+                         Elle t'appartient : ses messages et événements t'arrivent ; \
+                         surface_update, surface_push et surface_delete s'y appliquent.",
+                        label(caller)
+                    ),
+                )
+                .await
+                .map_err(said)?;
+                journal(
+                    supervisor,
+                    &caller.id,
+                    &format!("surface « {title} » ({id}) déployée pour {}", label(&owner)),
+                );
+                journal(
+                    supervisor,
+                    &owner.id,
+                    &format!("surface « {title} » ({id}) reçue de {}", label(caller)),
+                );
+                format!(
+                    "Surface {id} déployée pour {}, qui en est prévenu ; l'utilisateur la voit dans un onglet. Tu peux encore la modifier.",
+                    label(&owner)
+                )
+            };
             if let Some(url) = supervisor.surface_url(&id) {
                 reply.push_str(&format!(" Elle s'ouvre aussi dans un navigateur : {url}"));
             }
@@ -1106,7 +1164,13 @@ pub async fn call(
             Ok(format!("Données poussées vers {id}."))
         }
         (Level::Assistant | Level::Agent, "surface_list") => {
-            let surfaces = supervisor.registry().surfaces(&caller.id).map_err(said)?;
+            let mut surfaces = supervisor.registry().surfaces(&caller.id).map_err(said)?;
+            surfaces.extend(
+                supervisor
+                    .registry()
+                    .surfaces_built_by(&caller.id)
+                    .map_err(said)?,
+            );
             if surfaces.is_empty() {
                 return Ok("Aucune surface pour l'instant.".into());
             }
@@ -1706,13 +1770,38 @@ fn own_mission(supervisor: &Supervisor, caller: &AgentRecord, id: &str) -> Resul
     Ok(mission.id)
 }
 
-/// Une surface de `caller`.
+/// Une surface de `caller`, ou qu'il a déployée pour un autre agent.
 fn own_surface(supervisor: &Supervisor, caller: &AgentRecord, id: &str) -> Result<String, String> {
     let surface = supervisor.registry().surface_meta(id).map_err(said)?;
-    if surface.agent != caller.id {
-        return Err(format!("la surface {id} n'est pas la tienne"));
+    if surface.agent != caller.id && surface.builder.as_ref() != Some(&caller.id) {
+        return Err(format!(
+            "la surface {id} n'est pas la tienne, et tu ne l'as pas déployée"
+        ));
     }
     Ok(surface.id)
+}
+
+/// Destinataire d'une surface : un Agent vivant par son nom ou son id, ou l'Assistant.
+fn surface_owner(supervisor: &Supervisor, reference: &str) -> Result<AgentRecord, String> {
+    let reference = reference.trim();
+    let found = if reference.eq_ignore_ascii_case("assistant") {
+        supervisor.registry().assistant().map_err(said)?
+    } else {
+        match supervisor.record(&AgentId::new(reference)) {
+            Ok(record) => Some(record),
+            Err(_) => supervisor.registry().agent_named(reference).map_err(said)?,
+        }
+    };
+    let owner = found.ok_or_else(|| format!("aucun agent « {reference} »"))?;
+    if owner.level == Level::Worker {
+        return Err(format!(
+            "« {reference} » est un Worker : il ne parle pas à l'utilisateur, pas de surface"
+        ));
+    }
+    if owner.state == AgentState::Retired {
+        return Err(format!("{} est retiré", label(&owner)));
+    }
+    Ok(owner)
 }
 
 /// Une tâche du board de `caller`.

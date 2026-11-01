@@ -21,10 +21,14 @@ CREATE TABLE surfaces (
 CREATE INDEX surfaces_by_agent ON surfaces(agent);
 ";
 
+/// v12 : l'agent qui a déployé la surface pour un autre.
+pub(super) const BUILDER_COLUMN: &str =
+    "ALTER TABLE surfaces ADD COLUMN builder TEXT REFERENCES agents(id);";
+
 /// Taille maximale du code d'une surface.
 pub const MAX_HTML: usize = 2 * 1024 * 1024;
 
-const META: &str = "id, agent, kind, title, version, created_at, updated_at";
+const META: &str = "id, agent, kind, title, version, created_at, updated_at, builder";
 
 impl Registry {
     /// Crée une surface pour l'Assistant ou un Agent vivant.
@@ -35,6 +39,22 @@ impl Registry {
         title: &str,
         html: &str,
     ) -> Result<SurfaceMeta> {
+        self.add_surface_for(agent, None, kind, title, html)
+    }
+
+    /// Crée une surface pour `agent`, déployée par `builder` s'il en est un autre.
+    pub fn add_surface_for(
+        &self,
+        agent: &AgentId,
+        builder: Option<&AgentId>,
+        kind: SurfaceKind,
+        title: &str,
+        html: &str,
+    ) -> Result<SurfaceMeta> {
+        let builder = builder.filter(|builder| *builder != agent);
+        if let Some(builder) = builder {
+            self.require(builder)?;
+        }
         let owner = self.require(agent)?;
         if owner.level == Level::Worker {
             return Err(RegistryError::Surface(
@@ -49,9 +69,17 @@ impl Registry {
         let id = format!("s-{}", &Uuid::new_v4().simple().to_string()[..8]);
         let stamp = now() as i64;
         self.db.execute(
-            "INSERT INTO surfaces (id, agent, kind, title, html, version, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6)",
-            params![id, agent.as_str(), kind.as_str(), title, html, stamp],
+            "INSERT INTO surfaces (id, agent, kind, title, html, version, created_at, updated_at, builder)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?6, ?7)",
+            params![
+                id,
+                agent.as_str(),
+                kind.as_str(),
+                title,
+                html,
+                stamp,
+                builder.map(AgentId::as_str)
+            ],
         )?;
         self.surface_meta(&id)
     }
@@ -84,6 +112,17 @@ impl Registry {
         ))?;
         let surfaces = statement
             .query_map([agent.as_str()], meta_row)?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(surfaces)
+    }
+
+    /// Les surfaces qu'un agent a déployées pour d'autres.
+    pub fn surfaces_built_by(&self, builder: &AgentId) -> Result<Vec<SurfaceMeta>> {
+        let mut statement = self.db.prepare(&format!(
+            "SELECT {META} FROM surfaces WHERE builder = ?1 ORDER BY created_at, rowid"
+        ))?;
+        let surfaces = statement
+            .query_map([builder.as_str()], meta_row)?
             .collect::<rusqlite::Result<_>>()?;
         Ok(surfaces)
     }
@@ -131,6 +170,7 @@ fn meta_row(row: &Row) -> rusqlite::Result<SurfaceMeta> {
         agent: AgentId::new(row.get::<_, String>(1)?),
         kind: parsed(row, 2)?,
         title: row.get(3)?,
+        builder: row.get::<_, Option<String>>(7)?.map(AgentId::new),
         version: row.get::<_, i64>(4)? as u64,
         created_at: row.get::<_, i64>(5)? as u64,
         updated_at: row.get::<_, i64>(6)? as u64,
