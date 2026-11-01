@@ -35,14 +35,16 @@ Réglages et permission micro : voir [apps/gui/README.md](../apps/gui/README.md)
 
 - **TTS Kokoro** (`tts_backend = "kokoro"`, `kokoro_python`, `kokoro_model`, `kokoro_voices`, `kokoro_voice`) : un worker Python local à la place de `say`.
 - **Écoute mains libres** (`[voice] hands_free = true`, ou le réglage « Écoute mains libres » de la console dans l'app) : le micro reste ouvert, et une demande commence par le **mot de déclenchement** (`wake_word`, « Argos » par défaut).
-  - Un détecteur de parole (`argos_voice::vad`, seuil d'énergie au-dessus du bruit ambiant) découpe les énoncés. Chacun est transcrit par le Whisper local, à qui le mot est soufflé (`prompt`) pour qu'il l'écrive juste.
+  - Un détecteur de parole (`argos_voice::vad`, seuil d'énergie à trois fois le bruit ambiant, 0.006 au moins) découpe les énoncés. Le plancher de 0.012 d'abord retenu était trop haut pour le micro du Mac : la voix arrivait entre 0.014 et 0.020, et rien ne se déclenchait à quelques pas. Chacun est transcrit par le Whisper local, à qui le mot est soufflé (`prompt`) pour qu'il l'écrive juste.
   - `argos_voice::wake` reconnaît le mot au début de la transcription, malgré les variantes de Whisper (« Argo », « Hargos », « Ar gos », « Dis Argos ») ; ce qui suit est la demande. « Argos » seul ouvre une fenêtre de 8 s pour la demande.
-  - Le mot est cherché dès la première seconde et demie de l'énoncé : c'est lui, et lui seul, qui coupe la lecture en cours (barge-in).
+  - Le mot est cherché dès la première seconde et demie de l'énoncé : c'est lui, et lui seul, qui coupe la lecture en cours (barge-in). Entendu là, il vaut pour tout l'énoncé : Whisper le perd parfois en transcrivant la phrase entière (« Argos » au début, « ça va ? » au complet).
   - **Filtre d'écho** : une transcription qui reprend ce que la synthèse a dit dans les 20 dernières secondes est écartée, même si elle contient le mot. C'était la cause de la boucle de la première version, où la réponse lue était prise pour une demande.
   - Pour le front, chaque demande se présente comme un appui de push-to-talk : `push-to-talk` pressé, puis relâché, puis `voice-transcript` sans le mot. Le push-to-talk reste utilisable, et l'écoute se tait pendant un appui.
   - `wake_word = ""` rend l'ancien comportement (toute voix est une demande), à réserver à un casque.
   - **Écart avec D37** : pas de vraie annulation d'écho (Voice Processing IO de CoreAudio, que `cpal` n'expose pas). Le mot de déclenchement et le filtre d'écho en tiennent lieu.
-  - Vérifié sur signaux synthétiques et faux backends (tests du VAD, du mot, du moteur). Pas vérifié au vrai micro.
+  - Un micro refusé au lancement (permission de macOS pas encore donnée, souvent après une nouvelle compilation ad hoc) est réessayé toutes les 15 s tant que l'écoute est demandée.
+  - **Journal de diagnostic** (`[voice] heard_log = "~/Library/Logs/Argos/voice-heard.log"`, absent par défaut) : chaque énoncé (début, fin, niveau), sa transcription et le verdict, le bruit ambiant, le seuil et la crête toutes les 30 s. Il garde ce qui se dit dans la pièce : à n'activer que le temps d'un réglage.
+  - Vérifié sur signaux synthétiques et faux backends (tests du VAD, du mot, du moteur), puis au vrai micro le 2026-11-01 : « Argos, tu vas bien ? » reconnu et répondu.
 
 ## Vérifié
 

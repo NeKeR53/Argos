@@ -19,6 +19,7 @@ const MIN_PARTIAL_INTERVAL_MS: u64 = 100;
 /// partial_interval_ms = 700           # cadence des hypothèses partielles
 /// hands_free = false                  # écoute continue au démarrage (sinon push-to-talk)
 /// wake_word = "Argos"                 # mot qui ouvre une demande en mains libres ("" : aucun)
+/// heard_log = "~/Library/Logs/Argos/voice-heard.log"  # diagnostic : ce que l'écoute entend
 /// ```
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct VoiceConfig {
@@ -50,6 +51,11 @@ pub struct VoiceConfig {
     /// (à réserver à un casque : sinon la réponse lue s'entend elle-même).
     #[serde(default = "default_wake_word")]
     pub wake_word: String,
+    /// Diagnostic de l'écoute mains libres : chaque énoncé (niveau, plancher de bruit),
+    /// sa transcription et le verdict y sont ajoutés. Absent par défaut : ce fichier garde
+    /// ce que dit la pièce.
+    #[serde(default)]
+    pub heard_log: Option<PathBuf>,
 }
 
 /// Mot de déclenchement par défaut.
@@ -103,6 +109,7 @@ impl VoiceConfig {
             partial_interval_ms: default_partial_interval_ms(),
             hands_free: false,
             wake_word: default_wake_word(),
+            heard_log: None,
         }
     }
 
@@ -118,6 +125,7 @@ impl VoiceConfig {
         config.kokoro_python = config.kokoro_python.map(|p| expand_home(&p));
         config.kokoro_model = config.kokoro_model.map(|p| expand_home(&p));
         config.kokoro_voices = config.kokoro_voices.map(|p| expand_home(&p));
+        config.heard_log = config.heard_log.map(|p| expand_home(&p));
         config.check()?;
         Ok(config)
     }

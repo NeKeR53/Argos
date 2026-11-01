@@ -34,12 +34,17 @@ pub struct VadSettings {
     pub max_ms: u32,
 }
 
+/// Plancher d'écho de départ, avant que le haut-parleur ait été entendu : plus haut que
+/// le plancher de la voix, pour que les premières phrases de la synthèse n'ouvrent pas
+/// d'énoncé.
+const INITIAL_ECHO_FLOOR: f32 = 0.012;
+
 impl Default for VadSettings {
     fn default() -> Self {
         Self {
             start_ratio: 3.0,
             echo_ratio: 4.0,
-            min_level: 0.012,
+            min_level: 0.006,
             start_ms: 160,
             echo_start_ms: 320,
             end_ms: 900,
@@ -85,7 +90,7 @@ impl Vad {
         Self {
             settings,
             floor: settings.min_level / settings.start_ratio,
-            echo_floor: settings.min_level,
+            echo_floor: INITIAL_ECHO_FLOOR,
             partial: Vec::with_capacity(FRAME),
             preroll: VecDeque::new(),
             state: idle(),
@@ -97,6 +102,12 @@ impl Vad {
         self.partial.clear();
         self.preroll.clear();
         self.state = idle();
+    }
+
+    /// Plancher de bruit ambiant actuel (RMS), et seuil d'ouverture qui en découle.
+    pub fn floor(&self) -> (f32, f32) {
+        let s = self.settings;
+        (self.floor, (self.floor * s.start_ratio).max(s.min_level))
     }
 
     /// L'énoncé en cours, pré-roulement compris ; `None` hors énoncé.

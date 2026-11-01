@@ -30,6 +30,8 @@ pub const EVENT_VOICE_TRANSCRIPT: &str = "voice-transcript";
 
 /// Niveau d'animation de la parole : `say` ne donne pas de niveau sonore.
 const SPEAKING_LEVEL: f32 = 0.6;
+/// Écart entre deux essais du micro quand il refuse au lancement.
+const HANDS_FREE_RETRY: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
@@ -65,6 +67,9 @@ pub struct Voice {
     held: Mutex<bool>,
     /// Écoute mains libres active.
     hands_free: Mutex<bool>,
+    /// Écoute mains libres demandée (réglage ou config) : tant qu'elle l'est, un micro qui
+    /// refuse au lancement est réessayé.
+    hands_free_wanted: Mutex<bool>,
     /// `[gui] speak_typed_replies` : lire aussi les réponses aux demandes tapées.
     pub speak_typed_replies: bool,
 }
@@ -89,6 +94,7 @@ impl Voice {
             ptt: Mutex::new(None),
             held: Mutex::new(false),
             hands_free: Mutex::new(false),
+            hands_free_wanted: Mutex::new(false),
             speak_typed_replies,
         }
     }
@@ -162,8 +168,8 @@ pub fn start<R: Runtime>(app: &AppHandle<R>, config: Option<&str>) {
                 *locked(&voice.ptt) = Some(spawn_ptt_worker(app.clone(), Arc::clone(&engine)));
                 eprintln!("voix : prête");
                 set_status(&app, VoiceStatus::Ready);
-                if config.hands_free {
-                    set_hands_free(&app, true).await;
+                if config.hands_free && !set_hands_free(&app, true).await {
+                    retry_hands_free(app);
                 }
             }
             Err(error) => {
@@ -323,11 +329,37 @@ pub fn simulate<R: Runtime>(app: &AppHandle<R>, text: String) {
     );
 }
 
+/// Micro refusé au lancement (permission de macOS pas encore donnée, souvent après une
+/// nouvelle compilation) : réessaie en silence jusqu'à ce qu'il réponde, ou que l'écoute
+/// ne soit plus demandée.
+fn retry_hands_free<R: Runtime>(app: AppHandle<R>) {
+    async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(HANDS_FREE_RETRY).await;
+            let Some(voice) = app.try_state::<Voice>() else {
+                return;
+            };
+            if !*locked(&voice.hands_free_wanted) || *locked(&voice.hands_free) {
+                return;
+            }
+            let Some(engine) = voice.engine() else {
+                return;
+            };
+            if engine.set_hands_free(true).await.is_ok() && engine.hands_free().await {
+                *locked(&voice.hands_free) = true;
+                eprintln!("voix : écoute mains libres active (micro revenu)");
+                return;
+            }
+        }
+    });
+}
+
 /// Active ou coupe l'écoute mains libres ; rend l'état obtenu (coupée si le micro refuse).
 pub async fn set_hands_free<R: Runtime>(app: &AppHandle<R>, on: bool) -> bool {
     let Some(voice) = app.try_state::<Voice>() else {
         return false;
     };
+    *locked(&voice.hands_free_wanted) = on;
     let Some(engine) = voice.engine() else {
         return false;
     };
