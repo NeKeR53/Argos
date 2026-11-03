@@ -171,12 +171,14 @@ export default function App() {
               connection={state.connection}
               voice={voiceStatus}
               nodes={state.nodes}
+              agents={state.agents}
               channels={state.channels}
               profiles={state.profiles}
               updates={updates}
               connected={connected}
               voiceTrial={VOICE_TRIAL}
               onShortcuts={() => setEditingShortcuts(true)}
+              onSelectAgent={select}
               onOrb={() => setEditingOrb(true)}
               onClose={() => setSettingsOpen(false)}
             />

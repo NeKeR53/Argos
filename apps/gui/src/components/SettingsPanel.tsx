@@ -5,16 +5,18 @@
 
 import { useEffect, useState, type ReactNode } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { ChannelCapabilities, ChannelStatus, NodeStatus, ProfileInfo } from "../protocol";
+import type { AgentId, AgentStatus, ChannelCapabilities, ChannelStatus, NodeStatus, ProfileInfo } from "../protocol";
 import type { Connection } from "../state";
 import type { Updates } from "../updates";
 import { simulateVoice } from "../useVoiceView";
+import { NodeMap } from "./NodeMap";
 import { voiceReason, voiceStatusLabel, type VoiceInfo, type VoiceStatus } from "../voice";
 
 interface Props {
   connection: Connection;
   voice: VoiceStatus | null;
   nodes: NodeStatus[] | null;
+  agents: Record<AgentId, AgentStatus>;
   channels: ChannelStatus[] | null;
   profiles: ProfileInfo[] | null;
   updates: Updates;
@@ -22,6 +24,8 @@ interface Props {
   /** Essai de la voix sans micro : app Tauri de dev seulement. */
   voiceTrial: boolean;
   onShortcuts: () => void;
+  /** Ouvre un agent depuis la carte des nœuds. */
+  onSelectAgent: (agent: AgentId) => void;
   onOrb: () => void;
   onClose: () => void;
 }
@@ -111,26 +115,14 @@ export function SettingsPanel(props: Props) {
         title="Nœuds"
         hint={
           <>
-            Les machines où l'Assistant peut placer des Agents. Seul l'utilisateur en ajoute, dans <code>[nodes.&lt;nom&gt;]</code>.
+            Les machines où l'Assistant peut placer des Agents, et ceux qui y tournent. Seul l'utilisateur en ajoute, dans <code>[nodes.&lt;nom&gt;]</code>.
           </>
         }
       >
         {nodes === null ? (
           pending
-        ) : nodes.length === 0 ? (
-          <p className="settings-empty">Aucun autre nœud : tout tourne sur le hub.</p>
         ) : (
-          <ul className="settings-list">
-            {nodes.map((node) => (
-              <li key={node.name} className="settings-row">
-                <span className="node" data-connected={node.connected}>
-                  <span className="node-dot" aria-hidden />
-                  {node.name}
-                </span>
-                <span className="settings-detail">{node.connected ? "Joignable" : `Injoignable${node.error ? ` : ${node.error}` : ""}`}</span>
-              </li>
-            ))}
-          </ul>
+          <NodeMap agents={props.agents} nodes={nodes} onSelect={props.onSelectAgent} />
         )}
       </SettingsGroup>
 

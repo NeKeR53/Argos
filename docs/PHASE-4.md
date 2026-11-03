@@ -137,5 +137,5 @@ Hôte : Raspberry Pi (`aarch64`, Debian 13, glibc 2.41, 4 Go), joint par l'hôte
 - **Installation d'un nœud** (D33) : détection OS et architecture, envoi du binaire compilé pour la cible, enregistrement depuis la console. Faite une fois à la main sur le Pi (voir « Essai sur un vrai hôte »), sans outil pour l'instant. Les fichiers de service sont déjà générés : `argos-daemon service systemd node` (unité systemd utilisateur) ou `argos-daemon service launchd node` (agent launchd, vérifié par `plutil`), qui lancent ce binaire avec ce `ARGOS_HOME` ; les poser reste un geste humain.
 - **Conteneurs par nœud** (D36), politique réseau, plafonds.
 - **Synchronisation de la mémoire vers le Mac** (miroir Obsidian en lecture seule, D25).
-- **GUI** : afficher le nœud de chaque agent et l'état des nœuds (commande `nodes`).
+- **GUI** : fait pour la lecture. Réglages → Nœuds montre une carte : ce Mac (hub), puis chaque nœud relié par son tunnel (vert joignable, rouge pointillé sinon), avec l'Assistant et les Agents qui y tournent et le nombre de Workers sous chacun ; un clic ouvre l'agent. Reste : rafraîchir sans attendre les 15 s de relecture, et placer un agent sur un nœud depuis la console.
 - **Hub sur le VPS** : la GUI et la voix du Mac joignent alors l'API du hub par un tunnel SSH. Rien à coder côté daemon : l'API reste locale au VPS.
