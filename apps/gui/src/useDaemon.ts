@@ -1,7 +1,8 @@
 // Branche la connexion au daemon sur le réducteur de l'état de la console.
 
 import { useCallback, useEffect, useReducer, useRef } from "react";
-import { DaemonConnection, endpointFromEnvironment } from "./connection";
+import { endpointFromEnvironment } from "./connection";
+import { MeshConnection, meshNodesFromEnvironment } from "./mesh";
 import type { Command, Reply, ServerMessage } from "./protocol";
 import { initialState, reduce, type Action, type AppState } from "./state";
 
@@ -19,7 +20,7 @@ export interface Daemon {
  */
 export function useDaemon(onMessage?: (message: ServerMessage) => void): Daemon {
   const [state, dispatch] = useReducer(reduce, initialState);
-  const connection = useRef<DaemonConnection | null>(null);
+  const connection = useRef<MeshConnection | null>(null);
   const observer = useRef(onMessage);
   observer.current = onMessage;
 
@@ -36,7 +37,9 @@ export function useDaemon(onMessage?: (message: ServerMessage) => void): Daemon 
       });
       return;
     }
-    const live = new DaemonConnection(endpoint, {
+    // Le nœud local d'abord ; les autres nœuds du maillage (D48) s'y ajoutent dès que
+    // l'app les connaît.
+    const live = new MeshConnection(endpoint, [], {
       onMessage: (message) => {
         dispatch({ type: "server", message });
         observer.current?.(message);
@@ -46,7 +49,12 @@ export function useDaemon(onMessage?: (message: ServerMessage) => void): Daemon 
     });
     connection.current = live;
     live.start();
+    let stopped = false;
+    void meshNodesFromEnvironment().then((nodes) => {
+      if (!stopped) for (const node of nodes) live.join(node);
+    });
     return () => {
+      stopped = true;
       live.stop();
       connection.current = null;
     };

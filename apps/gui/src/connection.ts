@@ -56,10 +56,20 @@ export class DaemonConnection {
   private nextId = 1;
   private awaiting = new Map<number, { resolve: (reply: Reply) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 
+  /**
+   * `ids` : numéros de requête partagés entre plusieurs connexions (maillage, D48), pour
+   * qu'un même réducteur suive les requêtes de toutes.
+   */
   constructor(
     private readonly endpoint: Endpoint,
     private readonly handlers: ConnectionHandlers,
+    private readonly ids?: () => number,
   ) {}
+
+  /** La connexion est ouverte. */
+  get open(): boolean {
+    return this.socket?.readyState === WebSocket.OPEN;
+  }
 
   start() {
     this.handlers.onConnection({ status: "connecting" });
@@ -78,7 +88,15 @@ export class DaemonConnection {
   /** Envoie une commande ; rend son id, ou `null` si la connexion n'est pas ouverte. */
   send(command: Command): number | null {
     if (this.socket?.readyState !== WebSocket.OPEN) return null;
-    const id = this.nextId++;
+    return this.sendAs(this.allocate(), command);
+  }
+
+  private allocate(): number {
+    return this.ids ? this.ids() : this.nextId++;
+  }
+
+  private sendAs(id: number, command: Command): number | null {
+    if (this.socket?.readyState !== WebSocket.OPEN) return null;
     this.handlers.onRequest(id, command);
     this.socket.send(encodeRequest(id, command));
     return id;
@@ -87,7 +105,7 @@ export class DaemonConnection {
   /** Attend la réponse à une commande, sans rejouer une action après une déconnexion. */
   request(command: Command): Promise<Reply> {
     if (this.socket?.readyState !== WebSocket.OPEN) return Promise.reject(new Error("Daemon hors connexion."));
-    const id = this.nextId;
+    const id = this.allocate();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.awaiting.delete(id);
@@ -97,7 +115,7 @@ export class DaemonConnection {
       }, 35_000);
       this.awaiting.set(id, { resolve, reject, timer });
       try {
-        this.send(command);
+        this.sendAs(id, command);
       } catch {
         clearTimeout(timer);
         this.awaiting.delete(id);

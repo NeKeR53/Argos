@@ -1,4 +1,4 @@
-// Carte des machines (D32) : le hub, puis chaque nœud relié par son tunnel, avec les
+// Carte des machines (D48) : ce Mac, puis chaque nœud pair relié par son lien, avec les
 // Agents qui y tournent. Un Worker tourne sur le nœud de son Agent : il est compté sous
 // lui, pas affiché à part.
 
@@ -8,9 +8,9 @@ import { Avatar } from "./Avatar";
 
 /** Une machine de la carte et ce qui y tourne. */
 export interface Machine {
-  /** `null` pour le hub. */
+  /** `null` pour le nœud de cette app. */
   name: string | null;
-  /** Le hub est toujours joignable ; un nœud absent de la config ne l'est pas. */
+  /** Le nœud de l'app est toujours joignable ; un nœud absent de la config ne l'est pas. */
   connected: boolean;
   error: string | null;
   /** Déclaré dans `[nodes.<nom>]` ; faux pour un nœud qu'un agent cite encore. */
@@ -18,7 +18,7 @@ export interface Machine {
   agents: { agent: AgentStatus; workers: number }[];
 }
 
-/** Range l'Assistant et les Agents par machine : le hub d'abord, puis les nœuds par nom. */
+/** Range l'Assistant et les Agents par machine : ce nœud d'abord, puis les autres par nom. */
 export function machinesOf(agents: Record<AgentId, AgentStatus>, nodes: NodeStatus[]): Machine[] {
   const hub: Machine = { name: null, connected: true, error: null, declared: true, agents: [] };
   const byName = new Map<string, Machine>();
@@ -69,18 +69,18 @@ export function NodeMap({ agents, nodes, onSelect }: {
 
 function linkLabel(machine: Machine): string {
   if (!machine.declared) return "non déclaré";
-  if (machine.connected) return "tunnel SSH";
+  if (machine.connected) return "relié";
   return "injoignable";
 }
 
 function MachineCard({ machine, onSelect }: { machine: Machine; onSelect: (agent: AgentId) => void }) {
   const hub = machine.name === null;
   return (
-    <section className="machine" data-connected={machine.connected} data-hub={hub || undefined} aria-label={hub ? "Hub" : `Nœud ${machine.name}`}>
+    <section className="machine" data-connected={machine.connected} data-hub={hub || undefined} aria-label={hub ? "Ce nœud" : `Nœud ${machine.name}`}>
       <header className="machine-head">
         <span className="node-dot" aria-hidden />
         <span className="machine-name">{hub ? "Ce Mac" : machine.name}</span>
-        <span className="machine-role">{hub ? "hub" : "nœud"}</span>
+        <span className="machine-role">{hub ? "ici" : "nœud"}</span>
         <span className="machine-count">{agentCount(machine.agents.length)}</span>
       </header>
       {machine.error && <p className="machine-error">{machine.error}</p>}

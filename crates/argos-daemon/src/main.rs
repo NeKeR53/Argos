@@ -146,6 +146,7 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     // Jeton que les pairs présentent pour se relier à ce nœud (D48).
     let peer_token_path = home.join("node-token");
     let peer_token = load_or_create_token(&peer_token_path)?;
+    let api_tokens = vec![token.clone(), peer_token.clone()];
     let registry = Registry::open(&home.join("argos.db"))?;
     let report = registry.rehydrate()?;
     // Un seul Assistant dans le maillage : un nœud ne le crée que s'il en a le droit et
@@ -227,7 +228,7 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     argos_daemon::channels::start_configured(&supervisor);
 
     tokio::select! {
-        served = api::serve(listener, supervisor.clone(), token) => served?,
+        served = api::serve(listener, supervisor.clone(), api_tokens) => served?,
         served = mcp::serve(mcp_listener, supervisor.clone()) => served?,
         served = surface_web::serve(surfaces_listener, supervisor.clone(), devices, pairing) => served?,
         _ = stop_requested() => println!("arrêt demandé : parking des sessions en cours"),

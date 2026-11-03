@@ -403,7 +403,8 @@ export type DaemonEvent =
 
 /** Message du daemon (`ServerMessage`, tag `type`). */
 export type ServerMessage =
-  | { type: "hello"; protocol: number }
+  /** `node` : nom du nœud qui répond (D48), absent des daemons plus anciens. */
+  | { type: "hello"; protocol: number; node?: string }
   | { type: "reply"; id: number; reply: Reply }
   | { type: "event"; event: DaemonEvent };
 
@@ -432,6 +433,9 @@ export function parseServerMessage(frame: string): ServerMessage {
   switch (message.type) {
     case "hello":
       number(message.protocol, "hello.protocol");
+      if (message.node !== undefined && typeof message.node !== "string") {
+        throw new ProtocolError("hello.node : texte attendu");
+      }
       break;
     case "reply":
       number(message.id, "reply.id");

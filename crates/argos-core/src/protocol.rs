@@ -171,6 +171,9 @@ pub enum ServerMessage {
     /// Premier message de chaque connexion.
     Hello {
         protocol: u32,
+        /// Nom du nœud qui répond (D48) ; absent des daemons plus anciens.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node: Option<String>,
     },
     Reply {
         id: u64,

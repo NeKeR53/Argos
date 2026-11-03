@@ -20,22 +20,28 @@ use tokio_tungstenite::tungstenite::http::StatusCode;
 
 /// Accepte les connexions jusqu'à une erreur d'écoute. Chaque client fournit le jeton
 /// dans l'URL : `ws://127.0.0.1:7878/?token=…`.
+/// Sert l'API. `tokens` : le jeton de l'application, et celui des pairs (D48) qu'une
+/// application reliée à tout le maillage présente pour joindre ce nœud.
 pub async fn serve(
     listener: TcpListener,
     supervisor: Supervisor,
-    token: String,
+    tokens: Vec<String>,
 ) -> std::io::Result<()> {
     loop {
         let (stream, _) = listener.accept().await?;
-        tokio::spawn(connection(stream, supervisor.clone(), token.clone()));
+        tokio::spawn(connection(stream, supervisor.clone(), tokens.clone()));
     }
 }
 
-async fn connection(stream: TcpStream, supervisor: Supervisor, token: String) {
+async fn connection(stream: TcpStream, supervisor: Supervisor, tokens: Vec<String>) {
     // Signature imposée par tungstenite, erreur volumineuse comprise.
     #[allow(clippy::result_large_err)]
     let authorize = |handshake: &Handshake, response: Response| {
-        if token_in(handshake.uri().query()) == Some(token.as_str()) {
+        if let Some(given) = token_in(handshake.uri().query())
+            && tokens
+                .iter()
+                .any(|token| !token.is_empty() && token == given)
+        {
             return Ok(response);
         }
         let mut refusal = ErrorResponse::new(Some("jeton absent ou invalide".into()));
@@ -50,6 +56,7 @@ async fn connection(stream: TcpStream, supervisor: Supervisor, token: String) {
     let mut events = supervisor.subscribe();
     let _ = outbox.send(ServerMessage::Hello {
         protocol: PROTOCOL_VERSION,
+        node: Some(supervisor.nodes().name().to_string()),
     });
 
     // Un seul écrivain : réponses et événements partent dans l'ordre où ils arrivent.

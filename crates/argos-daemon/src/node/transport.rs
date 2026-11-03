@@ -28,6 +28,12 @@ pub struct NodeConfig {
     /// Jeton du nœud (son fichier `node-token`), en clair ou par un fichier.
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
+    /// Pour l'application (D48) : l'API du nœud vue depuis l'hôte SSH, ou son adresse
+    /// WebSocket directe. Le daemon ne s'en sert pas.
+    #[serde(default)]
+    pub api: Option<SocketAddr>,
+    #[serde(default)]
+    pub api_url: Option<String>,
 }
 
 fn default_remote() -> SocketAddr {

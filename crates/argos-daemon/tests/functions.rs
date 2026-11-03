@@ -110,7 +110,11 @@ fn assert_parked(w: &World) {
 async fn surface_client(w: &World) -> Client {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    tokio::spawn(api::serve(listener, w.supervisor.clone(), TOKEN.into()));
+    tokio::spawn(api::serve(
+        listener,
+        w.supervisor.clone(),
+        vec![TOKEN.into()],
+    ));
     let (mut client, _) =
         tokio_tungstenite::connect_async(format!("ws://{address}/?token={TOKEN}"))
             .await

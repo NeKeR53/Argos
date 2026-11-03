@@ -20,7 +20,11 @@ const TOKEN: &str = "jeton-de-test";
 async fn serve(world: &World) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
-    tokio::spawn(api::serve(listener, world.supervisor.clone(), TOKEN.into()));
+    tokio::spawn(api::serve(
+        listener,
+        world.supervisor.clone(),
+        vec![TOKEN.into()],
+    ));
     format!("ws://{address}")
 }
 
@@ -31,7 +35,8 @@ async fn connect(address: &str) -> Client {
     assert_eq!(
         receive(&mut client).await,
         ServerMessage::Hello {
-            protocol: PROTOCOL_VERSION
+            protocol: PROTOCOL_VERSION,
+            node: Some("mac".into()),
         }
     );
     client

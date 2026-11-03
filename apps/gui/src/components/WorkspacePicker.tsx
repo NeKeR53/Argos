@@ -41,7 +41,7 @@ export function WorkspacePicker({ agent, connected, request }: {
       </button>
       {open && (
         <form onSubmit={submit} className="workspace-form" aria-label="Rattacher un workspace">
-          <label htmlFor="workspace-path">Dossier sur {agent.node ?? "le hub"}</label>
+          <label htmlFor="workspace-path">Dossier sur {agent.node ?? "ce Mac"}</label>
           <input
             id="workspace-path"
             value={path}

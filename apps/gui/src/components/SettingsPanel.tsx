@@ -115,7 +115,7 @@ export function SettingsPanel(props: Props) {
         title="Nœuds"
         hint={
           <>
-            Les machines où l'Assistant peut placer des Agents, et ceux qui y tournent. Seul l'utilisateur en ajoute, dans <code>[nodes.&lt;nom&gt;]</code>.
+            Les machines où l'Assistant peut placer des Agents, et ceux qui y tournent. Chaque nœud détient ses agents et tourne seul ; l'utilisateur les relie dans <code>[peers.&lt;nom&gt;]</code>.
           </>
         }
       >

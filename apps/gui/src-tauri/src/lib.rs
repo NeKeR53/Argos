@@ -1,6 +1,7 @@
 mod daemon;
 mod dock;
 mod launcher;
+mod mesh;
 mod octopus;
 mod orb;
 mod shell;
@@ -47,6 +48,19 @@ fn hooks_base() -> Result<String, String> {
 #[tauri::command(async)]
 fn probe_daemon(url: String) -> daemon::Probe {
     daemon::probe(&url)
+}
+
+/// Les autres nœuds du maillage que l'app joint elle-même (D48), d'après `[peers]`.
+#[tauri::command]
+fn mesh_nodes() -> Result<Vec<String>, String> {
+    Ok(mesh::names(&daemon::argos_home()?))
+}
+
+/// L'URL de l'API d'un autre nœud ; ouvre son tunnel SSH au besoin. Hors du thread
+/// principal : le tunnel peut mettre quelques secondes à s'ouvrir.
+#[tauri::command(async)]
+fn mesh_endpoint(name: String, tunnels: tauri::State<'_, mesh::Tunnels>) -> Result<String, String> {
+    mesh::endpoint(&daemon::argos_home()?, &tunnels, &name)
 }
 
 /// Ouvre un document local dans l'application choisie par le système.
@@ -286,6 +300,8 @@ macro_rules! handler {
             open_document,
             core_info,
             daemon_url,
+            mesh_nodes,
+            mesh_endpoint,
             hooks_base,
             probe_daemon,
             toggle_console,
@@ -358,6 +374,7 @@ pub fn run() {
         .manage(voice::Voice::new(gui.speak_typed_replies))
         .manage(orb::OrbPlacement::default())
         .manage(dock::Dock::default())
+        .manage(mesh::Tunnels::default())
         .manage(Shortcuts {
             config: std::sync::Mutex::new(gui.clone()),
             errors: std::sync::Mutex::default(),
@@ -428,6 +445,7 @@ pub fn run() {
         // Toute sortie (quitter, signal de fin de session…) arrête la voix, et avec elle
         // `whisper-server`. Sans effet si `quit_app` l'a déjà fait.
         if let RunEvent::Exit = event {
+            app.state::<mesh::Tunnels>().shutdown();
             tauri::async_runtime::block_on(voice::shutdown(app));
         }
     });
