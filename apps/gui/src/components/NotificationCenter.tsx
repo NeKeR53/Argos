@@ -1,5 +1,5 @@
 // Avis et erreurs de la console en toasts discrets, qui ne s'empilent pas : un seul à la
-// fois, qui disparaît seul (les erreurs restent un peu plus longtemps). Une escalade n'est
+// fois, qui disparaît seul (les erreurs restent un peu plus longtemps) ou se ferme par sa croix. Une escalade n'est
 // pas un avis : elle se voit par la pastille de l'agent et dans son fil.
 
 import { useEffect, useRef } from "react";
@@ -33,5 +33,5 @@ export function NotificationCenter({ notices, agents, onOpenNotice, onDismissNot
       else toast(item.text, options);
     }
   }, [notices, agents, onOpenNotice, onDismissNotice]);
-  return <Toaster position="bottom-right" theme="system" visibleToasts={1} />;
+  return <Toaster position="bottom-right" theme="system" visibleToasts={1} closeButton toastOptions={{ closeButtonAriaLabel: "Fermer" }} />;
 }
