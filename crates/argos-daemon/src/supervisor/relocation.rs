@@ -169,6 +169,19 @@ impl Supervisor {
                     crate::channels::start_configured(self);
                     let ids: Vec<&str> = arrival.channels.iter().map(|c| c.id.as_str()).collect();
                     report.push_str(&format!(" ; canaux repris : {}", ids.join(", ")));
+                    // La voix (whisper, synthèse) est propre à chaque machine : elle ne voyage pas.
+                    let config =
+                        crate::config::Config::load_or_create(&self.home().join("config.toml"));
+                    let heard = config
+                        .ok()
+                        .and_then(|config| config.voice)
+                        .is_some_and(|voice| voice.whisper_model.is_some());
+                    if !heard {
+                        report.push_str(&format!(
+                            " ; vocaux non compris : pas de whisper_model dans [voice] sur {}",
+                            self.nodes().name()
+                        ));
+                    }
                 }
                 Err(error) => report.push_str(&format!(" ; canaux non repris : {error}")),
             }

@@ -43,10 +43,14 @@ impl Speech {
             .args(["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"])
             .arg(&wav))
         .await?;
+        let seconds = wav_seconds(&wav);
         let text = run(Command::new(&self.whisper_cli)
             .arg("-m")
             .arg(model)
             .args(["-l", &self.config.language, "-nt", "-np"])
+            // Fenêtre de l'encodeur à la mesure du vocal plutôt que 30 s : quatre fois plus
+            // rapide sur un vocal court, ce qui compte sur un Raspberry Pi.
+            .args(["--audio-ctx", &audio_ctx(seconds).to_string()])
             // Le nom propre est mieux reconnu s'il est annoncé.
             .args(["--prompt", "Argos"])
             .arg("-f")
@@ -120,6 +124,18 @@ impl Speech {
     }
 }
 
+/// Durée d'un WAV 16 kHz mono 16 bits, d'après sa taille (en-tête de 44 octets).
+fn wav_seconds(wav: &Path) -> f64 {
+    let bytes = std::fs::metadata(wav).map(|meta| meta.len()).unwrap_or(0);
+    bytes.saturating_sub(44) as f64 / 32_000.0
+}
+
+/// Contexte audio de whisper pour `seconds` de son : 1500 couvrent 30 s, avec une marge
+/// d'une seconde et demie ; au moins 128, au plus 1500.
+fn audio_ctx(seconds: f64) -> u32 {
+    ((seconds * 50.0).ceil() as u32 + 75).clamp(128, 1500)
+}
+
 /// Le texte tel qu'il se dit : sans la mise en forme markdown.
 pub fn spoken(text: &str) -> String {
     text.lines()
@@ -184,6 +200,14 @@ async fn finish(child: tokio::process::Child, program: &Path) -> Result<String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_encoder_window_fits_the_voice_message() {
+        assert_eq!(audio_ctx(0.0), 128);
+        assert_eq!(audio_ctx(4.0), 275);
+        assert_eq!(audio_ctx(29.0), 1500);
+        assert_eq!(audio_ctx(120.0), 1500);
+    }
 
     #[test]
     fn markdown_is_not_read_aloud() {
