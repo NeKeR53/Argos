@@ -4,6 +4,13 @@ Objectif : plus de hub. Chaque nœud fait tourner le même daemon complet et pos
 
 Décisions de l'utilisateur (2026-11-03) : un seul Assistant, déplaçable ; l'application se connecte à tous les nœuds ; liens par tunnels SSH maillés.
 
+## État (2026-11-03)
+
+- **T1 à T4 faits**, testés sur nœuds simulés (`crates/argos-daemon/tests/nodes.rs` : annuaire et Assistant unique, ordres et rapports à travers les nœuds avec file d'attente pendant une coupure, déplacement complet d'un Agent aller-retour, Assistant déplacé avec son canal Telegram, passation d'un ancien hub, nom refusé, tunnel SSH, synchro D44 entre pairs) et côté app (`apps/gui/src/mesh.test.ts`), puis de bout en bout avec deux daemons et l'app dans un navigateur.
+- **T5** : migration de l'installation du Mac et de hermes, voir plus bas.
+- **T6** : archive `Argos-Node-Linux-arm64.tar.gz` (daemon seul) dans la release, `install.sh --node <nom>`, `argos-daemon update` sur Linux arm64.
+- **Limites connues** : une image jointe ne part pas vers un agent d'un autre nœud par le daemon (l'app l'envoie directement au bon nœud) ; l'arrêt d'urgence de l'app part à chaque nœud joignable, celui d'un nœud seul n'arrête que ses agents ; `function_list` ne montre que les fonctions des agents du nœud de l'appelant.
+
 ## Point de départ (phase 4)
 
 - Le hub (le Mac) tient tout l'état de contrôle : registre, boards, déclencheurs, fonctions, surfaces, escalades, plan de contrôle. Un nœud ne fait qu'exécuter des sessions et garder des mémoires, et parke ses sessions quand le hub disparaît.

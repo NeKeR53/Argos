@@ -16,6 +16,8 @@
 #   --no-service       ne pas installer le daemon en service
 #   --no-launch        ne pas ouvrir l'app à la fin
 #   --yes              aucune question : réponses par défaut
+#   --node NOM         installer un nœud pair sans écran (D48) : le daemon seul, en service,
+#                      sous ce nom ; l'Assistant vient d'un autre nœud
 #
 # Variables : ARGOS_HOME (données, défaut ~/.argos) ; pour les essais,
 # ARGOS_RELEASES_URL (API des releases), ARGOS_INSTALL_APP_DIR et ARGOS_INSTALL_BIN_DIR
@@ -24,11 +26,11 @@ set -euo pipefail
 
 REPO="NeKeR53/Argos"
 RELEASES_URL="${ARGOS_RELEASES_URL:-https://api.github.com/repos/$REPO/releases?per_page=20}"
-LABEL="${ARGOS_SERVICE_LABEL:-argos-hub}"
+LABEL="${ARGOS_SERVICE_LABEL:-}"
 ARGOS_HOME="${ARGOS_HOME:-$HOME/.argos}"
 export ARGOS_HOME
 
-version="" archive="" sums="" use_ai=1 setup=1 service=1 launch=1 assume_yes=0
+version="" archive="" sums="" use_ai=1 setup=1 service=1 launch=1 assume_yes=0 node_name=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --version) version="${2:?--version attend une version}"; shift 2 ;;
@@ -39,10 +41,15 @@ while [[ $# -gt 0 ]]; do
     --no-service) service=0; shift ;;
     --no-launch) launch=0; shift ;;
     --yes|-y) assume_yes=1; shift ;;
+    --node) node_name="${2:?--node attend un nom}"; shift 2 ;;
     -h|--help) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Option inconnue : $1" >&2; exit 2 ;;
   esac
 done
+
+# Un nœud sans écran n'a ni app, ni configuration de l'Assistant (D48).
+if [[ -n $node_name ]]; then setup=0 launch=0; fi
+LABEL="${LABEL:-$([[ -n $node_name ]] && echo argos-node || echo argos-hub)}"
 
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 fail() { printf 'Erreur : %s\n' "$*" >&2; exit 1; }
@@ -68,7 +75,12 @@ case "$os/$arch" in
   Darwin/arm64) asset="Argos-macOS-arm64.zip" sums_name="SHA256SUMS-macos-arm64.txt" ;;
   Darwin/x86_64) asset="Argos-macOS-x86_64.zip" sums_name="SHA256SUMS-macos-x86_64.txt" ;;
   Linux/x86_64|Linux/amd64) asset="Argos-Linux-x86_64.tar.gz" sums_name="SHA256SUMS-linux-x86_64.txt" ;;
-  *) fail "pas d'archive Argos pour $os $arch (macOS arm64/x86_64, Linux x86_64)." ;;
+  # Raspberry Pi et serveurs arm64 : le daemon seul, en nœud.
+  Linux/aarch64|Linux/arm64)
+    asset="Argos-Node-Linux-arm64.tar.gz" sums_name="SHA256SUMS-linux-arm64.txt"
+    [[ -n $node_name ]] || fail "sur Linux arm64, Argos s'installe en nœud : relancer avec --node <nom>."
+    ;;
+  *) fail "pas d'archive Argos pour $os $arch (macOS arm64/x86_64, Linux x86_64 et arm64)." ;;
 esac
 # Une app Intel sur un Mac Apple Silicon tournerait sous Rosetta : on prend l'archive native.
 if [[ $os == Darwin && $arch == x86_64 ]] && [[ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" == 1 ]]; then
@@ -129,19 +141,28 @@ if [[ $os == Darwin ]]; then
   else app_dir="$HOME/Applications"; fi
   bin_dir="${ARGOS_INSTALL_BIN_DIR:-$HOME/Library/Application Support/Argos/bin}"
   app="$app_dir/Argos.app"
-  mkdir -p "$app_dir" "$bin_dir"
+  mkdir -p "$bin_dir"
   # Archive non notariée : sans ça, Gatekeeper refuse d'ouvrir l'app.
   xattr -dr com.apple.quarantine "$root" 2>/dev/null || true
-  rm -rf "$app_dir/.Argos.app.new"
-  ditto "$root/Argos.app" "$app_dir/.Argos.app.new"
-  rm -rf "$app"
-  mv "$app_dir/.Argos.app.new" "$app"
+  if [[ -z $node_name ]]; then
+    mkdir -p "$app_dir"
+    rm -rf "$app_dir/.Argos.app.new"
+    ditto "$root/Argos.app" "$app_dir/.Argos.app.new"
+    rm -rf "$app"
+    mv "$app_dir/.Argos.app.new" "$app"
+  else
+    app=""
+  fi
   [[ $service -eq 1 ]] && service_kind="launchd"
 else
   bin_dir="${ARGOS_INSTALL_BIN_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/argos}"
   app="$bin_dir/Argos.AppImage"
   mkdir -p "$bin_dir"
-  install -m 755 "$root/Argos.AppImage" "$app.new" && mv "$app.new" "$app"
+  if [[ -n $node_name ]]; then
+    app=""
+  else
+    install -m 755 "$root/Argos.AppImage" "$app.new" && mv "$app.new" "$app"
+  fi
   for file in lancer-argos.sh LISEZ-MOI.txt; do
     [[ -f $root/$file ]] && install -m "$([[ $file == *.sh ]] && echo 755 || echo 644)" "$root/$file" "$bin_dir/$file"
   done
@@ -154,14 +175,14 @@ install -m 755 "$root/argos-daemon" "$daemon.new"
 mv "$daemon.new" "$daemon"
 
 # Où sont l'app et le service : lu par `argos-daemon update` pour les mises à jour.
-cat >"$bin_dir/install.toml" <<EOF
-# Écrit par install.sh : lu par « argos-daemon update » pour remplacer l'app et relancer le service.
-app = "$app"
-service = "$service_kind"
-label = "$LABEL"
-EOF
+{
+  echo "# Écrit par install.sh : lu par « argos-daemon update » pour remplacer l'app et relancer le service."
+  [[ -n $app ]] && echo "app = \"$app\""
+  echo "service = \"$service_kind\""
+  echo "label = \"$LABEL\""
+} >"$bin_dir/install.toml"
 
-if [[ $os == Linux ]]; then
+if [[ $os == Linux && -z $node_name ]]; then
   mkdir -p "$HOME/.local/bin" "${XDG_DATA_HOME:-$HOME/.local/share}/applications"
   ln -sf "$daemon" "$HOME/.local/bin/argos-daemon"
   cat >"${XDG_DATA_HOME:-$HOME/.local/share}/applications/argos.desktop" <<EOF
@@ -180,6 +201,11 @@ fi
 
 # Configuration créée, ou migrée vers le format de cette version.
 "$daemon" config init || fail "configuration illisible : $ARGOS_HOME/config.toml"
+if [[ -n $node_name ]]; then
+  [[ $os == Linux ]] && { mkdir -p "$HOME/.local/bin"; ln -sf "$daemon" "$HOME/.local/bin/argos-daemon"; }
+  "$daemon" config set node.name "\"$node_name\"" >/dev/null
+  "$daemon" config set node.assistant false >/dev/null
+fi
 
 # --- Service ------------------------------------------------------------------------------
 if [[ $service_kind == launchd ]]; then
@@ -201,7 +227,21 @@ else
   say "Daemon sans service : l'app le démarre (lanceur) ; « argos-daemon hub » le lance à la main."
 fi
 
-say "Argos est installé : app $app, daemon $daemon, données $ARGOS_HOME."
+if [[ -n $node_name ]]; then
+  say "Nœud « $node_name » installé : daemon $daemon, données $ARGOS_HOME."
+  for _ in $(seq 1 40); do [[ -s $ARGOS_HOME/node-token ]] && break; sleep 0.25; done
+  host="$(hostname -s 2>/dev/null || hostname)"
+  echo
+  echo "Pour le relier, ajouter sur un autre nœud (dans son config.toml), puis le relancer :"
+  echo "  [peers.$node_name]"
+  echo "  ssh = \"$host\"                 # hôte de ~/.ssh/config qui joint cette machine"
+  echo "  token_file = \"~/.argos/nodes/$node_name.token\""
+  echo "et y copier le jeton de ce nœud : $ARGOS_HOME/node-token"
+  [[ $os == Linux && $service_kind == systemd ]] && \
+    echo "Pour qu'il tourne sans session ouverte : sudo loginctl enable-linger $USER"
+else
+  say "Argos est installé : app $app, daemon $daemon, données $ARGOS_HOME."
+fi
 
 # --- Configuration ------------------------------------------------------------------------
 configure_by_hand() {
@@ -257,7 +297,7 @@ if [[ $setup -eq 1 ]]; then
   esac
 fi
 
-if [[ $os == Darwin ]]; then
+if [[ $os == Darwin && -z $node_name ]]; then
   echo
   echo "Micro : au premier appui sur Alt+Espace, macOS demande l'accès au micro pour Argos."
   echo "Les versions ne sont pas signées par Apple : après une mise à jour, macOS peut oublier"

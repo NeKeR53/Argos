@@ -127,8 +127,35 @@ jobs:
           cd target/distribution/linux-x86_64
           sha256sum -c SHA256SUMS-linux-x86_64.txt
           gh release upload "$GITHUB_REF_NAME" Argos-Linux-x86_64.tar.gz SHA256SUMS-linux-x86_64.txt --clobber
+  linux-arm64:
+    # Un nœud sans écran (Raspberry Pi, D48) : le daemon seul.
+    permissions:
+      contents: write
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release --locked -p argos-daemon
+      - name: Package the node archive
+        run: |
+          set -euo pipefail
+          out=target/distribution/linux-arm64
+          mkdir -p "$out/Argos"
+          cp target/release/argos-daemon "$out/Argos/"
+          printf '%s\n' "Argos, nœud Linux arm64 (daemon seul). Installer : install.sh --node <nom>." > "$out/Argos/LISEZ-MOI.txt"
+          tar -C "$out" -czf "$out/Argos-Node-Linux-arm64.tar.gz" Argos
+          (cd "$out" && sha256sum Argos-Node-Linux-arm64.tar.gz > SHA256SUMS-linux-arm64.txt)
+      - name: Upload node archive to draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          cd target/distribution/linux-arm64
+          sha256sum -c SHA256SUMS-linux-arm64.txt
+          gh release upload "$GITHUB_REF_NAME" Argos-Node-Linux-arm64.tar.gz SHA256SUMS-linux-arm64.txt --clobber
   release:
-    needs: [macos, windows, linux]
+    needs: [macos, windows, linux, linux-arm64]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -144,7 +171,7 @@ jobs:
           python3 - <<'PY'
           import json
           with open('/tmp/argos-release.json') as f: release = json.load(f)
-          expected = {'Argos-macOS-arm64.zip', 'Argos-macOS-x86_64.zip', 'Argos-Windows-x64.zip', 'Argos-Linux-x86_64.tar.gz', 'SHA256SUMS-macos-arm64.txt', 'SHA256SUMS-macos-x86_64.txt', 'SHA256SUMS-windows.txt', 'SHA256SUMS-linux-x86_64.txt'}
+          expected = {'Argos-macOS-arm64.zip', 'Argos-macOS-x86_64.zip', 'Argos-Windows-x64.zip', 'Argos-Linux-x86_64.tar.gz', 'SHA256SUMS-macos-arm64.txt', 'SHA256SUMS-macos-x86_64.txt', 'SHA256SUMS-windows.txt', 'SHA256SUMS-linux-x86_64.txt', 'Argos-Node-Linux-arm64.tar.gz', 'SHA256SUMS-linux-arm64.txt'}
           uploaded = {a['name'] for a in release['assets'] if a['state'] == 'uploaded' and a['size'] > 0}
           if not release['isDraft'] or expected - uploaded:
               raise SystemExit(f'Brouillon incomplet : {expected - uploaded}')

@@ -67,6 +67,13 @@ pub fn platform_for(os: &str, arch: &str) -> Option<Platform> {
             "Argos.AppImage",
             "argos-daemon",
         ),
+        // Un nœud sans écran (Raspberry Pi, D48) : le daemon seul, sans app.
+        ("linux", "aarch64") => (
+            "Argos-Node-Linux-arm64.tar.gz",
+            "SHA256SUMS-linux-arm64.txt",
+            "Argos.AppImage",
+            "argos-daemon",
+        ),
         ("windows", "x86_64") => (
             "Argos-Windows-x64.zip",
             "SHA256SUMS-windows.txt",
