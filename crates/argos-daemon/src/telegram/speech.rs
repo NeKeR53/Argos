@@ -101,6 +101,31 @@ impl Speech {
                 drop(stdin);
                 finish(child, python).await?;
             }
+            // Piper : bien plus léger que Kokoro, fait pour les petites machines (Raspberry Pi).
+            "piper" => {
+                let (Some(piper), Some(model)) = (&self.config.piper, &self.config.piper_model)
+                else {
+                    return Err("Piper demande piper et piper_model dans [voice]".into());
+                };
+                let mut child = Command::new(piper)
+                    .arg("--model")
+                    .arg(model)
+                    .arg("--output_file")
+                    .arg(&raw)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .map_err(|error| format!("{} : {error}", piper.display()))?;
+                let mut stdin = child.stdin.take().ok_or("entrée Piper indisponible")?;
+                stdin
+                    .write_all(text.as_bytes())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                drop(stdin);
+                finish(child, piper).await?;
+            }
             _ => {
                 std::fs::write(&script, &text).map_err(|error| error.to_string())?;
                 // `say` choisit le format d'après l'extension.

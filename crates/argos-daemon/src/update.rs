@@ -868,6 +868,7 @@ mod tests {
             ("macos", "aarch64"),
             ("macos", "x86_64"),
             ("linux", "x86_64"),
+            ("linux", "aarch64"),
             ("windows", "x86_64"),
         ]
         .iter()
@@ -878,7 +879,7 @@ mod tests {
         for name in names {
             assert!(workflow.contains(name), "{name} absent du workflow");
         }
-        assert_eq!(platform_for("linux", "aarch64"), None);
+        assert_eq!(platform_for("linux", "riscv64"), None);
     }
 
     #[test]

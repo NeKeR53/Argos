@@ -86,6 +86,11 @@ pub struct SpeechConfig {
     pub kokoro_voices: Option<PathBuf>,
     #[serde(default = "default_kokoro_voice")]
     pub kokoro_voice: String,
+    /// Piper (`tts_backend = "piper"`) : son programme et le modèle de voix (`.onnx`).
+    #[serde(default)]
+    pub piper: Option<PathBuf>,
+    #[serde(default)]
+    pub piper_model: Option<PathBuf>,
 }
 
 impl Default for SpeechConfig {
@@ -99,6 +104,8 @@ impl Default for SpeechConfig {
             kokoro_model: None,
             kokoro_voices: None,
             kokoro_voice: default_kokoro_voice(),
+            piper: None,
+            piper_model: None,
         }
     }
 }
@@ -111,6 +118,8 @@ impl SpeechConfig {
             &mut self.kokoro_python,
             &mut self.kokoro_model,
             &mut self.kokoro_voices,
+            &mut self.piper,
+            &mut self.piper_model,
         ] {
             *path = path.take().map(|p| expand_home(&p));
         }

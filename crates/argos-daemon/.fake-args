@@ -1,10 +1,2 @@
--p
---input-CODEX_Hstream-json
---output-format
-stream-json
---verbose
---setting-sources
-project
---strict-mcp-config
---settings
-{"autoMemoryEnabled":false}
+app-server
+CODEX_HOME=
