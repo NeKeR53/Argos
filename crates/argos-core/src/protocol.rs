@@ -140,6 +140,14 @@ pub enum Command {
         agent: AgentId,
         workdir: String,
     },
+    /// Déplace un agent détenu par ce nœud (l'Assistant compris) vers un autre (D47, D48).
+    /// `workdir` : dossier de projet à l'arrivée ; sans lui, le dossier dédié est copié.
+    MoveAgent {
+        agent: AgentId,
+        node: String,
+        #[serde(default)]
+        workdir: Option<String>,
+    },
     /// Les synchros de workspace et leur état (D44).
     Syncs,
     /// Ouvre une synchro entre le workspace d'un Agent placé sur un nœud et un dossier du

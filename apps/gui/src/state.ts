@@ -870,6 +870,8 @@ export function describeCommand(command: Command, agents: Record<AgentId, AgentS
       return `Changement de modèle (${command.model})`;
     case "set_workspace":
       return `Rattachement du workspace de ${target(command.agent)}`;
+    case "move_agent":
+      return `Déplacement de ${target(command.agent)} vers ${command.node}`;
     case "syncs":
       return "Lecture des synchros";
     case "open_sync":

@@ -244,6 +244,8 @@ export type Command =
   | { command: "set_workspace"; agent: AgentId; workdir: string }
   /** Override de l'utilisateur : nouveau moteur et modèle d'un agent (session parkée). */
   | { command: "set_model"; agent: AgentId; engine: EngineKind; model: string }
+  /** Déplace un agent détenu par ce nœud, l'Assistant compris, vers un autre (D47, D48). */
+  | { command: "move_agent"; agent: AgentId; node: string; workdir?: string }
   /** Les synchros de workspace et leur état (D44). */
   | { command: "syncs" }
   /** Copie locale, sur le hub, du workspace d'un Agent placé sur un nœud. */

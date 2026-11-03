@@ -297,6 +297,18 @@ async fn run(supervisor: &Supervisor, command: Command) -> Result<Reply, String>
                 agent: supervisor.inspect(&agent).map_err(said)?,
             }
         }
+        Command::MoveAgent {
+            agent,
+            node,
+            workdir,
+        } => {
+            let moved = supervisor
+                .move_agent(&agent, &node, workdir.map(Into::into))
+                .await?;
+            Reply::Agent {
+                agent: supervisor.inspect(&moved.record.id).map_err(said)?,
+            }
+        }
         Command::SetModel {
             agent,
             engine,

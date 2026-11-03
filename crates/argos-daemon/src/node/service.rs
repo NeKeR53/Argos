@@ -43,6 +43,9 @@ pub fn systemd_unit(binary: &Path, home: &Path, path: &str, mode: &str) -> Strin
          Environment=PATH={path}\n\
          Restart=on-failure\n\
          RestartSec=5\n\
+         # Sans journal systemd (Raspberry Pi OS allégé), la sortie se perdrait.\n\
+         StandardOutput=append:{home}/daemon.log\n\
+         StandardError=append:{home}/daemon-error.log\n\
          \n\
          [Install]\n\
          WantedBy=default.target\n",
