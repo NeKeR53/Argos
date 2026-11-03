@@ -141,6 +141,10 @@ pub enum SyncRequest {
         /// Chemins de l'état commun : sortis du parcours mais présents, ils sont devenus
         /// ignorés, pas supprimés.
         known: Vec<String>,
+        /// Ouverture pour une copie (déplacement d'Agent, D47) : arbre complet, `.git` et
+        /// fichiers ignorés compris, dossier créé s'il manque, sans watcher.
+        #[serde(default)]
+        copy: bool,
     },
     Read {
         chunks: Vec<ReadChunk>,

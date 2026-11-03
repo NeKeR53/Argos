@@ -331,7 +331,8 @@ impl Runner {
     }
 
     async fn memory(self, call: u64, agent: AgentId, op: MemoryOp, outbox: Outbox) {
-        let writes = op.writes();
+        // Une mémoire mise de côté n'a plus de miroir à tenir : une copie vide l'effacerait.
+        let writes = op.writes() && op != MemoryOp::Archive;
         let memory = self.inner.memory.clone();
         let target = agent.clone();
         // git est lancé à chaque écriture : hors des threads de l'exécuteur.
@@ -376,10 +377,16 @@ impl Runner {
                 workdir,
                 excludes,
                 known,
+                copy: false,
             } => {
                 self.open_sync(&id, workdir, excludes, known, &syncs, &outbox)
                     .await
             }
+            SyncRequest::Open {
+                workdir,
+                copy: true,
+                ..
+            } => self.open_copy(&id, workdir, &syncs).await,
             SyncRequest::Read { chunks } => {
                 with_tree(&syncs, &id, move |tree| {
                     Ok(SyncResponse::Data {
@@ -458,8 +465,34 @@ impl Runner {
             id.to_string(),
             NodeSync {
                 tree,
-                _watcher: watcher,
-                task,
+                _watcher: Some(watcher),
+                task: Some(task),
+            },
+        );
+        Ok(SyncResponse::Index { entries: index })
+    }
+
+    /// Ouvre un arbre complet pour une copie (D47), créé s'il manque, sans watcher.
+    async fn open_copy(
+        &self,
+        id: &str,
+        workdir: PathBuf,
+        syncs: &NodeSyncs,
+    ) -> Result<SyncResponse, String> {
+        let root = self.inner.settings.home.join(&workdir);
+        std::fs::create_dir_all(&root).map_err(|error| format!("{} : {error}", root.display()))?;
+        let tree = Arc::new(Mutex::new(Tree::whole(root)));
+        let scanning = Arc::clone(&tree);
+        let index = tokio::task::spawn_blocking(move || locked(&scanning).scan())
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        locked(syncs).insert(
+            id.to_string(),
+            NodeSync {
+                tree,
+                _watcher: None,
+                task: None,
             },
         );
         Ok(SyncResponse::Index { entries: index })
@@ -507,13 +540,16 @@ type NodeSyncs = Arc<Mutex<HashMap<String, NodeSync>>>;
 /// Une synchro ouverte par le hub sur cette connexion.
 struct NodeSync {
     tree: Arc<Mutex<Tree>>,
-    _watcher: notify::RecommendedWatcher,
-    task: tokio::task::JoinHandle<()>,
+    /// Absents pour une copie (D47) : rien à surveiller.
+    _watcher: Option<notify::RecommendedWatcher>,
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Drop for NodeSync {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = &self.task {
+            task.abort();
+        }
     }
 }
 

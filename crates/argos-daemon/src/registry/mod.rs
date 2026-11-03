@@ -417,6 +417,16 @@ impl Registry {
         Ok(())
     }
 
+    /// Place un Agent sur un autre nœud (`None` : le hub) avec son nouveau workspace (D47).
+    /// La session du moteur reste sur l'ancienne machine : son identifiant est oublié.
+    pub fn relocate(&self, id: &AgentId, node: Option<&str>, workdir: &Path) -> Result<()> {
+        self.db.execute(
+            "UPDATE agents SET node = ?2, workdir = ?3, session_id = NULL WHERE id = ?1",
+            params![id.as_str(), node, workdir.to_string_lossy()],
+        )?;
+        Ok(())
+    }
+
     /// Enfants non retirés, du plus ancien au plus récent.
     pub fn children(&self, id: &AgentId) -> Result<Vec<AgentRecord>> {
         self.query(

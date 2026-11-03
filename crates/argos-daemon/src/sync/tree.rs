@@ -27,6 +27,8 @@ pub struct Tree {
     /// Chemins connus de la synchro. Un chemin connu qui sort du parcours alors qu'il
     /// existe encore (devenu ignoré) n'est pas une suppression.
     known: BTreeSet<String>,
+    /// Arbre complet, pour une copie : `.git` et fichiers ignorés compris.
+    whole: bool,
 }
 
 impl Tree {
@@ -40,6 +42,15 @@ impl Tree {
             excludes,
             cache: Index::new(),
             known: known.into_iter().collect(),
+            whole: false,
+        }
+    }
+
+    /// Arbre complet d'un dossier à copier (D47) : `.git` et fichiers ignorés compris.
+    pub fn whole(root: PathBuf) -> Self {
+        Self {
+            whole: true,
+            ..Self::new(root, vec![], [])
         }
     }
 
@@ -70,13 +81,16 @@ impl Tree {
             .parents(false)
             .git_global(false)
             .git_exclude(false)
-            .git_ignore(true)
+            .git_ignore(!self.whole)
             .require_git(false)
             .follow_links(false)
             .overrides(overrides)
-            .filter_entry(|entry| {
-                let name = entry.file_name().to_string_lossy();
-                name != ".git" && !name.starts_with(TEMP_PREFIX)
+            .filter_entry({
+                let whole = self.whole;
+                move |entry| {
+                    let name = entry.file_name().to_string_lossy();
+                    (whole || name != ".git") && !name.starts_with(TEMP_PREFIX)
+                }
             })
             .build();
         let mut index = Index::new();

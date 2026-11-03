@@ -5,6 +5,8 @@
 //! charge qu'un digest (D24).
 
 use argos_core::AgentId;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -56,6 +58,22 @@ pub enum MemoryOp {
     Search {
         query: String,
     },
+    /// Paquet complet de la mémoire, pour un déplacement d'agent (D47).
+    Export,
+    /// Installe un paquet exporté ; une mémoire déjà là est d'abord mise de côté.
+    Import {
+        package: MemoryPackage,
+    },
+    /// Met la mémoire de côté (`memory-moved/`) : l'agent vit désormais ailleurs.
+    Archive,
+}
+
+/// Une mémoire qui voyage : son historique git (`git bundle`, base64) quand il existe,
+/// et toujours ses fichiers, pour la recréer sans git.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct MemoryPackage {
+    pub bundle: Option<String>,
+    pub files: Vec<(String, String)>,
 }
 
 impl MemoryOp {
@@ -67,6 +85,9 @@ impl MemoryOp {
                 | MemoryOp::WriteState { .. }
                 | MemoryOp::Log { .. }
                 | MemoryOp::Write { .. }
+                | MemoryOp::Export
+                | MemoryOp::Import { .. }
+                | MemoryOp::Archive
         )
     }
 }
@@ -78,6 +99,7 @@ pub enum MemoryOutput {
     Text(String),
     Files(Vec<String>),
     Found(Vec<Found>),
+    Package(MemoryPackage),
 }
 
 impl Memory {
@@ -240,6 +262,15 @@ impl Memory {
             MemoryOp::Search { query } => {
                 MemoryOutput::Found(self.search(agent, &query).map_err(said)?)
             }
+            MemoryOp::Export => MemoryOutput::Package(self.export(agent).map_err(said)?),
+            MemoryOp::Import { package } => {
+                self.import(agent, &package).map_err(said)?;
+                MemoryOutput::Done
+            }
+            MemoryOp::Archive => {
+                self.archive(agent).map_err(said)?;
+                MemoryOutput::Done
+            }
         })
     }
 
@@ -288,6 +319,99 @@ impl Memory {
             }
         }
         Ok(())
+    }
+
+    /// Paquet de la mémoire d'un agent, après un dernier commit de ce qui traînait.
+    pub fn export(&self, agent: &AgentId) -> io::Result<MemoryPackage> {
+        self.ensure(agent)?;
+        let dir = self.dir(agent);
+        commit(&dir, "avant déplacement");
+        let bundle = if dir.join(".git").is_dir() {
+            let path = dir.join(".git").join("argos-move.bundle");
+            let made = Command::new("git")
+                .arg("-C")
+                .arg(&dir)
+                .args(["bundle", "create", "-q"])
+                .arg(&path)
+                .arg("--all")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            let data = made.then(|| fs::read(&path).ok()).flatten();
+            let _ = fs::remove_file(&path);
+            data.map(|data| BASE64.encode(data))
+        } else {
+            None
+        };
+        Ok(MemoryPackage {
+            bundle,
+            files: self.snapshot(agent)?,
+        })
+    }
+
+    /// Installe un paquet : clone de son historique, ou ses fichiers dans un dépôt neuf
+    /// si git manque ici ou si le paquet n'en a pas.
+    pub fn import(&self, agent: &AgentId, package: &MemoryPackage) -> io::Result<()> {
+        let dir = self.dir(agent);
+        if dir.exists() {
+            self.archive(agent)?;
+        }
+        fs::create_dir_all(&self.root)?;
+        if let Some(bundle) = &package.bundle
+            && let Ok(data) = BASE64.decode(bundle)
+        {
+            let path = self.root.join(format!(".{agent}.bundle"));
+            fs::write(&path, data)?;
+            let cloned = Command::new("git")
+                .args(["clone", "-q"])
+                .arg(&path)
+                .arg(&dir)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|status| status.success());
+            let _ = fs::remove_file(&path);
+            if cloned {
+                // Le paquet n'est pas une origine à suivre : la mémoire vit ici désormais.
+                git(&dir, &["remote", "remove", "origin"]);
+                return Ok(());
+            }
+            let _ = fs::remove_dir_all(&dir);
+        }
+        fs::create_dir_all(dir.join("notes"))?;
+        self.mirror(agent, &package.files)?;
+        git(&dir, &["init", "-q"]);
+        commit(&dir, "mémoire arrivée sans historique");
+        Ok(())
+    }
+
+    /// Met la mémoire de côté, à côté des mémoires actives : `memory-moved/<id>-<date>`.
+    /// Rien n'est effacé ; elle ne compte plus parmi les mémoires de ce dossier.
+    pub fn archive(&self, agent: &AgentId) -> io::Result<()> {
+        let dir = self.dir(agent);
+        if !dir.exists() {
+            return Ok(());
+        }
+        let moved = self
+            .root
+            .parent()
+            .unwrap_or(&self.root)
+            .join("memory-moved");
+        fs::create_dir_all(&moved)?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs())
+            .unwrap_or(0);
+        let mut place = moved.join(format!("{agent}-{stamp}"));
+        let mut n = 2;
+        while place.exists() {
+            place = moved.join(format!("{agent}-{stamp}-{n}"));
+            n += 1;
+        }
+        fs::rename(&dir, place)
     }
 
     /// Lignes qui contiennent `query` (sans tenir compte de la casse).
@@ -562,6 +686,70 @@ mod tests {
             }
             .writes()
         );
+    }
+
+    #[test]
+    fn a_memory_moves_with_its_history_and_the_old_copy_is_set_aside() {
+        let home = tempfile::tempdir().unwrap();
+        let from = Memory::new(home.path().join("depart/memory"));
+        let to = Memory::new(home.path().join("arrivee/memory"));
+        let agent = AgentId::new("a1");
+        from.ensure(&agent).unwrap();
+        from.write(&agent, "notes/maison.md", "Thermostat à 19 °C.", false)
+            .unwrap();
+        let package = match from.apply(&agent, MemoryOp::Export).unwrap() {
+            MemoryOutput::Package(package) => package,
+            other => panic!("paquet attendu : {other:?}"),
+        };
+        assert!(package.bundle.is_some());
+        // Une mémoire déjà là (un miroir) est mise de côté, pas écrasée.
+        to.mirror(&agent, &[("index.md".into(), "miroir".into())])
+            .unwrap();
+        to.apply(&agent, MemoryOp::Import { package }).unwrap();
+        assert_eq!(
+            to.read(&agent, "notes/maison.md").unwrap(),
+            "Thermostat à 19 °C.\n"
+        );
+        let log = Command::new("git")
+            .arg("-C")
+            .arg(to.dir(&agent))
+            .args(["log", "--format=%s"])
+            .output()
+            .unwrap();
+        let log = String::from_utf8_lossy(&log.stdout);
+        assert!(log.contains("notes/maison.md écrit par l'agent"), "{log}");
+        assert!(log.contains("mémoire créée"), "{log}");
+        assert!(to.dir(&agent).join("notes").is_dir());
+
+        from.apply(&agent, MemoryOp::Archive).unwrap();
+        assert!(from.agents().is_empty());
+        let moved: Vec<_> = fs::read_dir(home.path().join("depart/memory-moved"))
+            .unwrap()
+            .collect();
+        assert_eq!(moved.len(), 1);
+        assert_eq!(
+            fs::read_dir(home.path().join("arrivee/memory-moved"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_package_without_history_still_arrives() {
+        let home = tempfile::tempdir().unwrap();
+        let to = Memory::new(home.path().join("memory"));
+        let agent = AgentId::new("a2");
+        let package = MemoryPackage {
+            bundle: None,
+            files: vec![
+                ("index.md".into(), "Je suis Courses.\n".into()),
+                ("journal.md".into(), "# Journal\n".into()),
+            ],
+        };
+        to.import(&agent, &package).unwrap();
+        assert_eq!(to.list(&agent).unwrap(), ["index.md", "journal.md"]);
+        assert!(to.dir(&agent).join(".git").exists());
     }
 
     #[test]

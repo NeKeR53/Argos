@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Version du protocole entre hub et nœud.
-pub const NODE_PROTOCOL: u32 = 6;
+pub const NODE_PROTOCOL: u32 = 7;
 
 /// Ce qu'il faut au nœud pour lancer une session ; il complète le reste lui-même
 /// (binaires, `CODEX_HOME`, adresse de son mandataire MCP).

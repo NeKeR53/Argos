@@ -127,7 +127,11 @@ est connu dans la demande ou le contexte, avant d'assigner la mission. Si le dos
 est inconnu ou ambigu, demande le chemin à l'utilisateur. L'Agent et ses Workers y \
 travaillent et héritent de son AGENTS.md. Sa mémoire reste conservée, sa prochaine \
 session repart dans ce dossier. Ne force pas un rattachement refusé pendant une tâche \
-ou tant qu'un Worker subsiste.\n\
+ou tant qu'un Worker subsiste. Pour changer un Agent de machine, appelle move_agent \
+(agent, node : un nœud ou « hub ») : il garde sa mémoire, son board et ses déclencheurs, \
+son dossier dédié est copié ; pour un dossier de projet, donne workdir, le chemin du \
+projet sur la machine d'arrivée. Déplace-le quand l'utilisateur le demande, ou quand \
+son périmètre a changé de machine ; dis-lui où il est désormais.\n\
 - **Synchro de workspace.** Seulement à la demande de l'utilisateur, open_sync donne au \
 workspace d'un Agent placé sur un nœud une copie locale sur le hub, tenue à jour dans les \
 deux sens, pour lancer ou déboguer le projet sur place. Le dossier local doit être vide \

@@ -790,3 +790,238 @@ async fn a_sync_needs_an_agent_on_a_node_and_an_empty_local_folder() {
         .unwrap_err();
     assert!(error.contains("absolu"));
 }
+
+/// D47 : un Agent passe du hub à un nœud, d'un nœud à l'autre, puis revient, avec sa
+/// mémoire (historique compris) et son dossier dédié (`.git` et fichiers ignorés compris).
+#[tokio::test]
+async fn an_agent_moves_between_machines_with_its_memory_and_workspace() {
+    let pi = Node::start("pi");
+    let vps = Node::start("vps");
+    let mut hub = hub(BTreeMap::from([
+        ("pi".to_string(), pi.config()),
+        ("vps".to_string(), vps.config()),
+    ]))
+    .await;
+    hub.connected("pi").await;
+    hub.connected("vps").await;
+    let assistant = hub.assistant.clone();
+    let call = |name: &'static str, caller: AgentRecord, args: Value| {
+        let supervisor = hub.supervisor.clone();
+        async move { argos_daemon::tools::call(&supervisor, &caller, name, &args).await }
+    };
+    call(
+        "create_agent",
+        assistant.clone(),
+        json!({"name": "maison", "scope": "la maison"}),
+    )
+    .await
+    .unwrap();
+    let maison = hub
+        .supervisor
+        .registry()
+        .agent_named("maison")
+        .unwrap()
+        .unwrap();
+    let first_dir = maison.workdir.clone();
+    assert!(first_dir.starts_with(hub.home.path().join("agents")));
+
+    // Une session, une note de mémoire et un workspace avec .git et fichiers ignorés.
+    hub.supervisor.send(&maison.id, "bonjour").await.unwrap();
+    until(&mut hub.events, |event| {
+        common::world::is_message(event, &maison.id, "reply 1")
+    })
+    .await;
+    call(
+        "memory_write",
+        maison.clone(),
+        json!({"file": "notes/chauffage.md", "content": "Chaudière révisée en octobre."}),
+    )
+    .await
+    .unwrap();
+    call(
+        "memory_write",
+        maison.clone(),
+        json!({"file": "index.md", "content": "Je suis Maison : chauffage et plans."}),
+    )
+    .await
+    .unwrap();
+    poll(|| (!hub.supervisor.inspect(&maison.id).ok()?.busy).then_some(())).await;
+    std::fs::create_dir_all(first_dir.join(".git")).unwrap();
+    std::fs::write(first_dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+    std::fs::write(first_dir.join(".gitignore"), "secret.env\n").unwrap();
+    std::fs::write(first_dir.join("secret.env"), "TOKEN=1\n").unwrap();
+    std::fs::create_dir_all(first_dir.join("plans")).unwrap();
+    std::fs::write(first_dir.join("plans/salon.md"), "Salon : 24 m².\n").unwrap();
+    std::fs::write(first_dir.join("vide.txt"), "").unwrap();
+    let name = first_dir.file_name().unwrap().to_owned();
+
+    // Refusé tant qu'il travaille ou vers un nœud inconnu.
+    let unknown = call(
+        "move_agent",
+        assistant.clone(),
+        json!({"agent": "maison", "node": "mars"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(unknown.contains("nœud inconnu"), "{unknown}");
+
+    // Hub → pi.
+    let report = call(
+        "move_agent",
+        assistant.clone(),
+        json!({"agent": "maison", "node": "pi"}),
+    )
+    .await
+    .unwrap();
+    assert!(report.contains("déplacé sur pi"), "{report}");
+    let moved = hub.supervisor.record(&maison.id).unwrap();
+    assert_eq!(moved.node.as_deref(), Some("pi"));
+    assert_eq!(moved.workdir, Path::new("agents").join(&name));
+    assert!(
+        moved.session_id.is_none(),
+        "sa conversation reste sur le hub"
+    );
+    let on_pi = pi.home.path().join("agents").join(&name);
+    assert_eq!(
+        read(&on_pi.join("plans/salon.md")).as_deref(),
+        Some("Salon : 24 m².\n")
+    );
+    assert_eq!(
+        read(&on_pi.join(".git/HEAD")).as_deref(),
+        Some("ref: refs/heads/main\n")
+    );
+    assert_eq!(
+        read(&on_pi.join("secret.env")).as_deref(),
+        Some("TOKEN=1\n")
+    );
+    assert_eq!(read(&on_pi.join("vide.txt")).as_deref(), Some(""));
+    assert!(
+        first_dir.join("plans/salon.md").exists(),
+        "l'ancienne copie reste"
+    );
+    let memory_on_pi = pi.home.path().join("memory").join(maison.id.as_str());
+    assert_eq!(
+        read(&memory_on_pi.join("notes/chauffage.md")).as_deref(),
+        Some("Chaudière révisée en octobre.\n")
+    );
+    let history = Command::new("git")
+        .arg("-C")
+        .arg(&memory_on_pi)
+        .args(["log", "--format=%s"])
+        .output()
+        .unwrap();
+    let history = String::from_utf8_lossy(&history.stdout);
+    assert!(
+        history.contains("notes/chauffage.md écrit par l'agent"),
+        "{history}"
+    );
+    let mirror = hub.home.path().join("memory").join(maison.id.as_str());
+    assert!(
+        !mirror.join(".git").exists(),
+        "le hub ne garde qu'un miroir"
+    );
+    assert!(mirror.join("notes/chauffage.md").exists());
+    assert_eq!(
+        std::fs::read_dir(hub.home.path().join("memory-moved"))
+            .unwrap()
+            .count(),
+        1,
+        "l'ancienne mémoire est mise de côté, pas effacée"
+    );
+
+    // Il repart sur pi, d'une session neuve, avec sa mémoire.
+    hub.supervisor.send(&maison.id, "tu es où ?").await.unwrap();
+    until(
+        &mut hub.events,
+        |event| matches!(event, DaemonEvent::Message { agent, .. } if *agent == maison.id),
+    )
+    .await;
+    let args = read(&on_pi.join(".fake-args")).unwrap();
+    assert!(!args.contains("--resume"), "{args}");
+    assert!(
+        args.contains("Je suis Maison : chauffage et plans."),
+        "{args}"
+    );
+    poll(|| (!hub.supervisor.inspect(&maison.id).ok()?.busy).then_some(())).await;
+
+    // pi → vps, par le hub.
+    call(
+        "move_agent",
+        assistant.clone(),
+        json!({"agent": "maison", "node": "vps"}),
+    )
+    .await
+    .unwrap();
+    let on_vps = vps.home.path().join("agents").join(&name);
+    assert_eq!(
+        read(&on_vps.join("plans/salon.md")).as_deref(),
+        Some("Salon : 24 m².\n")
+    );
+    assert!(on_vps.join(".git/HEAD").exists());
+    assert!(
+        vps.home
+            .path()
+            .join("memory")
+            .join(maison.id.as_str())
+            .join("notes/chauffage.md")
+            .exists()
+    );
+    assert!(!memory_on_pi.exists(), "mise de côté sur pi");
+    assert!(pi.home.path().join("memory-moved").is_dir());
+    assert!(
+        !hub.home
+            .path()
+            .join("moves")
+            .join(maison.id.as_str())
+            .exists()
+    );
+
+    // vps → hub : l'ancien dossier du hub existe encore, il en reçoit un neuf.
+    call(
+        "move_agent",
+        assistant.clone(),
+        json!({"agent": "maison", "node": "hub"}),
+    )
+    .await
+    .unwrap();
+    let back = hub.supervisor.record(&maison.id).unwrap();
+    assert_eq!(back.node, None);
+    assert_ne!(back.workdir, first_dir);
+    assert!(back.workdir.starts_with(hub.home.path().join("agents")));
+    assert_eq!(
+        read(&back.workdir.join("plans/salon.md")).as_deref(),
+        Some("Salon : 24 m².\n")
+    );
+    assert!(
+        mirror.join(".git").exists(),
+        "sa mémoire vit de nouveau sur le hub"
+    );
+    assert_eq!(
+        read(&mirror.join("notes/chauffage.md")).as_deref(),
+        Some("Chaudière révisée en octobre.\n")
+    );
+
+    // Un dossier de projet ne voyage pas : il faut dire où est le projet à l'arrivée.
+    let project = tempfile::tempdir().unwrap();
+    hub.supervisor
+        .set_workspace(&maison.id, project.path().to_str().unwrap())
+        .await
+        .unwrap();
+    let refused = call(
+        "move_agent",
+        assistant.clone(),
+        json!({"agent": "maison", "node": "pi"}),
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("indique workdir"), "{refused}");
+    call(
+        "move_agent",
+        assistant,
+        json!({"agent": "maison", "node": "pi", "workdir": "/srv/maison"}),
+    )
+    .await
+    .unwrap();
+    let placed = hub.supervisor.record(&maison.id).unwrap();
+    assert_eq!(placed.workdir, Path::new("/srv/maison"));
+}

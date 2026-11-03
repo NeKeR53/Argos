@@ -369,6 +369,7 @@ impl Engine {
         self.update(|status| status.state = SyncState::Syncing);
         let response = self
             .request(SyncRequest::Open {
+                copy: false,
                 workdir: agent.workdir,
                 excludes: self.record.excludes.clone(),
                 known: self.base.keys().cloned().collect(),

@@ -65,6 +65,25 @@ S'y ajoutent des tests unitaires : configuration des nœuds et du mode nœud, ar
 - Nœud injoignable : les lectures se font sur le miroir, les écritures sont refusées (« mémoire non modifiée : nœud … injoignable »). Les faits que le daemon ajoute au journal sont alors perdus, sans bloquer l'action qu'ils décrivent.
 - Test : `an_agents_memory_lives_on_its_node_and_is_mirrored_on_the_hub`.
 
+## Déplacement d'un Agent (D47)
+
+L'Assistant déplace l'un de ses Agents par `move_agent(agent, node, workdir?)` : vers un nœud déclaré, ou vers le hub (`node = "hub"`). Code : `supervisor/relocation.rs`.
+
+**Déroulé.** Rien ne change dans le registre tant que mémoire et workspace ne sont pas arrivés.
+1. Vérifications : Agent vivant et inactif, sans Worker ni synchro, nœuds de départ et d'arrivée déclarés et joignables. Un workspace qui est un dossier de projet exige `workdir` (le chemin du projet à l'arrivée).
+2. Sa session est arrêtée ; la conversation du moteur reste sur l'ancienne machine.
+3. Mémoire exportée (`MemoryOp::Export`) : dernier commit, puis `git bundle --all` en base64, plus les fichiers pour une arrivée sans git.
+4. Dossier dédié copié, par les requêtes de la synchro ouvertes en mode copie (`SyncRequest::Open { copy: true }`) : arbre complet, `.git` et fichiers ignorés compris, dossier créé s'il manque, sans watcher. Même nom de dossier à l'arrivée, ou un nom neuf s'il existe déjà (retour sur une machine déjà occupée). D'un nœud à un autre, la copie passe par `$ARGOS_HOME/moves/<id>` du hub, effacé ensuite. Fichiers de plus de 100 Mo non copiés, signalés.
+5. Mémoire importée (`MemoryOp::Import`) : clone du bundle ; une mémoire déjà là (le miroir du hub) est mise de côté.
+6. Registre : nouveau nœud, nouveau workspace, session oubliée.
+7. Ancienne mémoire mise de côté (`MemoryOp::Archive` → `memory-moved/<id>-<date>`), jamais effacée. L'ancien workspace reste en place.
+
+**Miroir.** Le hub n'accepte plus la copie de mémoire d'un nœud que si l'agent y est placé : une mémoire restée sur un ancien nœud n'écrase jamais celle de l'agent. Un nœud n'envoie pas de copie après une mise de côté.
+
+**Protocole** nœud v7 : `MemoryOp::Export`, `Import`, `Archive` ; champ `copy` de `SyncRequest::Open`. Un nœud v6 est refusé : le mettre à jour avec le hub.
+
+**Test** : `an_agent_moves_between_machines_with_its_memory_and_workspace` (hub → pi → vps → hub, mémoire et historique, `.git` et fichier ignoré copiés, session neuve sur le nœud, refus pour un nœud inconnu et pour un dossier de projet sans `workdir`) ; tests unitaires de `memory`.
+
 ## Synchro de workspace (D44)
 
 Cas d'usage : un Agent développe un projet sur le Pi ou le VPS ; on lance ce projet en debug sur le Mac, et les deux copies restent à jour sans commit ni push. Code : `src/sync/` (`tree`, `plan`, `hub`), `registry/syncs.rs`, côté nœud dans `node/runner.rs`.
@@ -83,7 +102,7 @@ Cas d'usage : un Agent développe un projet sur le Pi ou le VPS ; on lance ce pr
 - Garde-fou : une passe qui supprimerait d'un coup plus de la moitié des fichiers suivis (20 au moins) est suspendue et signalée en erreur.
 - Nœud injoignable : état `offline`, la copie locale reste modifiable ; rapprochement au retour.
 
-**Protocole** (nœud v6) : `ToNode::Sync { call, sync, request }` avec `open` (workdir, exclusions, chemins connus), `read` (morceaux de 1 Mo, 4 Mo par aller-retour), `write` (`put` par morceaux, `link`, `delete`) ou `close` ; réponses `FromNode::SyncReply`, écarts spontanés `FromNode::SyncChanged`. Le hub attend chaque réponse avant la demande suivante. Le nœud n'écrit que sous le workspace de l'Agent : chemin absolu, `..` ou passage par un lien symbolique refusés.
+**Protocole** (nœud v6, v7 depuis D47) : `ToNode::Sync { call, sync, request }` avec `open` (workdir, exclusions, chemins connus), `read` (morceaux de 1 Mo, 4 Mo par aller-retour), `write` (`put` par morceaux, `link`, `delete`) ou `close` ; réponses `FromNode::SyncReply`, écarts spontanés `FromNode::SyncChanged`. Le hub attend chaque réponse avant la demande suivante. Le nœud n'écrit que sous le workspace de l'Agent : chemin absolu, `..` ou passage par un lien symbolique refusés.
 
 **Surfaces.**
 - Assistant : `open_sync(agent, local, excludes?)`, `close_sync(sync)`, `list_syncs` ; son contrat ne les utilise qu'à la demande de l'utilisateur.

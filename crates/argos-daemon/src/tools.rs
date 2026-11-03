@@ -355,6 +355,19 @@ fn level_tools(level: Level) -> Vec<Tool> {
                 &[],
             ),
             tool(
+                "move_agent",
+                "Déplace l'un de tes Agents vers un autre nœud, ou vers le hub. Il reste le même : mémoire (avec son historique), board, déclencheurs et fonctions le suivent ; son dossier dédié est copié. Sa conversation reste sur l'ancienne machine : il repart d'une session neuve avec sa mémoire. Il doit être inactif, sans Worker ni synchro, et les deux machines joignables.",
+                &[
+                    ("agent", AGENT_REF),
+                    ("node", "Nœud d'arrivée (voir list_nodes), ou « hub »."),
+                    (
+                        "workdir",
+                        "Seulement si son workspace est un dossier de projet : chemin absolu du projet sur la machine d'arrivée. Les fichiers d'un projet ne sont pas copiés.",
+                    ),
+                ],
+                &["agent", "node"],
+            ),
+            tool(
                 "open_sync",
                 "À la demande de l'utilisateur seulement : synchronise en continu, dans les deux sens, le workspace d'un Agent placé sur un nœud avec un dossier du hub, vide ou absent. Ni .git/, ni fichiers ignorés.",
                 &[
@@ -764,6 +777,7 @@ pub async fn call(
                 .await?;
             Ok(sent)
         }
+        (Level::Assistant, "move_agent") => move_agent(supervisor, caller, args).await,
         (Level::Assistant, "list_nodes") => {
             let nodes = supervisor.nodes().status();
             if nodes.is_empty() {
@@ -1362,6 +1376,42 @@ fn create_agent(
     ))
 }
 
+async fn move_agent(
+    supervisor: &Supervisor,
+    caller: &AgentRecord,
+    args: &Value,
+) -> Result<String, String> {
+    let agent = child(supervisor, caller, text(args, "agent")?)?;
+    let node = text(args, "node")?;
+    let target = (!node.eq_ignore_ascii_case("hub")).then_some(node);
+    let workdir = optional(args, "workdir").map(std::path::PathBuf::from);
+    let moved = supervisor.move_agent(&agent.id, target, workdir).await?;
+    let mut report = format!(
+        "{} déplacé sur {}. Workspace : {}.",
+        label(&moved.record),
+        moved.record.node.as_deref().unwrap_or("le hub"),
+        moved.record.workdir.display()
+    );
+    match moved.copied {
+        Some(count) => {
+            report.push_str(&format!(
+                " {count} fichier(s) copié(s) ; l'ancienne copie reste dans {}.",
+                moved.left.display()
+            ));
+        }
+        None => report.push_str(" Dossier de projet : rien copié."),
+    }
+    if !moved.skipped.is_empty() {
+        report.push_str(&format!(
+            " Trop gros pour voyager, restés en place : {}.",
+            moved.skipped.join(", ")
+        ));
+    }
+    report.push_str(" Mémoire déplacée avec son historique ; sa prochaine session repart de là.");
+    journal(supervisor, &caller.id, &report);
+    Ok(report)
+}
+
 fn create_trigger(
     supervisor: &Supervisor,
     caller: &AgentRecord,
@@ -1902,6 +1952,8 @@ mod tests {
         assert!(names(Level::Assistant).contains(&"create_agent"));
         assert!(names(Level::Assistant).contains(&"rename_agent"));
         assert!(names(Level::Assistant).contains(&"configure_agent"));
+        assert!(names(Level::Assistant).contains(&"move_agent"));
+        assert!(!names(Level::Agent).contains(&"move_agent"));
         assert!(!names(Level::Agent).contains(&"configure_agent"));
         assert!(!names(Level::Agent).contains(&"rename_agent"));
         assert!(names(Level::Assistant).contains(&"assign_mission"));

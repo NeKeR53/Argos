@@ -28,7 +28,9 @@ use tokio::sync::{Mutex as AsyncMutex, broadcast, watch};
 mod escalations;
 mod functions;
 mod preemption;
+mod relocation;
 use functions::FunctionCall;
+pub use relocation::Moved;
 
 /// Délai laissé à un process pour sortir après un parking ou un kill.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(10);

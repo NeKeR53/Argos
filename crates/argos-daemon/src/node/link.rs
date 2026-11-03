@@ -460,6 +460,14 @@ impl Link {
                 }
             }
             FromNode::MemorySnapshot { agent, files } => {
+                // Seul le nœud où vit l'agent tient son miroir : une copie laissée sur un
+                // ancien nœud (D47) n'écrase jamais la mémoire.
+                let here = supervisor
+                    .record(&agent)
+                    .is_ok_and(|record| record.node.as_deref() == Some(self.name.as_str()));
+                if !here {
+                    return;
+                }
                 if let Err(error) = supervisor.memory().mirror(&agent, &files) {
                     eprintln!(
                         "nœud {} : miroir de la mémoire de {agent} : {error}",
