@@ -20,7 +20,7 @@ use argos_core::protocol::{Attachment, ChannelCapabilities, DaemonEvent, Origin}
 use argos_core::{AgentId, Escalation, EscalationState, SurfaceMeta};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use bot::{Bot, MAX_CAPTION, Update};
+use bot::{Bot, Update};
 use futures_util::future::BoxFuture;
 use serde::Deserialize;
 use speech::Speech;
@@ -34,7 +34,8 @@ use tokio::sync::{broadcast, mpsc};
 pub const CAPABILITIES: ChannelCapabilities = ChannelCapabilities {
     text: true,
     voice_in: true,
-    voice_out: true,
+    // Les réponses partent toujours en texte, même à un vocal.
+    voice_out: false,
     buttons: true,
     attachments: true,
 };
@@ -59,10 +60,6 @@ pub struct TelegramConfig {
     /// Fichier du jeton du bot ; par défaut `$ARGOS_HOME/<id>-token`.
     #[serde(default)]
     pub token_file: Option<PathBuf>,
-    /// Répondre en vocal aux vocaux (et quand l'Assistant le demande). `false` : toujours
-    /// en texte, sans synthèse.
-    #[serde(default = "yes")]
-    pub voice_replies: bool,
     #[serde(default = "default_api")]
     pub api: String,
     #[serde(default = "default_ffmpeg")]
@@ -71,30 +68,14 @@ pub struct TelegramConfig {
     pub whisper_cli: PathBuf,
 }
 
-/// Ce que le pont lit de la section `[voice]` (les autres réglages sont ceux de la GUI).
+/// Ce que le pont lit de la section `[voice]` (les autres réglages sont ceux de la GUI) :
+/// de quoi transcrire les vocaux reçus.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SpeechConfig {
     #[serde(default)]
     pub whisper_model: Option<PathBuf>,
     #[serde(default = "default_language")]
     pub language: String,
-    #[serde(default = "default_voice")]
-    pub voice: String,
-    #[serde(default = "default_tts_backend")]
-    pub tts_backend: String,
-    #[serde(default)]
-    pub kokoro_python: Option<PathBuf>,
-    #[serde(default)]
-    pub kokoro_model: Option<PathBuf>,
-    #[serde(default)]
-    pub kokoro_voices: Option<PathBuf>,
-    #[serde(default = "default_kokoro_voice")]
-    pub kokoro_voice: String,
-    /// Piper (`tts_backend = "piper"`) : son programme et le modèle de voix (`.onnx`).
-    #[serde(default)]
-    pub piper: Option<PathBuf>,
-    #[serde(default)]
-    pub piper_model: Option<PathBuf>,
 }
 
 impl Default for SpeechConfig {
@@ -102,31 +83,14 @@ impl Default for SpeechConfig {
         Self {
             whisper_model: None,
             language: default_language(),
-            voice: default_voice(),
-            tts_backend: default_tts_backend(),
-            kokoro_python: None,
-            kokoro_model: None,
-            kokoro_voices: None,
-            kokoro_voice: default_kokoro_voice(),
-            piper: None,
-            piper_model: None,
         }
     }
 }
 
 impl SpeechConfig {
-    /// Les chemins avec `~/` développé.
+    /// Le chemin du modèle avec `~/` développé.
     fn expanded(mut self) -> Self {
-        for path in [
-            &mut self.whisper_model,
-            &mut self.kokoro_python,
-            &mut self.kokoro_model,
-            &mut self.kokoro_voices,
-            &mut self.piper,
-            &mut self.piper_model,
-        ] {
-            *path = path.take().map(|p| expand_home(&p));
-        }
+        self.whisper_model = self.whisper_model.take().map(|p| expand_home(&p));
         self
     }
 }
@@ -145,15 +109,6 @@ fn default_whisper_cli() -> PathBuf {
 }
 fn default_language() -> String {
     "fr".into()
-}
-fn default_voice() -> String {
-    "Thomas".into()
-}
-fn default_tts_backend() -> String {
-    "say".into()
-}
-fn default_kokoro_voice() -> String {
-    "ff_siwis".into()
 }
 
 pub struct Telegram {
@@ -205,7 +160,6 @@ impl Telegram {
         let speech = Speech {
             ffmpeg: program(&config.ffmpeg),
             whisper_cli: program(&config.whisper_cli),
-            say: program(Path::new("say")),
             config: voice.unwrap_or_default().expanded(),
             scratch: home.join(id),
         };
@@ -525,33 +479,6 @@ impl Telegram {
         self.say(chat, &text).await;
     }
 
-    /// Envoie en vocal, le texte en légende ; en texte seul si la synthèse échoue, ce que
-    /// rend `Ok(Some(…))`.
-    async fn speak(&self, chat: i64, text: &str) -> Result<Option<String>, String> {
-        self.bot.action(chat, "record_voice").await;
-        let ogg = match self.speech.synthesize(text).await {
-            Ok(ogg) => ogg,
-            Err(error) => {
-                eprintln!("telegram : synthèse impossible : {error}");
-                self.bot.send_text(chat, text).await?;
-                return Ok(Some(format!("en texte : synthèse impossible ({error})")));
-            }
-        };
-        let short = text.chars().count() <= MAX_CAPTION;
-        match self.bot.send_voice(chat, ogg, short.then_some(text)).await {
-            Ok(()) if short => Ok(None),
-            Ok(()) => {
-                self.bot.send_text(chat, text).await?;
-                Ok(None)
-            }
-            Err(error) => {
-                eprintln!("telegram : envoi du vocal impossible : {error}");
-                self.bot.send_text(chat, text).await?;
-                Ok(Some(format!("en texte : vocal refusé ({error})")))
-            }
-        }
-    }
-
     async fn announce(&self, chat: i64, escalation: &Escalation) {
         let text = format!(
             "{} a besoin de toi :\n{}\n\nRéponds en citant ce message{}.",
@@ -610,14 +537,10 @@ impl Channel for Telegram {
             .then(|| "chat_id pas encore configuré".to_string())
     }
 
-    fn send(&self, text: String, voice: bool) -> BoxFuture<'_, Result<Option<String>, String>> {
+    fn send(&self, text: String) -> BoxFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move {
             let chat = self.config.chat_id.ok_or("chat_id pas encore configuré")?;
-            if voice && self.config.voice_replies {
-                self.speak(chat, &text).await
-            } else {
-                self.bot.send_text(chat, &text).await.map(|_| None)
-            }
+            self.bot.send_text(chat, &text).await.map(|_| None)
         })
     }
 }

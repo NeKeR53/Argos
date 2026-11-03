@@ -57,10 +57,7 @@ impl ChannelConfig {
         match &self.kind {
             ChannelKind::Telegram(telegram) => Meta {
                 kind: "telegram",
-                capabilities: ChannelCapabilities {
-                    voice_out: telegram.voice_replies,
-                    ..crate::telegram::CAPABILITIES
-                },
+                capabilities: crate::telegram::CAPABILITIES,
                 escalations: telegram.escalations,
                 max_per_hour: self.max_per_hour,
             },
@@ -85,9 +82,9 @@ pub trait Channel: Send + Sync {
     fn unavailable(&self) -> Option<String> {
         None
     }
-    /// Envoie à l'unique interlocuteur. `voice` n'est demandé que si le type sait parler.
-    /// `Ok(Some(…))` : envoyé, mais dégradé (par exemple en texte faute de synthèse).
-    fn send(&self, text: String, voice: bool) -> BoxFuture<'_, Result<Option<String>, String>>;
+    /// Envoie à l'unique interlocuteur, en texte. `Ok(Some(…))` : envoyé, avec une remarque
+    /// pour l'Assistant.
+    fn send(&self, text: String) -> BoxFuture<'_, Result<Option<String>, String>>;
 }
 
 const VOICE_MARK: &str = ", message vocal transcrit]";
@@ -101,19 +98,18 @@ pub fn prefix(id: &str, voice: bool) -> String {
     }
 }
 
-/// Le canal d'un message préfixé par [`prefix`], et s'il vient d'un vocal.
-fn origin(text: &str) -> Option<(String, bool)> {
+/// Le canal d'un message préfixé par [`prefix`].
+fn origin(text: &str) -> Option<String> {
     let line = text.lines().next()?.strip_prefix("[Canal ")?;
     match line.strip_suffix(VOICE_MARK) {
-        Some(id) => Some((id.to_string(), true)),
-        None => Some((line.strip_suffix(']')?.to_string(), false)),
+        Some(id) => Some(id.to_string()),
+        None => Some(line.strip_suffix(']')?.to_string()),
     }
 }
 
 /// Tour de l'Assistant ouvert par un message reçu sur un canal.
 struct Turn {
     channel: String,
-    voice: bool,
     /// Dernier message de l'Assistant pendant ce tour.
     last: Option<String>,
     /// L'Assistant a écrit sur un canal pendant ce tour : pas de renvoi.
@@ -143,8 +139,8 @@ pub async fn follow(supervisor: Supervisor, assistant: AgentId) {
             DaemonEvent::TurnCompleted { agent, .. } if agent == assistant => channels.completed(),
             _ => None,
         };
-        if let Some((channel, text, voice)) = due
-            && let Err(error) = channels.send(&channel, &text, voice).await
+        if let Some((channel, text)) = due
+            && let Err(error) = channels.send(&channel, &text).await
         {
             eprintln!("canal {channel} : réponse non renvoyée : {error}");
         }
@@ -210,9 +206,8 @@ impl Channels {
 
     /// Un message remis à l'Assistant : un tour s'ouvre, venu d'un canal ou non.
     fn opened(&self, text: &str) {
-        *locked(&self.turn) = origin(text).map(|(channel, voice)| Turn {
+        *locked(&self.turn) = origin(text).map(|channel| Turn {
             channel,
-            voice,
             last: None,
             answered: false,
         });
@@ -225,12 +220,12 @@ impl Channels {
     }
 
     /// Fin du tour : ce qu'il faut renvoyer, s'il n'a rien envoyé.
-    fn completed(&self) -> Option<(String, String, bool)> {
+    fn completed(&self) -> Option<(String, String)> {
         let turn = locked(&self.turn).take()?;
         if turn.answered {
             return None;
         }
-        Some((turn.channel, turn.last?, turn.voice))
+        Some((turn.channel, turn.last?))
     }
 
     pub fn list(&self) -> Vec<ChannelStatus> {
@@ -259,12 +254,12 @@ impl Channels {
     }
 
     /// Envoie au nom de l'Assistant. `Ok` porte le compte rendu qui lui est rendu.
-    pub async fn send(&self, id: &str, text: &str, voice: bool) -> Result<String, String> {
+    pub async fn send(&self, id: &str, text: &str) -> Result<String, String> {
         let text = text.trim();
         if text.is_empty() {
             return Err("message vide".into());
         }
-        let (channel, speaks) = {
+        let channel = {
             let mut entries = locked(&self.entries);
             let Some(entry) = entries.get_mut(id) else {
                 let known: Vec<&String> = entries.keys().collect();
@@ -291,16 +286,13 @@ impl Channels {
             }
             // Compté avant l'envoi : deux appels simultanés ne dépassent pas le plafond.
             entry.sent.push_back(now);
-            (channel, entry.meta.capabilities.voice_out)
+            channel
         };
-        let degraded = channel.send(text.to_string(), voice && speaks).await?;
+        let degraded = channel.send(text.to_string()).await?;
         if let Some(turn) = locked(&self.turn).as_mut() {
             turn.answered = true;
         }
         let mut notice = format!("Envoyé sur {id}");
-        if voice && !speaks {
-            notice.push_str(", en texte : ce canal n'envoie pas de vocal");
-        }
         if let Some(degraded) = degraded {
             notice.push_str(&format!(", {degraded}"));
         }
@@ -525,11 +517,11 @@ mod tests {
 
     /// Canal qui note ce qu'on lui envoie.
     #[derive(Default)]
-    struct Notebook(Mutex<Vec<(String, bool)>>);
+    struct Notebook(Mutex<Vec<String>>);
 
     impl Channel for Notebook {
-        fn send(&self, text: String, voice: bool) -> BoxFuture<'_, Result<Option<String>, String>> {
-            locked(&self.0).push((text, voice));
+        fn send(&self, text: String) -> BoxFuture<'_, Result<Option<String>, String>> {
+            locked(&self.0).push(text);
             Box::pin(async { Ok(None) })
         }
     }
@@ -551,13 +543,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_voice_request_on_a_text_channel_goes_out_as_text_and_says_so() {
+    async fn a_message_goes_out_trimmed_and_counts_toward_the_cap() {
         let channels = Channels::default();
         let notebook = Arc::new(Notebook::default());
         channels.register("carnet", meta(10), notebook.clone());
-        let notice = channels.send("carnet", " Bonjour ", true).await.unwrap();
-        assert!(notice.contains("en texte"), "{notice}");
-        assert_eq!(*locked(&notebook.0), vec![("Bonjour".to_string(), false)]);
+        let notice = channels.send("carnet", " Bonjour ").await.unwrap();
+        assert_eq!(notice, "Envoyé sur carnet.");
+        assert_eq!(*locked(&notebook.0), vec!["Bonjour".to_string()]);
         assert_eq!(channels.list()[0].sent_last_hour, 1);
     }
 
@@ -565,13 +557,13 @@ mod tests {
     async fn the_hourly_cap_refuses_and_unknown_channels_are_named() {
         let channels = Channels::default();
         channels.register("carnet", meta(2), Arc::new(Notebook::default()));
-        channels.send("carnet", "un", false).await.unwrap();
-        channels.send("carnet", "deux", false).await.unwrap();
-        let refused = channels.send("carnet", "trois", false).await.unwrap_err();
+        channels.send("carnet", "un").await.unwrap();
+        channels.send("carnet", "deux").await.unwrap();
+        let refused = channels.send("carnet", "trois").await.unwrap_err();
         assert!(refused.contains("plafond"), "{refused}");
-        let unknown = channels.send("signal", "salut", false).await.unwrap_err();
+        let unknown = channels.send("signal", "salut").await.unwrap_err();
         assert!(unknown.contains("carnet"), "{unknown}");
-        assert!(channels.send("carnet", "  ", false).await.is_err());
+        assert!(channels.send("carnet", "  ").await.is_err());
     }
 
     #[tokio::test]
@@ -581,19 +573,16 @@ mod tests {
         let listed = channels.list();
         assert!(!listed[0].active);
         assert_eq!(listed[0].unavailable.as_deref(), Some("jeton introuvable"));
-        let refused = channels.send("carnet", "salut", false).await.unwrap_err();
+        let refused = channels.send("carnet", "salut").await.unwrap_err();
         assert!(refused.contains("jeton introuvable"), "{refused}");
     }
 
     #[test]
-    fn a_prefix_tells_its_channel_and_whether_it_was_spoken() {
-        assert_eq!(
-            origin("[Canal telegram]\nSalut"),
-            Some(("telegram".into(), false))
-        );
+    fn a_prefix_tells_its_channel() {
+        assert_eq!(origin("[Canal telegram]\nSalut"), Some("telegram".into()));
         assert_eq!(
             origin(&format!("{}\nSalut", prefix("bot-perso", true))),
-            Some(("bot-perso".into(), true))
+            Some("bot-perso".into())
         );
         assert_eq!(origin("Salut"), None);
     }
@@ -608,14 +597,11 @@ mod tests {
         channels.said("C'est fait.".into());
         assert_eq!(
             channels.completed(),
-            Some(("carnet".into(), "C'est fait.".into(), true))
+            Some(("carnet".into(), "C'est fait.".into()))
         );
 
         channels.opened("[Canal carnet]\nSalut");
-        channels
-            .send("carnet", "Réponse choisie", false)
-            .await
-            .unwrap();
+        channels.send("carnet", "Réponse choisie").await.unwrap();
         channels.said("Réponse choisie".into());
         assert_eq!(channels.completed(), None, "déjà envoyé par channel_send");
 

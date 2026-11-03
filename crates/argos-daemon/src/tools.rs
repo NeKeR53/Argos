@@ -80,8 +80,7 @@ fn channel_tools() -> Vec<Tool> {
             description: "Écrit à l'utilisateur sur un canal de discussion. Rien ne part sur un canal sans cet appel : pour répondre à un message « [Canal <id>] », renvoie sur ce canal (ou un autre si c'est plus utile). Aussi pour le prévenir quand il l'a demandé ou quand un résultat attendu arrive. Texte brut, condensé pour un téléphone.",
             schema: json!({"type":"object","properties":{
                 "channel":{"type":"string","description":"Identifiant du canal (voir channel_list), celui du préfixe « [Canal <id>] »."},
-                "text":{"type":"string","description":"Le message, en texte brut sans markdown."},
-                "voice":{"type":"boolean","description":"Envoyer en vocal, le texte en légende, si le canal sait parler. Par défaut, non ; oui en réponse à un message vocal."}
+                "text":{"type":"string","description":"Le message, en texte brut sans markdown. Toujours en texte, même en réponse à un vocal."}
             },"required":["channel","text"],"additionalProperties":false}),
         },
     ]
@@ -867,10 +866,9 @@ pub async fn call_here(
         }
         (Level::Assistant, "channel_send") => {
             let channel = text(args, "channel")?;
-            let voice = args.get("voice").and_then(Value::as_bool).unwrap_or(false);
             let sent = supervisor
                 .channels()
-                .send(channel, text(args, "text")?, voice)
+                .send(channel, text(args, "text")?)
                 .await?;
             Ok(sent)
         }

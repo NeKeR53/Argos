@@ -124,7 +124,7 @@ async fn bridge(w: &World, chat_id: Option<i64>) -> FakeTelegram {
     bridge_with(w, chat_id, "").await
 }
 
-/// Le même, avec des réglages du canal en TOML (`voice_replies = false`…).
+/// Le même, avec des réglages du canal en TOML.
 async fn bridge_with(w: &World, chat_id: Option<i64>, settings: &str) -> FakeTelegram {
     let (fake, url) = FakeTelegram::start().await;
     let bin = w.home.path().join("bin");
@@ -136,11 +136,6 @@ async fn bridge_with(w: &World, chat_id: Option<i64>, settings: &str) -> FakeTel
         r#"input=""; while [ $# -gt 1 ]; do [ "$1" = -i ] && input="$2"; shift; done; cp "$input" "$1""#,
     );
     let whisper = script(&bin, "whisper-cli", r#"echo "  Allume la lumière  ""#);
-    let say = script(
-        &bin,
-        "say",
-        r#"while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done; echo AIFF > "$out""#,
-    );
     let model = w.home.path().join("model.bin");
     std::fs::write(&model, "").unwrap();
     let config: TelegramConfig = toml::from_str(settings).unwrap();
@@ -148,7 +143,6 @@ async fn bridge_with(w: &World, chat_id: Option<i64>, settings: &str) -> FakeTel
     let speech = Speech {
         ffmpeg,
         whisper_cli: whisper,
-        say,
         config: SpeechConfig {
             whisper_model: Some(model),
             ..SpeechConfig::default()
@@ -235,7 +229,7 @@ async fn a_text_message_reaches_the_assistant_and_its_reply_comes_back() {
 }
 
 #[tokio::test]
-async fn a_voice_message_is_transcribed_and_answered_by_voice() {
+async fn a_voice_message_is_transcribed_and_answered_in_text() {
     let mut w = world();
     let fake = bridge(&w, Some(CHAT)).await;
     let assistant = w.assistant.id.clone();
@@ -251,44 +245,12 @@ async fn a_voice_message_is_transcribed_and_answered_by_voice() {
                 && text == "[Canal telegram, message vocal transcrit]\nAllume la lumière")
     })
     .await;
-    let voice = fake.wait_for("sendVoice", "reply 1").await;
-    // Le faux ffmpeg recopie la sortie du faux say : c'est bien la synthèse qui part.
-    assert!(voice.contains("AIFF"));
-    assert!(voice.contains("audio/ogg"));
-    assert!(fake.sent("sendMessage").is_empty());
+    // Argos ne répond jamais en vocal : la réponse au vocal part en texte.
+    fake.wait_for("sendMessage", "reply 1").await;
+    assert!(fake.sent("sendVoice").is_empty());
     // Les fichiers de travail sont effacés.
     let scratch = std::fs::read_dir(w.home.path().join("telegram")).unwrap();
     assert_eq!(scratch.count(), 0);
-}
-
-#[tokio::test]
-async fn without_voice_replies_a_voice_message_is_answered_in_text() {
-    let mut w = world();
-    let fake = bridge_with(&w, Some(CHAT), "voice_replies = false").await;
-    let assistant = w.assistant.id.clone();
-    assert!(!w.supervisor.channels().list()[0].capabilities.voice_out);
-
-    fake.push(message(
-        1,
-        CHAT,
-        json!({"voice": {"file_id": "v1", "duration": 2}}),
-    ));
-    until(&mut w.events, |event| {
-        matches!(event, DaemonEvent::Input { agent, text, .. }
-            if *agent == assistant && text.ends_with("Allume la lumière"))
-    })
-    .await;
-    // Le vocal est compris, la réponse part en texte, sans synthèse.
-    fake.wait_for("sendMessage", "reply 1").await;
-    assert!(fake.sent("sendVoice").is_empty());
-    let sent = channel_send(
-        &w,
-        json!({"channel": "telegram", "text": "Fait.", "voice": true}),
-    )
-    .await
-    .unwrap();
-    assert!(sent.contains("en texte"), "{sent}");
-    assert!(fake.sent("sendVoice").is_empty());
 }
 
 #[tokio::test]
@@ -481,33 +443,42 @@ async fn surfaces_open_only_on_the_mac_are_not_announced() {
     assert!(fake.sent("sendMessage").is_empty());
 }
 
-/// Vrais programmes : synthétise une phrase puis la retranscrit. Demande ffmpeg,
-/// whisper-cli et `ARGOS_WHISPER_MODEL` ; `ARGOS_TTS=kokoro` essaie Kokoro (réglages
-/// `ARGOS_KOKORO_PYTHON`, `ARGOS_KOKORO_MODEL`, `ARGOS_KOKORO_VOICES`).
+/// Vrais programmes : un vocal fabriqué par `say` (macOS) puis converti par ffmpeg est
+/// retranscrit. Demande say, ffmpeg, whisper-cli et `ARGOS_WHISPER_MODEL`.
 #[tokio::test]
 #[ignore]
-async fn real_speech_round_trip() {
-    let var = |name: &str| std::env::var_os(name).map(PathBuf::from);
+async fn real_speech_transcription() {
     let scratch = tempfile::tempdir().unwrap();
+    let aiff = scratch.path().join("vocal.aiff");
+    let ogg = scratch.path().join("vocal.ogg");
+    let made = std::process::Command::new("say")
+        .args(["-v", "Thomas", "-o"])
+        .arg(&aiff)
+        .arg("La lumière du salon est allumée.")
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let converted = std::process::Command::new("ffmpeg")
+        .args(["-loglevel", "error", "-y", "-i"])
+        .arg(&aiff)
+        .args(["-c:a", "libopus"])
+        .arg(&ogg)
+        .status()
+        .unwrap();
+    assert!(converted.success());
     let speech = Speech {
         ffmpeg: "ffmpeg".into(),
         whisper_cli: "whisper-cli".into(),
-        say: "say".into(),
         config: SpeechConfig {
-            whisper_model: var("ARGOS_WHISPER_MODEL"),
-            tts_backend: std::env::var("ARGOS_TTS").unwrap_or_else(|_| "say".into()),
-            kokoro_python: var("ARGOS_KOKORO_PYTHON"),
-            kokoro_model: var("ARGOS_KOKORO_MODEL"),
-            kokoro_voices: var("ARGOS_KOKORO_VOICES"),
+            whisper_model: std::env::var_os("ARGOS_WHISPER_MODEL").map(PathBuf::from),
             ..SpeechConfig::default()
         },
         scratch: scratch.path().into(),
     };
-    let ogg = speech
-        .synthesize("**Bonjour**, la lumière du salon est allumée.")
+    let heard = speech
+        .transcribe(&std::fs::read(&ogg).unwrap())
         .await
-        .unwrap();
-    assert!(ogg.starts_with(b"OggS"));
-    let heard = speech.transcribe(&ogg).await.unwrap().to_lowercase();
+        .unwrap()
+        .to_lowercase();
     assert!(heard.contains("lumière"), "entendu : {heard}");
 }

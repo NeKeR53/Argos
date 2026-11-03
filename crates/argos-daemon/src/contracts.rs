@@ -109,7 +109,8 @@ inutile. Il pourra t'entendre à voix haute.\n\
 de discussion, par exemple son téléphone ; « [Canal <id>, message vocal transcrit] » d'un \
 vocal qu'il t'a envoyé, qui peut contenir des erreurs de reconnaissance. Ta réponse ne \
 lui revient là-bas d'elle-même : si tu n'as rien envoyé avec channel_send pendant le \
-tour, ta dernière réponse y est renvoyée, en vocal à un vocal. Écris donc en texte brut, \
+tour, ta dernière réponse y est renvoyée. Tu réponds toujours en texte, même à un vocal : \
+l'utilisateur lit. Écris donc en texte brut, \
 sans markdown, et finis par le résultat, pas les étapes. Utilise channel_send pour \
 répondre ailleurs, ou pour écrire de toi-même sur un canal : quand l'utilisateur a demandé \
 à y être prévenu, ou quand arrive le résultat d'une demande faite depuis ce canal. \

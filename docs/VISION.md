@@ -145,7 +145,7 @@ Ce document fige les décisions issues de la session de cadrage du 2026-10-25. L
   - **Sur le hub seulement**, comme l'Assistant.
 
 - **D43 — Telegram, premier type de canal** (décidé le 2026-10-31, rattaché à D45 le 2026-11-01). Depuis son téléphone, l'utilisateur écrit ou envoie un vocal à un bot Telegram personnel. Ce qui est propre à Telegram :
-  - **Capacités** : texte, vocal dans les deux sens, boutons. Ni photo ni document pour l'instant. Au-delà de 1 024 caractères, la légende d'un vocal est suivie d'un message texte.
+  - **Capacités** : texte, vocal reçu (transcrit), boutons. Les réponses partent toujours en texte : l'utilisateur lit, il n'écoute pas (décidé le 2026-11-03 ; la réponse vocale a été retirée).
   - **Interlocuteur** : le `chat_id` configuré. Long polling `getUpdates` : aucun port ouvert. Jeton dans un fichier à part.
   - **Vocaux** : conversion `ffmpeg`, transcription `whisper-cli`, synthèse `say` ou Kokoro selon `[voice]`, envoi en Ogg/Opus. Seul Telegram voit le son et le texte.
   - **Réponse libre à une escalade** : en citant le message qui l'annonce, en texte ou en vocal.

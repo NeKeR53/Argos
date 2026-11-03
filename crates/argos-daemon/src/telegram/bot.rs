@@ -10,8 +10,6 @@ use std::time::Duration;
 
 /// Au-delà, Telegram refuse le message : le texte est découpé.
 pub const MAX_TEXT: usize = 4096;
-/// Longueur maximale d'une légende de vocal.
-pub const MAX_CAPTION: usize = 1024;
 /// Marge laissée au-delà de l'attente du long polling avant de tenir la requête pour perdue.
 const POLL_MARGIN: Duration = Duration::from_secs(15);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -190,34 +188,6 @@ impl Bot {
             .and_then(reqwest::Response::error_for_status)
             .map_err(hidden)?;
         Ok(response.bytes().await.map_err(hidden)?.to_vec())
-    }
-
-    /// Envoie un vocal (Ogg/Opus), avec une légende facultative.
-    pub async fn send_voice(
-        &self,
-        chat: i64,
-        ogg: Vec<u8>,
-        caption: Option<&str>,
-    ) -> Result<(), String> {
-        let part = reqwest::multipart::Part::bytes(ogg)
-            .file_name("argos.ogg")
-            .mime_str("audio/ogg")
-            .map_err(hidden)?;
-        let mut form = reqwest::multipart::Form::new()
-            .text("chat_id", chat.to_string())
-            .part("voice", part);
-        if let Some(caption) = caption {
-            form = form.text("caption", caption.to_string());
-        }
-        let response = self
-            .http
-            .post(format!("{}/sendVoice", self.methods))
-            .multipart(form)
-            .timeout(REQUEST_TIMEOUT)
-            .send()
-            .await
-            .map_err(hidden)?;
-        read::<Value>(response).await.map(drop)
     }
 
     async fn call<T: DeserializeOwned>(&self, method: &str, body: Value) -> Result<T, String> {
