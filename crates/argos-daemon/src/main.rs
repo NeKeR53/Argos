@@ -130,9 +130,10 @@ fn service(home: PathBuf) -> Result<(), Failure> {
         return Err(format!("mode inconnu : {mode} (hub ou node)").into());
     }
     let binary = std::env::current_exe()?;
+    let path = service::service_path(std::env::var_os("PATH"), &user_home());
     let text = match kind.as_deref() {
-        Some("systemd") => service::systemd_unit(&binary, &home, &mode),
-        Some("launchd") => service::launchd_plist(&binary, &home, &mode),
+        Some("systemd") => service::systemd_unit(&binary, &home, &path, &mode),
+        Some("launchd") => service::launchd_plist(&binary, &home, &path, &mode),
         _ => return Err("usage : argos-daemon service <systemd|launchd> [hub|node]".into()),
     };
     print!("{text}");
@@ -162,7 +163,7 @@ async fn node(home: PathBuf) -> Result<(), Failure> {
     };
     tokio::select! {
         served = runner::serve(listener, mcp_listener, settings, token) => served?,
-        _ = tokio::signal::ctrl_c() => println!("arrêt du nœud"),
+        _ = stop_requested() => println!("arrêt du nœud"),
     }
     Ok(())
 }
@@ -267,7 +268,7 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
         served = api::serve(listener, supervisor.clone(), token) => served?,
         served = mcp::serve(mcp_listener, supervisor.clone()) => served?,
         served = surface_web::serve(surfaces_listener, supervisor.clone(), devices, pairing) => served?,
-        _ = tokio::signal::ctrl_c() => println!("arrêt demandé : parking des sessions en cours"),
+        _ = stop_requested() => println!("arrêt demandé : parking des sessions en cours"),
     }
     supervisor.shutdown().await;
     Ok(())
@@ -325,6 +326,31 @@ fn user_home() -> PathBuf {
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
         .unwrap_or_default()
+}
+
+/// Ctrl-C, ou SIGTERM : ce qu'envoient `systemctl stop`, `launchctl kickstart -k` et une
+/// mise à jour qui relance le service. Sans lui, le daemon meurt sans parker ses sessions
+/// et laisse ses tunnels SSH orphelins.
+async fn stop_requested() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut terminate) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 /// Binaire des tunnels vers les nœuds : `ARGOS_SSH_BIN` (tests), sinon `ssh`.

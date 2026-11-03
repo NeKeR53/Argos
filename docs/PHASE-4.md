@@ -2,7 +2,7 @@
 
 Objectif (D32, D33) : des Agents qui tournent sur d'autres machines (VPS, Raspberry Pi), pilotés depuis le hub comme s'ils étaient locaux.
 
-**Contrainte du moment** : les vrais serveurs ne sont pas prêts. Tout est développé et vérifié avec des nœuds **simulés sur le Mac** (un vrai `argos-daemon node` par process, chacun avec son `ARGOS_HOME` et ses ports) et un faux `ssh`. Aucune connexion à un hôte réel n'a été faite.
+**Contrainte du moment** : les vrais serveurs ne sont pas prêts. Tout est développé et vérifié avec des nœuds **simulés sur le Mac** (un vrai `argos-daemon node` par process, chacun avec son `ARGOS_HOME` et ses ports) et un faux `ssh`. Premier essai sur un hôte réel le 2026-11-03 : le Raspberry Pi, joint par l'hôte SSH `hermes-app` (voir « Essai sur un vrai hôte »). Les hôtes `hermes` et `homeassistant` restent hors limites.
 
 ## Architecture
 
@@ -95,6 +95,36 @@ Cas d'usage : un Agent développe un projet sur le Pi ou le VPS ; on lance ce pr
 
 **Limites connues.** Fichier entier à chaque changement (pas de diff par blocs). Sur Linux, le watcher récursif pose un watch inotify par dossier, ignorés compris : un très gros `node_modules/` peut atteindre la limite du système. La synchro entre deux nœuds dont aucun n'est le hub reste à concevoir avec les vrais serveurs.
 
+## Essai sur un vrai hôte (2026-11-03)
+
+Hôte : Raspberry Pi (`aarch64`, Debian 13, glibc 2.41, 4 Go), joint par l'hôte SSH `hermes-app` (tunnel launchd local vers le Pi). Hub d'essai sur le Mac, `ARGOS_HOME` jetable et ports 17878/17879/17890, sur faux CLI ; le hub de tous les jours n'a pas été touché.
+
+**Installation à la main, faute d'outil (D33 reste à faire).**
+1. Binaire : aucune release Linux `aarch64`, et ni `rustup` ni cible croisée sur le Mac (Rust de Homebrew). Compilé sur le Pi : `rustup` en profil minimal dans le compte, sources par `git archive HEAD`, `cargo build --release -p argos-daemon -j3` : 16 min la première fois, 7 min après une modification du daemon.
+2. Binaire posé dans `~/.local/share/argos/argos-daemon` (même place que `install.sh` sous Linux) ; `~/.argos/node.toml` avec `name = "hermes"`.
+3. Service : `argos-daemon service systemd node > ~/.config/systemd/user/argos-node.service`, puis `systemctl --user enable --now argos-node`. Le compte a le *linger* : le service tourne sans session ouverte.
+4. Hub : jeton du nœud copié dans un fichier local, puis
+   ```toml
+   [nodes.hermes]
+   ssh = "hermes-app"
+   remote = "127.0.0.1:7880"
+   token_file = "/chemin/du/jeton"
+   ```
+
+**Vérifié.**
+- Le hub ouvre le tunnel, le nœud répond (`nodes` → `connected: true`). Après `systemctl --user restart argos-node`, le hub se reconnecte seul.
+- Avec un second nœud jetable sur le Pi (faux CLI, ports 17880/17881) : un Agent créé par `create_agent` y est lancé dans `agents/<nom>` du nœud, avec l'URL MCP du mandataire du nœud. Depuis le Pi, `tools/list` et `add_task` passent par le nœud, puis le tunnel, jusqu'au registre du hub ; un jeton inconnu reçoit 404.
+- Sur le nœud de service, un Agent sans `claude` trouvable est refusé avec « nœud hermes : impossible de lancer claude ».
+
+**Corrigé pendant l'essai.**
+- *PATH des services.* systemd utilisateur ne donne que `/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`. Le `claude` du Pi, installé dans `~/.local/bin`, restait introuvable. Les fichiers générés par `argos-daemon service` portent maintenant le `PATH` de la commande qui les écrit, complété par `~/.local/bin` (absent d'un `ssh hôte commande`).
+- *SIGTERM.* Le hub et le nœud n'attendaient que Ctrl-C. Un `kill`, `systemctl stop` ou `launchctl kickstart -k` les tuait sans parker les sessions, et les tunnels `ssh` du hub restaient orphelins. SIGTERM suit maintenant le même chemin que Ctrl-C ; vérifié : sessions parkées, plus aucun tunnel après l'arrêt.
+
+**Trouvé, pas encore corrigé.**
+- *Reprise d'une session jamais enregistrée.* `claude` lancé avec `--session-id`, puis tué avant d'avoir écrit sa conversation : l'id reste dans le registre. Chaque réveil suivant relance `--resume <id>` et échoue (« No conversation found with session ID »). Rien ne corrige ce cas, sur le hub comme sur un nœud. Il faudrait oublier la session sur cette erreur (`clear_session`) et relancer à neuf, comme une compaction.
+- *Pas de chemin d'installation d'un nœud* : `install.sh` n'installe qu'un hub, ne connaît pas Linux `aarch64`, et la release n'a pas d'archive `linux-arm64`. Il faudrait une cible `aarch64-unknown-linux-gnu` dans `release.yml` (runner `ubuntu-24.04-arm`), puis un `install.sh --node <nom>` : `node.toml`, unité `argos-node`, pas d'app ni d'AppImage, et le jeton affiché pour le hub.
+- *Pas de mise à jour du nœud* : `argos-daemon update` lit `install.toml`, que l'installation à la main n'écrit pas. Sans ce fichier, il suppose le service `argos-hub`.
+
 ## Écarts avec la vision, à trancher
 
 1. **Pas d'autonomie des nœuds sans le hub** (D32 la prévoit, avec les escalades en file).
@@ -104,7 +134,7 @@ Cas d'usage : un Agent développe un projet sur le Pi ou le VPS ; on lance ce pr
 
 ## Reste à faire
 
-- **Installation d'un nœud** (D33) : détection OS et architecture, envoi du binaire compilé pour la cible, enregistrement depuis la console. À faire avec un vrai hôte. Les fichiers de service sont déjà générés : `argos-daemon service systemd node` (unité systemd utilisateur) ou `argos-daemon service launchd node` (agent launchd, vérifié par `plutil`), qui lancent ce binaire avec ce `ARGOS_HOME` ; les poser reste un geste humain.
+- **Installation d'un nœud** (D33) : détection OS et architecture, envoi du binaire compilé pour la cible, enregistrement depuis la console. Faite une fois à la main sur le Pi (voir « Essai sur un vrai hôte »), sans outil pour l'instant. Les fichiers de service sont déjà générés : `argos-daemon service systemd node` (unité systemd utilisateur) ou `argos-daemon service launchd node` (agent launchd, vérifié par `plutil`), qui lancent ce binaire avec ce `ARGOS_HOME` ; les poser reste un geste humain.
 - **Conteneurs par nœud** (D36), politique réseau, plafonds.
 - **Synchronisation de la mémoire vers le Mac** (miroir Obsidian en lecture seule, D25).
 - **GUI** : afficher le nœud de chaque agent et l'état des nœuds (commande `nodes`).

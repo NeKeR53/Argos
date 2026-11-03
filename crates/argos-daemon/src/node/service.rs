@@ -2,16 +2,36 @@
 //! serveur Linux, agent launchd sur macOS. `argos-daemon service <systemd|launchd>
 //! [hub|node]` les écrit sur la sortie standard ; les poser sur la machine reste un geste
 //! humain.
+//!
+//! Un service ne reçoit pas le `PATH` du shell (systemd utilisateur : `/usr/local/bin:/usr/bin`
+//! et peu d'autres ; launchd : `/usr/bin:/bin:/usr/sbin:/sbin`) : le fichier porte celui de
+//! la commande qui l'écrit, pour que le daemon trouve `claude`, `codex`, `ssh` et `git`.
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 /// Libellé launchd, et nom de l'unité systemd (`argos-node.service`).
 pub fn label(mode: &str) -> String {
     format!("argos-{mode}")
 }
 
+/// `PATH` à donner au service : `path`, complété par `~/.local/bin`, où s'installe
+/// `claude`, et que les shells non interactifs (`ssh hôte commande`) n'ont souvent pas.
+pub fn service_path(path: Option<OsString>, user_home: &Path) -> String {
+    let mut dirs: Vec<PathBuf> = path
+        .map(|path| std::env::split_paths(&path).collect())
+        .unwrap_or_default();
+    let local_bin = user_home.join(".local/bin");
+    if !user_home.as_os_str().is_empty() && !dirs.contains(&local_bin) {
+        dirs.push(local_bin);
+    }
+    std::env::join_paths(dirs)
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// Unité systemd « utilisateur » (`~/.config/systemd/user/`), relancée si elle tombe.
-pub fn systemd_unit(binary: &Path, home: &Path, mode: &str) -> String {
+pub fn systemd_unit(binary: &Path, home: &Path, path: &str, mode: &str) -> String {
     format!(
         "[Unit]\n\
          Description=Argos ({mode})\n\
@@ -20,6 +40,7 @@ pub fn systemd_unit(binary: &Path, home: &Path, mode: &str) -> String {
          [Service]\n\
          ExecStart={binary} {mode}\n\
          Environment=ARGOS_HOME={home}\n\
+         Environment=PATH={path}\n\
          Restart=on-failure\n\
          RestartSec=5\n\
          \n\
@@ -32,7 +53,7 @@ pub fn systemd_unit(binary: &Path, home: &Path, mode: &str) -> String {
 
 /// Agent launchd (`~/Library/LaunchAgents/<libellé>.plist`), lancé à l'ouverture de
 /// session et relancé s'il tombe.
-pub fn launchd_plist(binary: &Path, home: &Path, mode: &str) -> String {
+pub fn launchd_plist(binary: &Path, home: &Path, path: &str, mode: &str) -> String {
     let escape = |text: String| {
         text.replace('&', "&amp;")
             .replace('<', "&lt;")
@@ -40,6 +61,7 @@ pub fn launchd_plist(binary: &Path, home: &Path, mode: &str) -> String {
     };
     let binary = escape(binary.display().to_string());
     let home = escape(home.display().to_string());
+    let path = escape(path.to_string());
     let label = label(mode);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -57,6 +79,8 @@ pub fn launchd_plist(binary: &Path, home: &Path, mode: &str) -> String {
   <dict>
     <key>ARGOS_HOME</key>
     <string>{home}</string>
+    <key>PATH</key>
+    <string>{path}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -82,12 +106,28 @@ mod tests {
         let unit = systemd_unit(
             Path::new("/opt/argos/argos-daemon"),
             Path::new("/srv/argos"),
+            "/usr/bin:/home/argos/.local/bin",
             "node",
         );
         assert!(unit.contains("ExecStart=/opt/argos/argos-daemon node\n"));
         assert!(unit.contains("Environment=ARGOS_HOME=/srv/argos\n"));
+        assert!(unit.contains("Environment=PATH=/usr/bin:/home/argos/.local/bin\n"));
         assert!(unit.contains("Restart=on-failure"));
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn the_service_path_adds_the_users_local_bin_once() {
+        let home = Path::new("/home/argos");
+        assert_eq!(
+            service_path(Some("/usr/local/bin:/usr/bin".into()), home),
+            "/usr/local/bin:/usr/bin:/home/argos/.local/bin"
+        );
+        assert_eq!(
+            service_path(Some("/home/argos/.local/bin:/usr/bin".into()), home),
+            "/home/argos/.local/bin:/usr/bin"
+        );
+        assert_eq!(service_path(None, home), "/home/argos/.local/bin");
     }
 
     #[test]
@@ -95,9 +135,11 @@ mod tests {
         let plist = launchd_plist(
             Path::new("/Applications/A&B/argos-daemon"),
             Path::new("/Users/x/.argos"),
+            "/opt/homebrew/bin:/usr/bin",
             "node",
         );
         assert!(plist.contains("<string>argos-node</string>"));
+        assert!(plist.contains("<key>PATH</key>\n    <string>/opt/homebrew/bin:/usr/bin</string>"));
         assert!(plist.contains("<string>/Applications/A&amp;B/argos-daemon</string>"));
         assert!(plist.contains("<string>node</string>"));
         // Vérifié par l'outil d'Apple quand il est là (macOS).
