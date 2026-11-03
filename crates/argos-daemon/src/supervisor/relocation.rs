@@ -1,9 +1,12 @@
-//! Déplacement d'un Agent d'un nœud à un autre (D47) : sa mémoire part avec son
-//! historique, son dossier dédié est copié en entier, puis le registre le place sur le
-//! nœud d'arrivée. Le registre ne change qu'une fois mémoire et workspace arrivés.
+//! Déplacement d'un agent d'un nœud à un autre (D47, D48). Le nœud qui le détient lui
+//! envoie tout ce qu'il possède : fiche et Workers, board, déclencheurs, fonctions,
+//! surfaces, escalades, capacités, mémoire avec son historique, dossier dédié copié en
+//! entier, et pour l'Assistant ses canaux de discussion. Le nœud d'arrivée l'adopte et en
+//! devient le seul détenteur ; celui de départ n'en garde qu'une copie d'annuaire.
 
 use super::{Supervisor, exited};
 use crate::memory::{MemoryOp, MemoryOutput, MemoryPackage};
+use crate::peer::{Arrival, ChannelTransfer};
 use crate::sync::tree::Tree;
 use crate::sync::{
     BATCH, CHUNK, Chunk, Finish, Index, ReadChunk, SyncRequest, SyncResponse, WriteOp,
@@ -12,7 +15,7 @@ use argos_core::{AgentId, AgentRecord, AgentState, Level};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Ce qu'un déplacement a fait, pour le compte rendu à l'Assistant.
+/// Ce qu'un déplacement a fait, pour le compte rendu.
 #[derive(Debug, Clone)]
 pub struct Moved {
     pub record: AgentRecord,
@@ -25,66 +28,62 @@ pub struct Moved {
 }
 
 impl Supervisor {
-    /// Déplace un Agent vers `target` (`None` : le hub). `workdir` : dossier de projet sur
-    /// la machine d'arrivée ; sans lui, le dossier dédié de l'Agent est copié.
+    /// Déplace un agent détenu ici vers le nœud `target`. `workdir` : dossier de projet
+    /// sur la machine d'arrivée ; sans lui, le dossier dédié de l'agent est copié.
     pub async fn move_agent(
         &self,
         id: &AgentId,
-        target: Option<&str>,
+        target: &str,
         workdir: Option<PathBuf>,
     ) -> Result<Moved, String> {
         let said = |error: super::SupervisorError| error.to_string();
         let slot = self.slot(id);
         let mut live = slot.lock().await;
         let record = self.record(id).map_err(said)?;
-        if record.level != Level::Agent || record.state == AgentState::Retired {
-            return Err("seul un Agent vivant se déplace".into());
+        if record.level == Level::Worker || record.state == AgentState::Retired {
+            return Err("seuls l'Assistant et un Agent vivant se déplacent".into());
         }
-        let from = record.node.clone();
-        if from.as_deref() == target {
-            return Err(format!("il est déjà sur {}", place_name(target)));
+        if let Some(owner) = &record.node {
+            return Err(format!(
+                "{id} est détenu par le nœud {owner} : c'est lui qui le déplace"
+            ));
         }
-        for node in [from.as_deref(), target].into_iter().flatten() {
-            if !self.nodes().is_known(node) {
-                return Err(format!("nœud inconnu : {node}. Voir list_nodes."));
-            }
-            if !self.nodes().is_connected(node) {
-                return Err(format!(
-                    "nœud {node} injoignable : impossible d'y prendre ou d'y poser sa mémoire"
-                ));
-            }
+        if target == self.nodes().name() {
+            return Err(format!("il est déjà sur {target}"));
+        }
+        if !self.nodes().is_known(target) {
+            return Err(format!("nœud inconnu : {target}. Voir list_nodes."));
+        }
+        if !self.nodes().is_connected(target) {
+            return Err(format!(
+                "nœud {target} injoignable : impossible d'y poser l'agent"
+            ));
         }
         if self.inspect(id).map_err(said)?.busy {
             return Err("attends la fin de son tour avant de le déplacer".into());
         }
-        if !self.children(id).map_err(said)?.is_empty() {
+        if record.level == Level::Agent && !self.children(id).map_err(said)?.is_empty() {
             return Err("termine et retire ses Workers avant de le déplacer".into());
         }
         if self.registry().has_sync(id).map_err(|e| e.to_string())? {
             return Err("ferme la synchro de son workspace avant de le déplacer".into());
         }
-        let dedicated = self.dedicated_name(&record);
-        let destination = match (&workdir, &dedicated) {
-            (Some(dir), _) => {
-                if !dir.is_absolute() || (target.is_none() && !dir.is_dir()) {
-                    return Err(format!(
-                        "workspace invalide : indique un dossier existant avec son chemin absolu sur {}",
-                        place_name(target)
-                    ));
-                }
-                None
-            }
-            (None, Some(name)) => Some(name.clone()),
-            (None, None) => {
-                return Err(format!(
-                    "son workspace est un dossier de projet ({}) : indique workdir, le dossier du projet sur {}. Les fichiers d'un projet ne sont pas copiés.",
-                    record.workdir.display(),
-                    place_name(target)
-                ));
-            }
-        };
+        let dedicated = self.dedicated_dir(&record);
+        if workdir.is_none() && dedicated.is_none() {
+            return Err(format!(
+                "son workspace est un dossier de projet ({}) : indique workdir, le dossier du projet sur {target}. Les fichiers d'un projet ne sont pas copiés.",
+                record.workdir.display()
+            ));
+        }
+        if let Some(dir) = &workdir
+            && !dir.is_absolute()
+        {
+            return Err(
+                "workdir : indique le chemin absolu du projet sur la machine d'arrivée".into(),
+            );
+        }
 
-        // Sa session s'arrête : sa conversation reste sur l'ancienne machine.
+        // Sa session s'arrête : sa conversation reste sur cette machine.
         if let Some(session) = live.take() {
             let _ = session.control.park();
             if !exited(session.exited.clone()).await {
@@ -95,51 +94,43 @@ impl Supervisor {
         }
 
         let package = self.export_memory(&record).await?;
-        let (new_workdir, copied, skipped) = match destination {
-            None => (workdir.expect("workdir donné"), None, vec![]),
-            Some(name) => {
+        let (arrival_dir, copied, skipped) = match (&workdir, &dedicated) {
+            (Some(dir), _) => (dir.clone(), None, vec![]),
+            (None, Some(relative)) => {
                 let (dir, copied, skipped) = self
-                    .copy_workspace(id, from.as_deref(), &record.workdir, target, &name)
+                    .copy_workspace(id, &record.workdir, target, relative)
                     .await?;
                 (dir, Some(copied), skipped)
             }
+            (None, None) => unreachable!("refusé plus haut"),
         };
-        self.import_memory(id, target, package.clone()).await?;
+        let rows = self.registry().export_rows(id).map_err(|e| e.to_string())?;
+        let channels = if record.level == Level::Assistant {
+            crate::channels::transfers(self.home())
+        } else {
+            vec![]
+        };
+        let arrival = Arrival {
+            rows,
+            workdir: arrival_dir,
+            memory: Some(package),
+            channels: channels.clone(),
+        };
+        self.nodes().adopt(target, arrival).await?;
+
+        // Le nœud d'arrivée le détient : ici, il n'en reste qu'une copie d'annuaire.
         self.registry()
-            .relocate(id, target, &new_workdir)
+            .release(id, target)
             .map_err(|error| error.to_string())?;
-        // L'ancienne mémoire est mise de côté ; le miroir du hub suit le nouveau nœud.
-        match &from {
-            Some(node) => {
-                if let Ok(Err(error)) | Err(error) =
-                    self.nodes().memory(node, id, MemoryOp::Archive).await
-                {
-                    eprintln!("nœud {node} : mémoire de {id} non mise de côté : {error}");
-                }
-            }
-            None => {
-                let memory = self.memory().clone();
-                let agent = id.clone();
-                let files = package.files.clone();
-                let mirrored = tokio::task::spawn_blocking(move || {
-                    memory.archive(&agent)?;
-                    memory.mirror(&agent, &files)
-                })
-                .await;
-                if !matches!(mirrored, Ok(Ok(()))) {
-                    eprintln!("miroir de la mémoire de {id} non refait après son départ");
-                }
-            }
+        if !channels.is_empty() {
+            self.stop_channels(&channels);
         }
-        self.memory_log(
-            id,
-            format!(
-                "déplacé de {} vers {} ; workspace {}",
-                place_name(from.as_deref()),
-                place_name(target),
-                new_workdir.display()
-            ),
-        );
+        let memory = self.memory().clone();
+        let agent = id.clone();
+        let archived = tokio::task::spawn_blocking(move || memory.archive(&agent)).await;
+        if !matches!(archived, Ok(Ok(()))) {
+            eprintln!("mémoire de {id} non mise de côté après son départ");
+        }
         self.publish_status(id);
         Ok(Moved {
             record: self.record(id).map_err(said)?,
@@ -149,156 +140,184 @@ impl Supervisor {
         })
     }
 
-    /// Nom du dossier dédié de l'Agent, si son workspace en est un : celui qu'Argos crée
-    /// par défaut, sous `agents/` des données du hub ou du nœud.
-    fn dedicated_name(&self, record: &AgentRecord) -> Option<String> {
-        let parent = record.workdir.parent()?;
-        let dedicated = match &record.node {
-            None => parent == self.agents_dir(),
-            Some(_) => parent == Path::new("agents"),
+    /// Reçoit un agent qui arrive d'un pair (D48) : ce nœud en devient le détenteur.
+    pub async fn adopt(&self, arrival: Arrival, from: &str) -> Result<String, String> {
+        let Some(main) = arrival.rows.agents.first().cloned() else {
+            return Err("arrivée sans agent".into());
         };
-        dedicated
-            .then(|| record.workdir.file_name()?.to_str().map(String::from))
-            .flatten()
+        let workdir = if arrival.workdir.is_absolute() {
+            arrival.workdir.clone()
+        } else {
+            self.home().join(&arrival.workdir)
+        };
+        let skipped = self
+            .registry()
+            .import_rows(&arrival.rows, &workdir)
+            .map_err(|error| error.to_string())?;
+        if let Some(package) = arrival.memory {
+            let memory = self.memory().clone();
+            let agent = main.id.clone();
+            tokio::task::spawn_blocking(move || memory.import(&agent, &package))
+                .await
+                .map_err(|error| error.to_string())?
+                .map_err(|error| format!("mémoire non posée : {error}"))?;
+        }
+        let mut report = format!("{} détenu par {}", main.id, self.nodes().name());
+        if !arrival.channels.is_empty() {
+            match crate::channels::receive(self.home(), &arrival.channels) {
+                Ok(()) => {
+                    crate::channels::start_configured(self);
+                    let ids: Vec<&str> = arrival.channels.iter().map(|c| c.id.as_str()).collect();
+                    report.push_str(&format!(" ; canaux repris : {}", ids.join(", ")));
+                }
+                Err(error) => report.push_str(&format!(" ; canaux non repris : {error}")),
+            }
+        }
+        for agent in &arrival.rows.agents {
+            self.publish_status(&agent.id);
+        }
+        self.memory_log(
+            &main.id,
+            format!(
+                "arrivé sur le nœud {} depuis {from} ; workspace {}",
+                self.nodes().name(),
+                workdir.display()
+            ),
+        );
+        if !skipped.is_empty() {
+            report.push_str(&format!(
+                " ; lignes laissées de côté : {}",
+                skipped.join(" ; ")
+            ));
+        }
+        Ok(report)
+    }
+
+    /// Le dossier dédié de l'agent, relatif aux données du nœud, si son workspace en est
+    /// un : `agents/<nom>` pour un Agent, `assistant` pour l'Assistant.
+    fn dedicated_dir(&self, record: &AgentRecord) -> Option<PathBuf> {
+        let name = record.workdir.file_name()?.to_str()?;
+        let parent = record.workdir.parent()?;
+        if parent == self.agents_dir() || parent == Path::new("agents") {
+            return Some(Path::new("agents").join(name));
+        }
+        if record.level == Level::Assistant
+            && (parent == self.home() || parent.as_os_str().is_empty())
+        {
+            return Some(PathBuf::from(name));
+        }
+        None
     }
 
     async fn export_memory(&self, record: &AgentRecord) -> Result<MemoryPackage, String> {
-        let output = match &record.node {
-            Some(node) => {
-                self.nodes()
-                    .memory(node, &record.id, MemoryOp::Export)
-                    .await?
-            }
-            None => {
-                let memory = self.memory().clone();
-                let agent = record.id.clone();
-                tokio::task::spawn_blocking(move || memory.apply(&agent, MemoryOp::Export))
-                    .await
-                    .map_err(|error| error.to_string())?
-            }
-        };
-        match output {
+        match self.memory_op(record, MemoryOp::Export).await {
             Ok(MemoryOutput::Package(package)) => Ok(package),
             Ok(_) => Err("mémoire : réponse inattendue à l'export".into()),
             Err(error) => Err(format!("mémoire non exportée : {error}")),
         }
     }
 
-    async fn import_memory(
-        &self,
-        id: &AgentId,
-        target: Option<&str>,
-        package: MemoryPackage,
-    ) -> Result<(), String> {
-        let op = MemoryOp::Import { package };
-        let result = match target {
-            Some(node) => self.nodes().memory(node, id, op).await?,
-            None => {
-                let memory = self.memory().clone();
-                let agent = id.clone();
-                tokio::task::spawn_blocking(move || memory.apply(&agent, op))
-                    .await
-                    .map_err(|error| error.to_string())?
-            }
-        };
-        result
-            .map(drop)
-            .map_err(|error| format!("mémoire non posée sur {} : {error}", place_name(target)))
-    }
-
-    /// Copie le dossier dédié vers celui de la machine d'arrivée : même nom, ou un nom
-    /// neuf si ce dossier existe déjà (un ancien séjour), pour ne rien écraser. D'un nœud
-    /// à un autre, la copie passe par le hub.
+    /// Copie le dossier dédié vers le même chemin relatif chez `target`, ou un nom neuf
+    /// si ce dossier y existe déjà (un ancien séjour), pour ne rien écraser.
     async fn copy_workspace(
         &self,
         id: &AgentId,
-        from: Option<&str>,
         source: &Path,
-        target: Option<&str>,
-        name: &str,
+        target: &str,
+        relative: &Path,
     ) -> Result<(PathBuf, usize, Vec<String>), String> {
         let label = format!("move-{id}");
-        let mut origin = Side::new(self, from, source.to_path_buf(), format!("{label}-from"));
-        let index = origin.open().await?;
-        let result = async {
-            if let (Some(_), Some(_)) = (from, target) {
-                // Nœud → nœud : étape sur le hub, effacée ensuite.
-                let staging = self.inner.settings.home.join("moves").join(id.as_str());
-                let _ = std::fs::remove_dir_all(&staging);
-                let mut hop = Side::new(self, None, staging.clone(), format!("{label}-hop"));
-                hop.open().await?;
-                let skipped = transfer(&origin, &index, &hop).await?;
-                let hop_index = hop.open().await?;
-                let placed = self.place(id, target, name, &label, &hop, &hop_index).await;
-                let _ = std::fs::remove_dir_all(&staging);
-                let (dir, copied, mut more) = placed?;
-                more.extend(skipped);
-                Ok((dir, copied, more))
-            } else {
-                self.place(id, target, name, &label, &origin, &index).await
-            }
-        }
-        .await;
-        origin.close().await;
-        result
-    }
-
-    /// Pose l'arbre `index` de `from` dans un dossier dédié vide de la machine d'arrivée.
-    async fn place(
-        &self,
-        id: &AgentId,
-        target: Option<&str>,
-        name: &str,
-        label: &str,
-        from: &Side<'_>,
-        index: &Index,
-    ) -> Result<(PathBuf, usize, Vec<String>), String> {
+        std::fs::create_dir_all(source)
+            .map_err(|error| format!("{} : {error}", source.display()))?;
+        let local = Arc::new(Mutex::new(Tree::whole(source.to_path_buf())));
+        let scanning = Arc::clone(&local);
+        let index = tokio::task::spawn_blocking(move || lock(&scanning).scan())
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| format!("{} : {error}", source.display()))?;
+        let name = relative
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("agent")
+            .to_string();
+        let parent = relative.parent().map(Path::to_path_buf).unwrap_or_default();
         for attempt in 0..5 {
             let dir_name = if attempt == 0 {
-                name.to_string()
+                name.clone()
             } else {
                 let suffix = &uuid::Uuid::new_v4().simple().to_string()[..4];
-                format!(
-                    "{}-{suffix}",
-                    name.rsplit_once('-').map_or(name, |(base, _)| base)
+                let base = name
+                    .rsplit_once('-')
+                    .map_or(name.as_str(), |(base, _)| base);
+                format!("{base}-{suffix}")
+            };
+            let dir = parent.join(&dir_name);
+            let opened = self
+                .nodes()
+                .sync(
+                    target,
+                    &label,
+                    SyncRequest::Open {
+                        workdir: dir.clone(),
+                        excludes: vec![],
+                        known: vec![],
+                        copy: true,
+                    },
                 )
+                .await?;
+            let SyncResponse::Index { entries } = opened else {
+                return Err(format!("nœud {target} : réponse inattendue à l'ouverture"));
             };
-            let dir = match target {
-                Some(_) => Path::new("agents").join(&dir_name),
-                None => self.agents_dir().join(&dir_name),
-            };
-            let mut to = Side::new(self, target, dir.clone(), format!("{label}-to"));
-            let existing = to.open().await?;
-            if !existing.is_empty() {
-                to.close().await;
+            if !entries.is_empty() {
+                let _ = self.nodes().sync(target, &label, SyncRequest::Close).await;
                 continue;
             }
             let copied = index.values().filter(|entry| !entry.held()).count();
-            let skipped = transfer(from, index, &to).await;
-            to.close().await;
-            return skipped
+            let result =
+                transfer(&local, &index, |ops| self.remote_write(target, &label, ops)).await;
+            let _ = self.nodes().sync(target, &label, SyncRequest::Close).await;
+            return result
                 .map(|skipped| (dir, copied, skipped))
-                .map_err(|error| {
-                    format!(
-                        "workspace de {id} non copié vers {} : {error}",
-                        place_name(target)
-                    )
-                });
+                .map_err(|error| format!("workspace de {id} non copié vers {target} : {error}"));
         }
         Err("aucun dossier libre pour son workspace".into())
     }
-}
 
-fn place_name(node: Option<&str>) -> String {
-    match node {
-        Some(node) => format!("le nœud {node}"),
-        None => "le hub".into(),
+    async fn remote_write(&self, peer: &str, label: &str, ops: Vec<WriteOp>) -> Result<(), String> {
+        match self
+            .nodes()
+            .sync(peer, label, SyncRequest::Write { ops })
+            .await?
+        {
+            SyncResponse::Written { results } => match results.into_iter().flatten().next() {
+                Some(error) => Err(error),
+                None => Ok(()),
+            },
+            _ => Err(format!("nœud {peer} : réponse inattendue à l'écriture")),
+        }
+    }
+
+    fn stop_channels(&self, channels: &[ChannelTransfer]) {
+        for channel in channels {
+            self.channels().stop(&channel.id);
+        }
+        if let Err(error) = crate::channels::forget(self.home(), channels) {
+            eprintln!("canaux non retirés de la configuration : {error}");
+        }
     }
 }
 
-/// Copie chaque fichier et lien de `index` de `from` vers `to`, par morceaux. Rend les
-/// fichiers trop gros pour voyager.
-async fn transfer(from: &Side<'_>, index: &Index, to: &Side<'_>) -> Result<Vec<String>, String> {
+/// Copie chaque fichier et lien de `index`, lus dans l'arbre local, par morceaux. Rend
+/// les fichiers trop gros pour voyager.
+async fn transfer<F, Fut>(
+    local: &Arc<Mutex<Tree>>,
+    index: &Index,
+    write: F,
+) -> Result<Vec<String>, String>
+where
+    F: Fn(Vec<WriteOp>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
     let mut skipped = vec![];
     for (path, entry) in index {
         if entry.too_big {
@@ -309,7 +328,7 @@ async fn transfer(from: &Side<'_>, index: &Index, to: &Side<'_>) -> Result<Vec<S
             continue;
         }
         if let Some(target) = &entry.link {
-            to.write(vec![WriteOp::Link {
+            write(vec![WriteOp::Link {
                 path: path.clone(),
                 target: target.clone(),
                 expect: None,
@@ -337,7 +356,10 @@ async fn transfer(from: &Side<'_>, index: &Index, to: &Side<'_>) -> Result<Vec<S
                     len: 0,
                 });
             }
-            let read = from.read(chunks).await?;
+            let tree = Arc::clone(local);
+            let read: Vec<Chunk> = tokio::task::spawn_blocking(move || lock(&tree).read(&chunks))
+                .await
+                .map_err(|error| error.to_string())?;
             let last = read.len() - 1;
             let ops = read
                 .into_iter()
@@ -359,7 +381,7 @@ async fn transfer(from: &Side<'_>, index: &Index, to: &Side<'_>) -> Result<Vec<S
                     })
                 })
                 .collect::<Result<Vec<_>, String>>()?;
-            to.write(ops).await?;
+            write(ops).await?;
             offset = next;
             if offset >= entry.size {
                 break;
@@ -367,127 +389,6 @@ async fn transfer(from: &Side<'_>, index: &Index, to: &Side<'_>) -> Result<Vec<S
         }
     }
     Ok(skipped)
-}
-
-/// Un bout de la copie : un dossier du hub, ou un workspace sur un nœud.
-struct Side<'a> {
-    supervisor: &'a Supervisor,
-    node: Option<String>,
-    dir: PathBuf,
-    /// Nom de l'arbre ouvert côté nœud.
-    label: String,
-    tree: Option<Arc<Mutex<Tree>>>,
-}
-
-impl<'a> Side<'a> {
-    fn new(supervisor: &'a Supervisor, node: Option<&str>, dir: PathBuf, label: String) -> Self {
-        Self {
-            supervisor,
-            node: node.map(String::from),
-            dir,
-            label,
-            tree: None,
-        }
-    }
-
-    /// Ouvre (ou relit) l'arbre complet ; le dossier est créé s'il manque.
-    async fn open(&mut self) -> Result<Index, String> {
-        match &self.node {
-            Some(node) => {
-                let response = self
-                    .supervisor
-                    .nodes()
-                    .sync(
-                        node,
-                        &self.label,
-                        SyncRequest::Open {
-                            workdir: self.dir.clone(),
-                            excludes: vec![],
-                            known: vec![],
-                            copy: true,
-                        },
-                    )
-                    .await?;
-                match response {
-                    SyncResponse::Index { entries } => Ok(entries),
-                    _ => Err(format!("nœud {node} : réponse inattendue à l'ouverture")),
-                }
-            }
-            None => {
-                std::fs::create_dir_all(&self.dir)
-                    .map_err(|error| format!("{} : {error}", self.dir.display()))?;
-                let tree = Arc::new(Mutex::new(Tree::whole(self.dir.clone())));
-                let scanning = Arc::clone(&tree);
-                let index = tokio::task::spawn_blocking(move || lock(&scanning).scan())
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .map_err(|error| error.to_string())?;
-                self.tree = Some(tree);
-                Ok(index)
-            }
-        }
-    }
-
-    async fn read(&self, chunks: Vec<ReadChunk>) -> Result<Vec<Chunk>, String> {
-        match (&self.node, &self.tree) {
-            (Some(node), _) => {
-                match self
-                    .supervisor
-                    .nodes()
-                    .sync(node, &self.label, SyncRequest::Read { chunks })
-                    .await?
-                {
-                    SyncResponse::Data { chunks } => Ok(chunks),
-                    _ => Err(format!("nœud {node} : réponse inattendue à la lecture")),
-                }
-            }
-            (None, Some(tree)) => {
-                let tree = Arc::clone(tree);
-                tokio::task::spawn_blocking(move || lock(&tree).read(&chunks))
-                    .await
-                    .map_err(|error| error.to_string())
-            }
-            (None, None) => Err("arbre non ouvert".into()),
-        }
-    }
-
-    /// Écrit ; la première opération refusée fait échouer la copie.
-    async fn write(&self, ops: Vec<WriteOp>) -> Result<(), String> {
-        let results = match (&self.node, &self.tree) {
-            (Some(node), _) => {
-                match self
-                    .supervisor
-                    .nodes()
-                    .sync(node, &self.label, SyncRequest::Write { ops })
-                    .await?
-                {
-                    SyncResponse::Written { results } => results,
-                    _ => return Err(format!("nœud {node} : réponse inattendue à l'écriture")),
-                }
-            }
-            (None, Some(tree)) => {
-                let tree = Arc::clone(tree);
-                tokio::task::spawn_blocking(move || lock(&tree).write(ops))
-                    .await
-                    .map_err(|error| error.to_string())?
-            }
-            (None, None) => return Err("arbre non ouvert".into()),
-        };
-        match results.into_iter().flatten().next() {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
-    }
-
-    async fn close(&self) {
-        if let Some(node) = &self.node {
-            let _ = self
-                .supervisor
-                .nodes()
-                .sync(node, &self.label, SyncRequest::Close)
-                .await;
-        }
-    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {

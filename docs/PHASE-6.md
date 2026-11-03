@@ -46,6 +46,21 @@ Chaque tranche se livre seule, testée sur des nœuds simulés (plusieurs daemon
 ### T6 — Installation d'un nœud
 - Release `linux-arm64` et `install.sh --node <nom>` (constat de l'essai sur le Pi, docs/PHASE-4.md), écriture de `install.toml` pour les mises à jour.
 
+## Conception retenue
+
+- **Un seul mode de daemon.** `argos-daemon hub` et `argos-daemon node` lancent le même daemon complet (`node` reste un alias). Le nom du nœud et l'écoute des pairs viennent de `[node]` dans `config.toml` (repris de `node.toml` s'il existe).
+- **`record.node` veut dire « détenteur ».** `None` : l'agent appartient à ce nœud, qui le fait tourner. `Some(pair)` : c'est une **copie d'annuaire** d'un agent détenu par ce pair, jamais lancée ici. Le registre de chaque nœud contient donc ses agents et les copies de ceux des autres, avec les mêmes ids. Les contraintes (un seul Assistant, noms uniques) valent pour tout le maillage.
+- **Annuaire.** À l'ouverture d'un lien, chaque nœud envoie la fiche de tous ses agents ; puis chaque changement d'un de ses agents part à tous ses pairs. Le récepteur met à jour sa copie (`node = Some(émetteur)`).
+- **Lien entre pairs** (`src/peer/`). WebSocket avec jeton, ouvert par l'un ou l'autre (tunnel SSH ou URL directe), qui sert ensuite dans les deux sens : appels numérotés avec réponse (`PeerCall`) et annonces d'annuaire. Deux liens entre les mêmes pairs : on garde celui ouvert par le nom le plus petit.
+- **Appels entre pairs.**
+  - `Tool` : un outil MCP qui vise un agent détenu ailleurs (mission, configuration, déplacement, fonction…) est exécuté par son détenteur, avec l'appelant tel que l'annuaire le connaît.
+  - `Deliver` : un message pour un agent détenu ailleurs (rapport, escalade, question, dialogue latéral, déclencheur). Pair injoignable : file persistante (`outbox`), vidée dans l'ordre à la reconnexion.
+  - `Memory` : opération sur la mémoire d'un agent, chez son détenteur.
+  - `Sync` : arbre d'un workspace, pour la copie d'un déplacement et la synchro D44.
+  - `Adopt` : le pair reçoit tout ce que possède un agent qui arrive (fiche, board, déclencheurs, fonctions, surfaces, escalades, capacités, mémoire, canaux pour l'Assistant) et en devient le détenteur.
+- **Passation au premier démarrage** (T5). Les fiches qu'un ancien hub tenait pour des agents placés sur un nœud (colonne `handover`) sont transmises à ce nœud par `Adopt` à la première connexion ; mémoire et workspace y sont déjà.
+- **Application** (T4). Elle lit la liste des nœuds dans `[gui.nodes]`, se connecte à chacun (tunnel SSH ouvert par l'app) et ne prend de chaque nœud que ses propres agents.
+
 ## Questions ouvertes
 
 - Identifiants : les ids d'agent sont déjà des UUID, uniques sans coordination. Les ids de board, de déclencheur et de surface doivent l'être aussi pour voyager.

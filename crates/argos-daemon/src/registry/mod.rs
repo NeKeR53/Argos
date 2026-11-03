@@ -5,12 +5,14 @@
 mod board;
 mod escalations;
 mod functions;
+mod mesh;
 mod surfaces;
 mod syncs;
 mod triggers;
 
 pub use board::{Position, TaskUpdate};
 pub use escalations::MAX_OPTIONS;
+pub use mesh::{Cell, Rows};
 pub use surfaces::MAX_HTML;
 pub use syncs::SyncRecord;
 pub use triggers::{MIN_EVERY_SECONDS, NewTrigger};
@@ -108,7 +110,7 @@ pub struct Registry {
 }
 
 /// Migrations successives ; la version du schéma est leur nombre (`PRAGMA user_version`).
-const MIGRATIONS: [&str; 12] = [
+const MIGRATIONS: [&str; 13] = [
     AGENTS_SCHEMA,
     board::SCHEMA,
     PROFILE_COLUMN,
@@ -121,6 +123,7 @@ const MIGRATIONS: [&str; 12] = [
     escalations::SCHEMA,
     syncs::SCHEMA,
     surfaces::BUILDER_COLUMN,
+    mesh::SCHEMA,
 ];
 
 /// v3 : profil de la politique de modèles (T8).

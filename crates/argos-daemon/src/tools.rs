@@ -287,7 +287,7 @@ fn level_tools(level: Level) -> Vec<Tool> {
                     ("profile", "Profil de modèle."),
                     (
                         "node",
-                        "Nœud où il tourne (voir list_nodes). Par défaut, le hub. Place-le sur le nœud de ce dont il s'occupe.",
+                        "Nœud qui le détiendra (voir list_nodes). Par défaut, le tien. Place-le sur le nœud de ce dont il s'occupe.",
                     ),
                     (
                         "workdir",
@@ -356,10 +356,10 @@ fn level_tools(level: Level) -> Vec<Tool> {
             ),
             tool(
                 "move_agent",
-                "Déplace l'un de tes Agents vers un autre nœud, ou vers le hub. Il reste le même : mémoire (avec son historique), board, déclencheurs et fonctions le suivent ; son dossier dédié est copié. Sa conversation reste sur l'ancienne machine : il repart d'une session neuve avec sa mémoire. Il doit être inactif, sans Worker ni synchro, et les deux machines joignables.",
+                "Déplace l'un de tes Agents vers un autre nœud. Tout le suit : mémoire (avec son historique), board, déclencheurs, fonctions, surfaces, escalades ; son dossier dédié est copié. Le nouveau nœud le détient et le fait tourner même si l'ancien s'éteint. Sa conversation reste sur l'ancienne machine : il repart d'une session neuve avec sa mémoire. Il doit être inactif, sans Worker ni synchro, et les deux machines joignables.",
                 &[
                     ("agent", AGENT_REF),
-                    ("node", "Nœud d'arrivée (voir list_nodes), ou « hub »."),
+                    ("node", "Nœud d'arrivée (voir list_nodes)."),
                     (
                         "workdir",
                         "Seulement si son workspace est un dossier de projet : chemin absolu du projet sur la machine d'arrivée. Les fichiers d'un projet ne sont pas copiés.",
@@ -368,13 +368,19 @@ fn level_tools(level: Level) -> Vec<Tool> {
                 &["agent", "node"],
             ),
             tool(
+                "move_assistant",
+                "À la demande de l'utilisateur seulement : te déplace toi-même sur un autre nœud, avec ta mémoire, tes canaux de discussion (Telegram) et tes déclencheurs, à la fin de ce tour. Ensuite on te parle là-bas, même si ce nœud-ci s'éteint.",
+                &[("node", "Nœud d'arrivée (voir list_nodes).")],
+                &["node"],
+            ),
+            tool(
                 "open_sync",
-                "À la demande de l'utilisateur seulement : synchronise en continu, dans les deux sens, le workspace d'un Agent placé sur un nœud avec un dossier du hub, vide ou absent. Ni .git/, ni fichiers ignorés.",
+                "À la demande de l'utilisateur seulement : synchronise en continu, dans les deux sens, le workspace d'un Agent placé sur un autre nœud avec un dossier de ton nœud, vide ou absent. Ni .git/, ni fichiers ignorés.",
                 &[
                     ("agent", AGENT_REF),
                     (
                         "local",
-                        "Chemin absolu de la copie locale sur le hub (dossier vide ou absent).",
+                        "Chemin absolu de la copie locale sur ton nœud (dossier vide ou absent).",
                     ),
                     (
                         "excludes",
@@ -652,7 +658,98 @@ fn tool(
 }
 
 /// Exécute un outil pour `caller`. `Err` porte un message destiné à l'agent.
+/// Outils de l'Assistant qui visent un Agent par `agent` : exécutés par le nœud qui le
+/// détient (D48), où vivent sa session, son board et sa mémoire.
+const FORWARDED: [&str; 15] = [
+    "configure_agent",
+    "agent_capabilities",
+    "set_agent_capabilities",
+    "rename_agent",
+    "move_agent",
+    "assign_mission",
+    "prioritize_mission",
+    "cancel_mission",
+    "send_to_agent",
+    "inspect_agent",
+    "interrupt_agent",
+    "park_agent",
+    "stop_agent",
+    "retire_agent",
+    "function_call",
+];
+
+/// Exécute un outil pour `caller`. Un outil qui vise un agent détenu par un autre nœud
+/// part à ce nœud (D48).
 pub async fn call(
+    supervisor: &Supervisor,
+    caller: &AgentRecord,
+    name: &str,
+    args: &Value,
+) -> Result<String, String> {
+    if let Some(owner) = owner_elsewhere(supervisor, name, args)? {
+        return supervisor
+            .nodes()
+            .tool(&owner, &caller.id, name, args)
+            .await;
+    }
+    if name == "answer_escalation"
+        && caller.level == Level::Assistant
+        && let Ok(id) = text(args, "escalation")
+        && supervisor.registry().escalation(id).is_err()
+    {
+        // L'escalade vit chez le nœud de son Agent : on la cherche chez les pairs reliés.
+        let mut last = format!("escalade inconnue : {id}");
+        for node in supervisor.nodes().status() {
+            if !node.connected {
+                continue;
+            }
+            match supervisor
+                .nodes()
+                .tool(&node.name, &caller.id, name, args)
+                .await
+            {
+                Ok(done) => return Ok(done),
+                Err(error) => last = error,
+            }
+        }
+        return Err(last);
+    }
+    call_here(supervisor, caller, name, args).await
+}
+
+/// Le pair qui doit exécuter cet outil, s'il vise un agent détenu ailleurs.
+fn owner_elsewhere(
+    supervisor: &Supervisor,
+    name: &str,
+    args: &Value,
+) -> Result<Option<String>, String> {
+    let here = supervisor.nodes().name().to_string();
+    if name == "create_agent" {
+        let Some(node) = optional(args, "node").filter(|node| *node != here) else {
+            return Ok(None);
+        };
+        if !supervisor.nodes().is_known(node) {
+            return Err(format!(
+                "nœud inconnu : {node}. Les nœuds se déclarent par l'utilisateur ; voir list_nodes."
+            ));
+        }
+        return Ok(Some(node.to_string()));
+    }
+    if !FORWARDED.contains(&name) {
+        return Ok(None);
+    }
+    let Some(reference) = optional(args, "agent") else {
+        return Ok(None);
+    };
+    let found = match supervisor.record(&AgentId::new(reference)) {
+        Ok(record) => Some(record),
+        Err(_) => supervisor.registry().agent_named(reference).map_err(said)?,
+    };
+    Ok(found.and_then(|record| record.node))
+}
+
+/// Exécute un outil ici, sans renvoi : appelé par un pair qui détient l'agent visé.
+pub async fn call_here(
     supervisor: &Supervisor,
     caller: &AgentRecord,
     name: &str,
@@ -778,10 +875,41 @@ pub async fn call(
             Ok(sent)
         }
         (Level::Assistant, "move_agent") => move_agent(supervisor, caller, args).await,
+        (Level::Assistant, "move_assistant") => {
+            let target = text(args, "node")?.to_string();
+            if target == supervisor.nodes().name() {
+                return Err(format!("tu es déjà sur {target}"));
+            }
+            if !supervisor.nodes().is_connected(&target) {
+                return Err(format!("nœud {target} injoignable : impossible d'y partir"));
+            }
+            // L'Assistant est en plein tour : il part dès que ce tour est fini.
+            let supervisor = supervisor.clone();
+            let id = caller.id.clone();
+            let destination = target.clone();
+            tokio::spawn(async move {
+                for _ in 0..1200 {
+                    if supervisor.inspect(&id).is_ok_and(|status| !status.busy) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                match supervisor.move_agent(&id, &destination, None).await {
+                    Ok(_) => eprintln!("Assistant parti sur le nœud {destination}"),
+                    Err(error) => eprintln!("Assistant non déplacé sur {destination} : {error}"),
+                }
+            });
+            Ok(format!(
+                "Départ vers le nœud {target} à la fin de ce tour : ta mémoire, tes canaux et tes déclencheurs t'y suivent. Le message suivant de l'utilisateur t'y trouvera."
+            ))
+        }
         (Level::Assistant, "list_nodes") => {
             let nodes = supervisor.nodes().status();
             if nodes.is_empty() {
-                return Ok("Aucun autre nœud : tout tourne sur le hub.".into());
+                return Ok(format!(
+                    "Aucun autre nœud : tout tourne sur {}.",
+                    supervisor.nodes().name()
+                ));
             }
             Ok(json!(nodes).to_string())
         }
@@ -1329,24 +1457,16 @@ fn create_agent(
     let (profile, choice) = supervisor
         .policy()
         .resolve(optional(args, "profile"), Level::Agent)?;
-    let node = optional(args, "node").map(String::from);
-    if let Some(node) = &node
-        && !supervisor.nodes().is_known(node)
-    {
-        return Err(format!(
-            "nœud inconnu : {node}. Les nœuds se déclarent par l'utilisateur ; voir list_nodes."
-        ));
-    }
+    // Un autre nœud a déjà reçu l'appel (`call`) : l'Agent naît ici, sur ce nœud.
+    let node: Option<String> = None;
     let dir = format!(
         "{}-{}",
         slug(name),
         &uuid::Uuid::new_v4().simple().to_string()[..4]
     );
-    let workdir = match (optional(args, "workdir"), &node) {
-        (Some(dir), _) => dir.into(),
-        (None, None) => supervisor.agents_dir().join(dir),
-        // Sur un autre nœud : relatif à son dossier de données.
-        (None, Some(_)) => std::path::Path::new("agents").join(dir),
+    let workdir = match optional(args, "workdir") {
+        Some(dir) => dir.into(),
+        None => supervisor.agents_dir().join(dir),
     };
     let agent = supervisor
         .create(NewAgent {
@@ -1371,7 +1491,7 @@ fn create_agent(
     Ok(format!(
         "Agent « {name} » créé ({}), au repos jusqu'à sa première mission. Nœud : {}. Répertoire : {}.",
         agent.id,
-        agent.node.as_deref().unwrap_or("le hub"),
+        supervisor.machine_name(agent.node.as_deref()),
         agent.workdir.display()
     ))
 }
@@ -1382,14 +1502,13 @@ async fn move_agent(
     args: &Value,
 ) -> Result<String, String> {
     let agent = child(supervisor, caller, text(args, "agent")?)?;
-    let node = text(args, "node")?;
-    let target = (!node.eq_ignore_ascii_case("hub")).then_some(node);
+    let target = text(args, "node")?;
     let workdir = optional(args, "workdir").map(std::path::PathBuf::from);
     let moved = supervisor.move_agent(&agent.id, target, workdir).await?;
     let mut report = format!(
         "{} déplacé sur {}. Workspace : {}.",
         label(&moved.record),
-        moved.record.node.as_deref().unwrap_or("le hub"),
+        moved.record.node.as_deref().unwrap_or("?"),
         moved.record.workdir.display()
     );
     match moved.copied {

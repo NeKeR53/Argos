@@ -12,7 +12,7 @@ use crate::engine::{
     SessionSpec, prepare_codex_home,
 };
 use crate::memory::{Memory, MemoryOp, MemoryOutput};
-use crate::node::{Nodes, RemoteSpec};
+use crate::peer::Peers;
 use crate::policy::ModelPolicy;
 use crate::registry::{AgentUpdate, NewAgent, Registry, RegistryError};
 use argos_core::protocol::{AgentStatus, DaemonEvent, Origin};
@@ -55,8 +55,8 @@ pub struct SupervisorSettings {
     pub surfaces: Option<crate::surface_web::Links>,
     /// Politique de modèles : profils, replis, plafonds (D22).
     pub policy: ModelPolicy,
-    /// Les autres nœuds, où tournent les agents qui y sont placés (D32).
-    pub nodes: Nodes,
+    /// Les nœuds pairs (D48) : ce nœud y détient ses agents, les autres les leurs.
+    pub peers: Peers,
     /// Droits des Agents et Workers sur la machine (`[workers] access`).
     pub worker_access: Access,
     /// Préemption (D14) : une mission passée en tête parke les Workers moins prioritaires.
@@ -75,6 +75,8 @@ pub enum SupervisorError {
     Retired(AgentId),
     #[error("{0} est en cours d'arrêt")]
     Stopping(AgentId),
+    #[error("{0} est détenu par le nœud {1} : il ne tourne que là-bas")]
+    Elsewhere(AgentId, String),
     #[error("plafond atteint : {0}")]
     Cap(String),
     #[error("mémoire : {0}")]
@@ -226,8 +228,29 @@ impl Supervisor {
         models
     }
 
-    pub fn nodes(&self) -> &Nodes {
-        &self.inner.settings.nodes
+    /// Les nœuds pairs et le nom de celui-ci (D48).
+    pub fn nodes(&self) -> &Peers {
+        &self.inner.settings.peers
+    }
+
+    /// `$ARGOS_HOME` de ce nœud.
+    pub fn home(&self) -> &std::path::Path {
+        &self.inner.settings.home
+    }
+
+    /// La fiche d'un agent détenu par ce nœud ; une copie d'annuaire est refusée : ce qui
+    /// le modifie passe par son détenteur (D48).
+    pub fn owned_record(&self, id: &AgentId) -> Result<AgentRecord> {
+        let record = self.record(id)?;
+        match &record.node {
+            Some(owner) => Err(SupervisorError::Elsewhere(id.clone(), owner.clone())),
+            None => Ok(record),
+        }
+    }
+
+    /// Nom d'une machine du maillage, pour l'utilisateur et les agents.
+    pub fn machine_name(&self, node: Option<&str>) -> String {
+        node.unwrap_or(self.nodes().name()).to_string()
     }
 
     /// Flux de tous les événements des agents.
@@ -341,6 +364,20 @@ impl Supervisor {
         from: Origin,
         message: Message,
     ) -> Result<()> {
+        // Détenu par un pair : le message lui part, ou attend en file qu'il revienne (D48).
+        let record = self.record(id)?;
+        if let Some(owner) = &record.node {
+            if record.state == AgentState::Retired {
+                return Err(SupervisorError::Retired(id.clone()));
+            }
+            if !message.images.is_empty() {
+                return Err(SupervisorError::Elsewhere(id.clone(), owner.clone()));
+            }
+            return self
+                .nodes()
+                .deliver(owner, id, from, message.text)
+                .map_err(SupervisorError::Memory);
+        }
         let slot = self.slot(id);
         let mut live = slot.lock().await;
         if live.is_none() {
@@ -366,7 +403,7 @@ impl Supervisor {
 
     /// Interrompt le tour en cours, s'il y en a un.
     pub async fn interrupt(&self, id: &AgentId) -> Result<()> {
-        self.record(id)?;
+        self.owned_record(id)?;
         let slot = self.slot(id);
         let live = slot.lock().await;
         if let Some(session) = live.as_ref() {
@@ -415,6 +452,7 @@ impl Supervisor {
 
     /// Retrait définitif de l'agent et de son sous-arbre, process arrêtés d'abord.
     pub async fn retire(&self, id: &AgentId) -> Result<Vec<AgentId>> {
+        self.owned_record(id)?;
         self.stop(id).await?;
         let retired = {
             // Un appel arrivé entre la fin du stop et le retrait est annulé aussi.
@@ -463,19 +501,13 @@ impl Supervisor {
             }
         }
         self.check_parallel_cap(&record)?;
-        let spawned = match &record.node {
-            None => match self.spec_for(&record).await {
-                Ok(spec) => Session::spawn(spec).await.map_err(SupervisorError::from),
-                Err(error) => Err(error),
-            },
-            Some(node) => match self.remote_spec_for(&record).await {
-                Ok(spec) => self
-                    .nodes()
-                    .spawn(node, spec)
-                    .await
-                    .map_err(SupervisorError::from),
-                Err(error) => Err(error),
-            },
+        // Un agent détenu par un pair ne tourne que chez lui (D48).
+        if let Some(owner) = &record.node {
+            return Err(SupervisorError::Elsewhere(id.clone(), owner.clone()));
+        }
+        let spawned = match self.spec_for(&record).await {
+            Ok(spec) => Session::spawn(spec).await.map_err(SupervisorError::from),
+            Err(error) => Err(error),
         };
         let (control, events) = match spawned {
             Ok(session) => session.split(),
@@ -631,7 +663,7 @@ impl Supervisor {
         config.validate().map_err(RegistryError::Hierarchy)?;
         let slot = self.slot(id);
         let mut live = slot.lock().await;
-        let record = self.record(id)?;
+        let record = self.owned_record(id)?;
         if record.level != Level::Agent || record.state == AgentState::Retired {
             return Err(RegistryError::Hierarchy(
                 "seul un Agent vivant peut être configuré".into(),
@@ -692,28 +724,6 @@ impl Supervisor {
         Ok(spec)
     }
 
-    /// La demande de session d'un agent placé sur un autre nœud. Le nœud complète ce
-    /// qui lui est propre.
-    async fn remote_spec_for(&self, record: &AgentRecord) -> Result<RemoteSpec> {
-        let instructions = self.instructions(record).await?;
-        Ok(RemoteSpec {
-            agent: record.id.clone(),
-            capabilities: self.capabilities_for(record)?,
-            engine: record.engine,
-            cwd: record.workdir.clone(),
-            model: record.model.clone(),
-            instructions: Some(instructions),
-            resume: record.session_id.clone(),
-            access: self.access_of(record),
-            mcp_token: self
-                .inner
-                .settings
-                .mcp_url
-                .as_ref()
-                .map(|_| self.mcp_token(&record.id)),
-        })
-    }
-
     /// Un Agent peut exécuter lui-même ; seul l'Assistant reste en lecture seule.
     fn access_of(&self, record: &AgentRecord) -> Access {
         match record.level {
@@ -749,22 +759,24 @@ impl Supervisor {
         Ok(instructions)
     }
 
-    /// Opération sur la mémoire d'un agent, là où elle vit : sur le hub, ou sur son nœud
-    /// (D23). Nœud injoignable : une lecture se rabat sur le miroir du hub, une écriture
-    /// est refusée.
+    /// Opération sur la mémoire d'un agent, là où elle vit : sur ce nœud, ou chez le
+    /// pair qui le détient (D23, D48). Pair injoignable : refusée.
     pub async fn memory_op(
         &self,
         record: &AgentRecord,
         op: MemoryOp,
     ) -> std::result::Result<MemoryOutput, String> {
-        let Some(node) = &record.node else {
-            return self.inner.memory.apply(&record.id, op);
+        let Some(owner) = &record.node else {
+            let memory = self.inner.memory.clone();
+            let agent = record.id.clone();
+            // git est lancé à chaque écriture : hors des threads de l'exécuteur.
+            return tokio::task::spawn_blocking(move || memory.apply(&agent, op))
+                .await
+                .unwrap_or_else(|error| Err(error.to_string()));
         };
-        let writes = op.writes();
-        match self.nodes().memory(node, &record.id, op.clone()).await {
+        match self.nodes().memory(owner, &record.id, op).await {
             Ok(result) => result,
-            Err(_) if !writes => self.inner.memory.apply(&record.id, op),
-            Err(unreachable) => Err(format!("mémoire non modifiée : {unreachable}")),
+            Err(unreachable) => Err(format!("mémoire hors d'atteinte : {unreachable}")),
         }
     }
 
@@ -813,7 +825,7 @@ impl Supervisor {
             "- Moteur : {} ({})\n- Nœud : {}\n- Répertoire de travail : {}",
             record.engine,
             record.model.as_deref().unwrap_or("modèle par défaut"),
-            record.node.as_deref().unwrap_or("le hub"),
+            self.machine_name(record.node.as_deref()),
             record.workdir.display()
         );
         let children = registry.children(&record.id)?;
@@ -1007,7 +1019,7 @@ impl Supervisor {
     pub async fn configure_agent(&self, id: &AgentId, update: AgentUpdate) -> Result<AgentRecord> {
         let slot = self.slot(id);
         let mut live = slot.lock().await;
-        let record = self.record(id)?;
+        let record = self.owned_record(id)?;
         if record.level != Level::Agent || record.state == AgentState::Retired {
             return Err(RegistryError::Hierarchy(
                 "seul un Agent vivant peut être configuré".into(),
@@ -1084,7 +1096,7 @@ impl Supervisor {
         let workdir = PathBuf::from(workdir.trim());
         let slot = self.slot(id);
         let mut live = slot.lock().await;
-        let record = self.record(id)?;
+        let record = self.owned_record(id)?;
         if record.level != Level::Agent || record.state == AgentState::Retired {
             return Err(RegistryError::Hierarchy(
                 "seul un Agent vivant peut changer de workspace".into(),
@@ -1138,7 +1150,7 @@ impl Supervisor {
         if model.is_empty() {
             return Err(SupervisorError::Cap("modèle vide".into()));
         }
-        let record = self.record(id)?;
+        let record = self.owned_record(id)?;
         if record.state == AgentState::Retired {
             return Err(SupervisorError::Retired(id.clone()));
         }
@@ -1227,8 +1239,12 @@ impl Supervisor {
         let _ = self.inner.events.send(event);
     }
 
-    fn publish_status(&self, id: &AgentId) {
+    pub fn publish_status(&self, id: &AgentId) {
         if let Ok(agent) = self.inspect(id) {
+            // Un agent détenu ici est annoncé à tous les pairs (annuaire, D48).
+            if agent.record.node.is_none() {
+                self.nodes().announce(vec![agent.record.clone()]);
+            }
             self.publish(DaemonEvent::AgentUpdated { agent });
         }
     }

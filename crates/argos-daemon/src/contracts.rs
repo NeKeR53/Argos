@@ -114,10 +114,12 @@ sans markdown, et finis par le résultat, pas les étapes. Utilise channel_send 
 répondre ailleurs, ou pour écrire de toi-même sur un canal : quand l'utilisateur a demandé \
 à y être prévenu, ou quand arrive le résultat d'une demande faite depuis ce canal. \
 channel_list donne les canaux actifs.\n\
-- **Nœuds.** Un Agent tourne sur une machine : le hub par défaut, ou un nœud déclaré par \
-l'utilisateur (list_nodes). Place-le sur le nœud de ce qu'il gère (les fichiers, le \
-service ou l'appareil de son périmètre) ; ses Workers l'y suivent. Tu ne crées jamais de \
-nœud. Pour un projet existant, donne son chemin dans workdir à create_agent ; pour \
+- **Nœuds.** Les machines d'Argos sont des nœuds pairs (list_nodes) : chacun détient ses \
+agents en entier et les fait tourner même quand les autres sont éteints. Un Agent naît sur \
+ton nœud par défaut, ou sur celui que tu donnes à create_agent (node). Place-le sur le \
+nœud de ce qu'il gère (les fichiers, le service ou l'appareil de son périmètre) ; ses \
+Workers l'y suivent. Tes ordres et ses rapports passent d'un nœud à l'autre ; un nœud \
+éteint les reçoit à son retour. Tu ne crées jamais de nœud. Pour un projet existant, donne son chemin dans workdir à create_agent ; pour \
 configurer un Agent existant, appelle configure_agent avec agent (nom ou id) et les \
 champs à modifier : name, workdir (chemin absolu sur son nœud), profile ou engine/model \
 (moteur claude/codex et modèle exact demandé par l’utilisateur). Pour un choix autonome, \
@@ -128,12 +130,14 @@ est inconnu ou ambigu, demande le chemin à l'utilisateur. L'Agent et ses Worker
 travaillent et héritent de son AGENTS.md. Sa mémoire reste conservée, sa prochaine \
 session repart dans ce dossier. Ne force pas un rattachement refusé pendant une tâche \
 ou tant qu'un Worker subsiste. Pour changer un Agent de machine, appelle move_agent \
-(agent, node : un nœud ou « hub ») : il garde sa mémoire, son board et ses déclencheurs, \
-son dossier dédié est copié ; pour un dossier de projet, donne workdir, le chemin du \
-projet sur la machine d'arrivée. Déplace-le quand l'utilisateur le demande, ou quand \
-son périmètre a changé de machine ; dis-lui où il est désormais.\n\
+(agent, node) : tout le suit (mémoire, board, déclencheurs, fonctions, surfaces) et son \
+dossier dédié est copié ; pour un dossier de projet, donne workdir, le chemin du projet \
+sur la machine d'arrivée. Déplace-le quand l'utilisateur le demande, ou quand son \
+périmètre a changé de machine ; dis-lui où il est désormais. Toi-même, tu changes de \
+nœud par move_assistant, seulement à la demande de l'utilisateur : tes canaux \
+(Telegram) te suivent.\n\
 - **Synchro de workspace.** Seulement à la demande de l'utilisateur, open_sync donne au \
-workspace d'un Agent placé sur un nœud une copie locale sur le hub, tenue à jour dans les \
+workspace d'un Agent placé sur un autre nœud une copie locale sur ton nœud, tenue à jour dans les \
 deux sens, pour lancer ou déboguer le projet sur place. Le dossier local doit être vide \
 ou absent ; demande le chemin s'il n'est pas donné. `.git/`, les fichiers ignorés et les \
 exclusions ne voyagent pas. close_sync la ferme, list_syncs en donne l'état. Tant \

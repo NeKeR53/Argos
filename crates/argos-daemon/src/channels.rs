@@ -76,6 +76,8 @@ pub struct Meta {
 
 /// Un connecteur démarré.
 pub trait Channel: Send + Sync {
+    /// Arrête le connecteur : l'Assistant part sur un autre nœud (D48).
+    fn stop(&self) {}
     /// `Some` quand le canal ne peut pas encore servir.
     fn unavailable(&self) -> Option<String> {
         None
@@ -151,6 +153,8 @@ pub async fn follow(supervisor: Supervisor, assistant: AgentId) {
 pub struct Channels {
     entries: Mutex<BTreeMap<String, Entry>>,
     turn: Mutex<Option<Turn>>,
+    /// Le filet de sécurité ([`follow`]) tourne déjà.
+    following: std::sync::atomic::AtomicBool,
 }
 
 struct Entry {
@@ -168,6 +172,21 @@ enum State {
 impl Channels {
     pub fn register(&self, id: &str, meta: Meta, channel: Arc<dyn Channel>) {
         self.insert(id, meta, State::Open(channel));
+    }
+
+    /// Arrête un canal et l'oublie.
+    pub fn stop(&self, id: &str) {
+        if let Some(entry) = locked(&self.entries).remove(id)
+            && let State::Open(channel) = entry.state
+        {
+            channel.stop();
+        }
+    }
+
+    fn is_open(&self, id: &str) -> bool {
+        locked(&self.entries)
+            .get(id)
+            .is_some_and(|entry| matches!(entry.state, State::Open(_)))
     }
 
     /// Un canal configuré qui n'a pas pu démarrer.
@@ -302,6 +321,199 @@ fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+// --- Canaux qui suivent l'Assistant d'un nœud à l'autre (D48) ---------------------------
+
+/// Démarre les canaux de `config.toml` qui ne tournent pas encore, si l'Assistant est
+/// détenu par ce nœud. Le filet de sécurité n'est lancé qu'une fois.
+pub fn start_configured(supervisor: &Supervisor) {
+    let assistant = match supervisor.registry().assistant() {
+        Ok(Some(assistant)) if assistant.node.is_none() => assistant,
+        _ => return,
+    };
+    let config = match crate::config::Config::load_or_create(&supervisor.home().join("config.toml"))
+    {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("canaux non démarrés : {error}");
+            return;
+        }
+    };
+    let channels = supervisor.channels();
+    if !config.channels.is_empty()
+        && !channels
+            .following
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+    {
+        tokio::spawn(follow(supervisor.clone(), assistant.id.clone()));
+    }
+    for (id, channel) in &config.channels {
+        if channels.is_open(id) {
+            continue;
+        }
+        let ChannelKind::Telegram(telegram) = channel.kind.clone();
+        let meta = channel.meta();
+        match crate::telegram::Telegram::from_config(
+            supervisor.clone(),
+            assistant.id.clone(),
+            id,
+            telegram,
+            config.voice.clone(),
+            supervisor.home(),
+        ) {
+            Ok(bridge) => {
+                bridge.spawn();
+                channels.register(id, meta, bridge);
+                println!("canal {id} actif (telegram)");
+            }
+            Err(error) => {
+                eprintln!("canal {id} désactivé : {error}");
+                channels.fail(id, meta, error);
+            }
+        }
+    }
+}
+
+/// Les canaux à emmener avec l'Assistant : leur section de configuration (sans chemin de
+/// jeton propre à cette machine) et leurs fichiers, jeton et position de relevé.
+pub fn transfers(home: &std::path::Path) -> Vec<crate::peer::ChannelTransfer> {
+    let Ok(text) = std::fs::read_to_string(home.join("config.toml")) else {
+        return vec![];
+    };
+    let Ok(document) = text.parse::<toml_edit::DocumentMut>() else {
+        return vec![];
+    };
+    let Some(channels) = document
+        .get("channels")
+        .and_then(|item| item.as_table_like())
+    else {
+        return vec![];
+    };
+    let mut moved = vec![];
+    for (id, item) in channels.iter() {
+        let Some(table) = item.as_table_like() else {
+            continue;
+        };
+        let mut section = toml_edit::Table::new();
+        let mut token_file = home.join(format!("{id}-token"));
+        for (key, value) in table.iter() {
+            if key == "token_file" {
+                if let Some(path) = value.as_str() {
+                    token_file = expand(path);
+                }
+                continue;
+            }
+            section.insert(key, value.clone());
+        }
+        let mut document = toml_edit::DocumentMut::new();
+        let mut wrapper = toml_edit::Table::new();
+        wrapper.set_implicit(true);
+        wrapper.insert(id, toml_edit::Item::Table(section));
+        document.insert("channels", toml_edit::Item::Table(wrapper));
+        let mut secrets = vec![];
+        if let Ok(token) = std::fs::read_to_string(&token_file) {
+            secrets.push((format!("{id}-token"), token));
+        }
+        if let Ok(offset) = std::fs::read_to_string(home.join(format!("{id}-offset"))) {
+            secrets.push((format!("{id}-offset"), offset));
+        }
+        moved.push(crate::peer::ChannelTransfer {
+            id: id.to_string(),
+            config: document.to_string(),
+            secrets,
+        });
+    }
+    moved
+}
+
+/// Pose les canaux qui arrivent avec l'Assistant : fichiers puis sections de config.
+pub fn receive(
+    home: &std::path::Path,
+    moved: &[crate::peer::ChannelTransfer],
+) -> Result<(), String> {
+    let path = home.join("config.toml");
+    if !path.exists() {
+        // Un nœud sans configuration reçoit d'abord celle par défaut.
+        crate::config::Config::load_or_create(&path).map_err(|error| error.to_string())?;
+    }
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut document = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| format!("config.toml illisible : {error}"))?;
+    for channel in moved {
+        for (name, content) in &channel.secrets {
+            if name.contains('/') || name.contains("..") {
+                continue;
+            }
+            write_private(&home.join(name), content)?;
+        }
+        let incoming = channel
+            .config
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| format!("canal {} : {error}", channel.id))?;
+        let Some(section) = incoming
+            .get("channels")
+            .and_then(|item| item.get(&channel.id))
+            .cloned()
+        else {
+            continue;
+        };
+        if document.get("channels").is_none() {
+            let mut wrapper = toml_edit::Table::new();
+            wrapper.set_implicit(true);
+            document.insert("channels", toml_edit::Item::Table(wrapper));
+        }
+        document["channels"][&channel.id] = section;
+    }
+    std::fs::write(&path, document.to_string())
+        .map_err(|error| format!("{} : {error}", path.display()))
+}
+
+/// Retire de ce nœud les canaux partis avec l'Assistant : sections et fichiers.
+pub fn forget(
+    home: &std::path::Path,
+    moved: &[crate::peer::ChannelTransfer],
+) -> Result<(), String> {
+    let path = home.join("config.toml");
+    let text = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let mut document = text
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|error| format!("config.toml illisible : {error}"))?;
+    if let Some(channels) = document
+        .get_mut("channels")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        for channel in moved {
+            channels.remove(&channel.id);
+        }
+    }
+    for channel in moved {
+        for (name, _) in &channel.secrets {
+            if !name.contains('/') {
+                let _ = std::fs::remove_file(home.join(name));
+            }
+        }
+    }
+    std::fs::write(&path, document.to_string()).map_err(|error| error.to_string())
+}
+
+fn expand(path: &str) -> std::path::PathBuf {
+    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => std::path::PathBuf::from(home).join(rest),
+        _ => std::path::PathBuf::from(path),
+    }
+}
+
+/// Écrit un fichier lisible par l'utilisateur seul.
+fn write_private(path: &std::path::Path, content: &str) -> Result<(), String> {
+    std::fs::write(path, content).map_err(|error| format!("{} : {error}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

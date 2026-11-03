@@ -98,7 +98,7 @@ fn world_custom(
         mcp_url: None,
         surfaces,
         policy,
-        nodes: Default::default(),
+        peers: argos_daemon::peer::Peers::alone("mac"),
         worker_access: Default::default(),
         preempt,
     };

@@ -64,7 +64,7 @@ impl Stage {
                 mcp_url: Some(mcp_url),
                 surfaces: None,
                 policy: cheap_policy(),
-                nodes: Default::default(),
+                peers: argos_daemon::peer::Peers::alone("mac"),
                 worker_access: Default::default(),
                 preempt: false,
             },

@@ -155,6 +155,8 @@ pub struct Telegram {
     offset_file: PathBuf,
     /// Message Telegram d'une escalade → son identifiant, pour y répondre en citant.
     escalations: Mutex<HashMap<i64, String>>,
+    /// Passe à `true` quand le canal s'arrête (l'Assistant part sur un autre nœud, D48).
+    stopping: tokio::sync::watch::Sender<bool>,
 }
 
 impl Telegram {
@@ -217,6 +219,7 @@ impl Telegram {
             speech,
             offset_file: home.join(format!("{id}-offset")),
             escalations: Mutex::default(),
+            stopping: tokio::sync::watch::channel(false).0,
         })
     }
 
@@ -225,9 +228,20 @@ impl Telegram {
         // Abonné avant tout relevé : aucune escalade ne peut passer avant lui.
         let events = self.supervisor.subscribe();
         let (outgoing, queue) = mpsc::unbounded_channel();
-        tokio::spawn(Arc::clone(self).follow(events, outgoing));
-        tokio::spawn(Arc::clone(self).send(queue));
-        tokio::spawn(Arc::clone(self).poll());
+        self.until_stopped(Arc::clone(self).follow(events, outgoing));
+        self.until_stopped(Arc::clone(self).send(queue));
+        self.until_stopped(Arc::clone(self).poll());
+    }
+
+    /// Lance une tâche du canal, arrêtée avec lui.
+    fn until_stopped(&self, task: impl std::future::Future<Output = ()> + Send + 'static) {
+        let mut stopping = self.stopping.subscribe();
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = task => {}
+                _ = stopping.wait_for(|stopped| *stopped) => {}
+            }
+        });
     }
 
     async fn poll(self: Arc<Self>) {
@@ -572,6 +586,10 @@ enum Announce {
 }
 
 impl Channel for Telegram {
+    fn stop(&self) {
+        let _ = self.stopping.send(true);
+    }
+
     fn unavailable(&self) -> Option<String> {
         self.config
             .chat_id

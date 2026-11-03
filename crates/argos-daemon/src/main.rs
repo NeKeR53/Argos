@@ -1,11 +1,8 @@
 use argos_core::{AgentRecord, EngineKind, Level};
-use argos_daemon::channels::ChannelKind;
-use argos_daemon::config::{Config, NodeModeConfig, load_or_create_token};
-use argos_daemon::node::Nodes;
-use argos_daemon::node::runner::{self, RunnerSettings};
+use argos_daemon::config::{Config, load_or_create_token};
+use argos_daemon::peer::Peers;
 use argos_daemon::registry::{Registry, RegistryError};
 use argos_daemon::supervisor::{Supervisor, SupervisorSettings};
-use argos_daemon::telegram::Telegram;
 use argos_daemon::{api, events, mcp, surface_web};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,8 +20,8 @@ async fn main() -> Result<(), Failure> {
     }
     std::fs::create_dir_all(&home)?;
     match mode.as_deref() {
-        None | Some("hub") => hub(home).await,
-        Some("node") => node(home).await,
+        // Un seul daemon depuis D48 : `node` reste accepté pour les services déjà posés.
+        None | Some("hub" | "node") => hub(home).await,
         Some("service") => service(home),
         Some("update") => update(home).await,
         Some("config") => config(home),
@@ -141,50 +138,31 @@ fn service(home: PathBuf) -> Result<(), Failure> {
 }
 
 /// Mode nœud (D32) : exécute les sessions que le hub lui confie.
-async fn node(home: PathBuf) -> Result<(), Failure> {
-    let config = NodeModeConfig::load_or_create(&home.join("node.toml"))?.node;
-    let token_path = home.join("node-token");
-    let token = load_or_create_token(&token_path)?;
-    let listener = TcpListener::bind(config.listen).await?;
-    let mcp_listener = TcpListener::bind(config.mcp_listen).await?;
-    println!(
-        "argos-daemon {} en mode nœud « {} » — hub attendu sur ws://{} (jeton dans {}), mandataire MCP sur {}",
-        env!("CARGO_PKG_VERSION"),
-        config.name,
-        listener.local_addr()?,
-        token_path.display(),
-        mcp_listener.local_addr()?
-    );
-    let settings = RunnerSettings {
-        name: config.name,
-        home: home.clone(),
-        user_codex_home: user_home().join(".codex"),
-        programs: program_overrides(),
-    };
-    tokio::select! {
-        served = runner::serve(listener, mcp_listener, settings, token) => served?,
-        _ = stop_requested() => println!("arrêt du nœud"),
-    }
-    Ok(())
-}
-
-/// Mode hub : registre, Assistant, API, MCP, événements, connexions aux nœuds.
 async fn hub(home: PathBuf) -> Result<(), Failure> {
     let config = Config::load_or_create(&home.join("config.toml"))?;
+    let identity = config.identity(&home);
     let token_path = home.join("token");
     let token = load_or_create_token(&token_path)?;
+    // Jeton que les pairs présentent pour se relier à ce nœud (D48).
+    let peer_token_path = home.join("node-token");
+    let peer_token = load_or_create_token(&peer_token_path)?;
     let registry = Registry::open(&home.join("argos.db"))?;
     let report = registry.rehydrate()?;
-    let assistant = registry.ensure_assistant(
-        config.assistant.engine,
-        config.assistant.model.clone(),
-        home.join("assistant"),
-    )?;
+    // Un seul Assistant dans le maillage : un nœud ne le crée que s'il en a le droit et
+    // n'en connaît aucun ; sinon il le reçoit de l'annuaire d'un pair.
+    if identity.assistant {
+        registry.ensure_assistant(
+            config.assistant.engine,
+            config.assistant.model.clone(),
+            home.join("assistant"),
+        )?;
+    }
 
     println!(
-        "argos-daemon {} (protocole v{}) — données dans {}",
+        "argos-daemon {} (protocole v{}) — nœud « {} », données dans {}",
         env!("CARGO_PKG_VERSION"),
         argos_core::PROTOCOL_VERSION,
+        identity.name,
         home.display()
     );
     println!(
@@ -192,16 +170,19 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
         report.parked.len(),
         report.lost_workers.len()
     );
-    print_tree(&registry, &assistant)?;
+    match registry.assistant()? {
+        Some(assistant) => print_tree(&registry, &assistant)?,
+        None => println!("pas encore d'Assistant connu : il viendra de l'annuaire d'un pair"),
+    }
 
-    let nodes = Nodes::new(config.nodes.clone());
+    let peers = Peers::new(identity.name.clone(), peer_token, config.peers.clone());
+    let peer_listener = TcpListener::bind(identity.listen).await?;
     let mcp_listener = TcpListener::bind(config.mcp.listen).await?;
     let mcp_url = format!("http://{}", mcp_listener.local_addr()?);
     let surfaces_listener = TcpListener::bind(config.surfaces.listen).await?;
     let devices = surface_web::Devices::open(&home)?;
     let surfaces_address = surfaces_listener.local_addr()?;
     let surfaces = surface_links(&config.surfaces, surfaces_address);
-    // Pas d'association quand le serveur n'écoute que la boucle locale.
     let pairing = surfaces.shared().then(|| surfaces.clone());
     let supervisor = Supervisor::new(
         registry,
@@ -212,15 +193,20 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
             mcp_url: Some(mcp_url.clone()),
             surfaces: Some(surfaces.clone()),
             policy: config.models.clone(),
-            nodes: nodes.clone(),
+            peers: peers.clone(),
             worker_access: config.workers.access,
             preempt: config.board.preempt,
         },
     );
     supervisor.syncs().start(&supervisor);
-    nodes.connect(supervisor.clone(), ssh_program());
-    for node in config.nodes.keys() {
-        println!("nœud déclaré : {node}");
+    println!(
+        "pairs sur ws://{}/?token=… (jeton dans {})",
+        peer_listener.local_addr()?,
+        peer_token_path.display()
+    );
+    peers.start(supervisor.clone(), Some(peer_listener), ssh_program());
+    for peer in config.peers.keys() {
+        println!("pair déclaré : {peer}");
     }
     let listener = TcpListener::bind(config.api.listen).await?;
     println!(
@@ -237,32 +223,8 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     );
 
     tokio::spawn(events::Events::new(supervisor.clone()).run());
-    tokio::spawn(argos_daemon::channels::follow(
-        supervisor.clone(),
-        assistant.id.clone(),
-    ));
-    for (id, channel) in &config.channels {
-        let ChannelKind::Telegram(telegram) = channel.kind.clone();
-        let meta = channel.meta();
-        match Telegram::from_config(
-            supervisor.clone(),
-            assistant.id.clone(),
-            id,
-            telegram,
-            config.voice.clone(),
-            &home,
-        ) {
-            Ok(bridge) => {
-                bridge.spawn();
-                supervisor.channels().register(id, meta, bridge);
-                println!("canal {id} actif (telegram)");
-            }
-            Err(error) => {
-                eprintln!("canal {id} désactivé : {error}");
-                supervisor.channels().fail(id, meta, error);
-            }
-        }
-    }
+    // Les canaux de discussion vivent sur le nœud de l'Assistant, et le suivent.
+    argos_daemon::channels::start_configured(&supervisor);
 
     tokio::select! {
         served = api::serve(listener, supervisor.clone(), token) => served?,
@@ -274,8 +236,6 @@ async fn hub(home: PathBuf) -> Result<(), Failure> {
     Ok(())
 }
 
-/// Liens des surfaces : `public_url`, sinon le nom Bonjour de la machine ; la boucle
-/// locale si le serveur n'écoute qu'elle.
 fn surface_links(
     config: &argos_daemon::config::SurfacesConfig,
     address: std::net::SocketAddr,

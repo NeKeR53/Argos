@@ -12,6 +12,7 @@ pub mod functions;
 pub mod mcp;
 pub mod memory;
 pub mod node;
+pub mod peer;
 pub mod policy;
 pub mod registry;
 pub mod setup;

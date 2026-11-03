@@ -87,11 +87,10 @@ impl Supervisor {
         });
         let execute = async {
             match &owner_record.node {
-                Some(node) => {
-                    self.nodes()
-                        .function(node, owner, definition.request, arguments)
-                        .await
-                }
+                // L'appel passe par le pair détenteur (outil function_call renvoyé).
+                Some(node) => Err(format!(
+                    "fonction de {owner}, détenu par le nœud {node} : l'appel passe par lui"
+                )),
                 None => crate::functions::execute(&definition.request, &arguments).await,
             }
         };

@@ -60,12 +60,16 @@ access = "full"
 # quand cette mission est close ou annulée.
 preempt = false
 
-# Autres nœuds (D32, D33) : le hub s'y connecte, l'Assistant peut y placer des Agents.
-# Sur le nœud, lancer `argos-daemon node` (voir son node.toml) ; son jeton est dans
-# $ARGOS_HOME/node-token.
-# [nodes.pi]
+# Nœuds pairs (D48) : chaque nœud détient ses agents et se relie aux autres. Ce nœud :
+# [node]
+# name = "mac"                     # son nom dans le maillage (par défaut : nom de la machine)
+# listen = "127.0.0.1:7880"        # écoute des pairs ; locale, ils passent par SSH
+# assistant = true                 # peut créer l'Assistant s'il n'en connaît aucun
+# Les pairs qu'il joint lui-même ; un lien ouvert sert dans les deux sens. Le jeton d'un
+# pair est dans son $ARGOS_HOME/node-token.
+# [peers.pi]
 # ssh = "pi"                       # hôte de ~/.ssh/config ; ou url = "ws://127.0.0.1:7880"
-# remote = "127.0.0.1:7880"        # écoute du nœud, vue depuis cet hôte
+# remote = "127.0.0.1:7880"        # écoute du pair, vue depuis cet hôte
 # token_file = "/chemin/vers/le/jeton"
 
 # Canaux de discussion (D45) : parler à l'Assistant hors de la console, par exemple
@@ -105,9 +109,12 @@ pub struct Config {
     /// Politique de modèles (D22) ; celle par défaut si la section manque.
     #[serde(default)]
     pub models: ModelPolicy,
-    /// Les autres nœuds, par nom.
+    /// Ce nœud dans le maillage (D48).
     #[serde(default)]
-    pub nodes: BTreeMap<String, NodeConfig>,
+    pub node: Option<NodeIdentity>,
+    /// Les pairs que ce nœud joint lui-même, par nom (`[peers]`, anciennement `[nodes]`).
+    #[serde(default, alias = "nodes")]
+    pub peers: BTreeMap<String, NodeConfig>,
     #[serde(default)]
     pub workers: WorkersConfig,
     #[serde(default)]
@@ -146,6 +153,60 @@ impl Default for WorkersConfig {
     }
 }
 
+/// Section `[node]` de `config.toml` : ce nœud dans le maillage (D48).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NodeIdentity {
+    pub name: Option<String>,
+    pub listen: Option<SocketAddr>,
+    /// Ce nœud peut créer l'Assistant s'il n'en connaît aucun. Par défaut : oui, sauf
+    /// pour un ancien nœud d'exécution (qui a un `node.toml`).
+    pub assistant: Option<bool>,
+}
+
+/// Ce que le daemon retient de son identité, `config.toml` d'abord, puis `node.toml`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Identity {
+    pub name: String,
+    pub listen: SocketAddr,
+    pub assistant: bool,
+}
+
+impl Config {
+    pub fn identity(&self, home: &Path) -> Identity {
+        let legacy = fs::read_to_string(home.join("node.toml"))
+            .ok()
+            .and_then(|text| toml::from_str::<NodeModeConfig>(&text).ok())
+            .map(|config| config.node);
+        let section = self.node.clone().unwrap_or_default();
+        Identity {
+            name: section
+                .name
+                .or_else(|| legacy.as_ref().map(|node| node.name.clone()))
+                .unwrap_or_else(machine_name),
+            listen: section
+                .listen
+                .or_else(|| legacy.as_ref().map(|node| node.listen))
+                .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 7880))),
+            assistant: section.assistant.unwrap_or(legacy.is_none()),
+        }
+    }
+}
+
+/// Nom court de la machine, en minuscules : le nom d'un nœud par défaut.
+fn machine_name() -> String {
+    let read = |program: &str, args: &[&str]| {
+        let output = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()?;
+        let name = String::from_utf8(output.stdout).ok()?.trim().to_lowercase();
+        (output.status.success() && !name.is_empty()).then_some(name)
+    };
+    read("scutil", &["--get", "LocalHostName"])
+        .or_else(|| read("hostname", &["-s"]))
+        .unwrap_or_else(|| "nœud".into())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct NodeModeConfig {
     pub node: NodeSection,
@@ -155,7 +216,9 @@ pub struct NodeModeConfig {
 pub struct NodeSection {
     pub name: String,
     pub listen: SocketAddr,
-    pub mcp_listen: SocketAddr,
+    /// Mandataire MCP de l'ancien mode nœud ; ignoré depuis D48.
+    #[serde(default)]
+    pub mcp_listen: Option<SocketAddr>,
 }
 
 impl NodeModeConfig {
@@ -240,7 +303,7 @@ impl Config {
                 .or_insert_with(|| crate::channels::ChannelConfig::telegram(telegram));
         }
         config.models.check().map_err(ConfigError::Policy)?;
-        for (name, node) in &config.nodes {
+        for (name, node) in &config.peers {
             node.check(name).map_err(ConfigError::Node)?;
         }
         Ok(config)
@@ -455,7 +518,7 @@ mod tests {
         assert_eq!(config.assistant.engine, EngineKind::Claude);
         assert_eq!(config.assistant.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(config.api.listen, "127.0.0.1:7878".parse().unwrap());
-        assert!(config.nodes.is_empty());
+        assert!(config.peers.is_empty());
         assert_eq!(config.workers.access, Access::Full);
 
         fs::write(
@@ -482,8 +545,8 @@ mod tests {
         )
         .unwrap();
         let config = Config::load_or_create(&path).unwrap();
-        assert_eq!(config.nodes.keys().collect::<Vec<_>>(), ["pi", "vps"]);
-        assert_eq!(config.nodes["pi"].ssh.as_deref(), Some("pi"));
+        assert_eq!(config.peers.keys().collect::<Vec<_>>(), ["pi", "vps"]);
+        assert_eq!(config.peers["pi"].ssh.as_deref(), Some("pi"));
 
         fs::write(&path, format!("{base}[nodes.pi]\nssh = \"pi\"\n")).unwrap();
         assert!(matches!(
@@ -497,7 +560,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = NodeModeConfig::load_or_create(&dir.path().join("node.toml")).unwrap();
         assert_eq!(config.node.listen, "127.0.0.1:7880".parse().unwrap());
-        assert_eq!(config.node.mcp_listen, "127.0.0.1:7881".parse().unwrap());
+        assert_eq!(
+            config.node.mcp_listen,
+            Some("127.0.0.1:7881".parse().unwrap())
+        );
     }
 
     #[test]

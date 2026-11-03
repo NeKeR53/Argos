@@ -92,7 +92,7 @@ async fn calls_argos_tools(engine: EngineKind, model: &str) {
             mcp_url: Some(mcp_url),
             surfaces: None,
             policy: argos_daemon::policy::ModelPolicy::default(),
-            nodes: Default::default(),
+            peers: argos_daemon::peer::Peers::alone("mac"),
             worker_access: Default::default(),
             preempt: false,
         },
