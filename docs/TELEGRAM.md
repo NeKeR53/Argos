@@ -27,6 +27,7 @@ Parler à l'Assistant depuis son téléphone, en texte ou en vocal, et y recevoi
    chat_id = 123456789
    escalations = true     # signaler les escalades, options en boutons
    surfaces = true        # envoyer le lien de chaque nouvelle surface
+   voice_replies = true   # false : toujours répondre en texte, même à un vocal
    max_per_hour = 30      # envois de l'Assistant au-delà desquels le daemon refuse
    ```
 

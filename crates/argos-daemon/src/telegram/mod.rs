@@ -59,6 +59,10 @@ pub struct TelegramConfig {
     /// Fichier du jeton du bot ; par défaut `$ARGOS_HOME/<id>-token`.
     #[serde(default)]
     pub token_file: Option<PathBuf>,
+    /// Répondre en vocal aux vocaux (et quand l'Assistant le demande). `false` : toujours
+    /// en texte, sans synthèse.
+    #[serde(default = "yes")]
+    pub voice_replies: bool,
     #[serde(default = "default_api")]
     pub api: String,
     #[serde(default = "default_ffmpeg")]
@@ -609,7 +613,7 @@ impl Channel for Telegram {
     fn send(&self, text: String, voice: bool) -> BoxFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move {
             let chat = self.config.chat_id.ok_or("chat_id pas encore configuré")?;
-            if voice {
+            if voice && self.config.voice_replies {
                 self.speak(chat, &text).await
             } else {
                 self.bot.send_text(chat, &text).await.map(|_| None)

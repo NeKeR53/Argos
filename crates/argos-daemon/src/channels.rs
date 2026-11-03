@@ -57,7 +57,10 @@ impl ChannelConfig {
         match &self.kind {
             ChannelKind::Telegram(telegram) => Meta {
                 kind: "telegram",
-                capabilities: crate::telegram::CAPABILITIES,
+                capabilities: ChannelCapabilities {
+                    voice_out: telegram.voice_replies,
+                    ..crate::telegram::CAPABILITIES
+                },
                 escalations: telegram.escalations,
                 max_per_hour: self.max_per_hour,
             },

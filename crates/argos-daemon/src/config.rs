@@ -83,6 +83,7 @@ preempt = false
 # chat_id = 123456789
 # escalations = true               # signaler les escalades, avec leurs réponses en boutons
 # surfaces = true                  # envoyer le lien de chaque nouvelle surface (appareil associé)
+# voice_replies = true             # false : toujours répondre en texte, même à un vocal
 # max_per_hour = 30                # envois de l'Assistant au-delà desquels le daemon refuse
 "#;
 

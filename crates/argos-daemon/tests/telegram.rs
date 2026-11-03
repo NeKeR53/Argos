@@ -121,6 +121,11 @@ fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
 
 /// Le pont branché sur le faux serveur, avec de faux programmes de vocaux.
 async fn bridge(w: &World, chat_id: Option<i64>) -> FakeTelegram {
+    bridge_with(w, chat_id, "").await
+}
+
+/// Le même, avec des réglages du canal en TOML (`voice_replies = false`…).
+async fn bridge_with(w: &World, chat_id: Option<i64>, settings: &str) -> FakeTelegram {
     let (fake, url) = FakeTelegram::start().await;
     let bin = w.home.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -138,7 +143,7 @@ async fn bridge(w: &World, chat_id: Option<i64>) -> FakeTelegram {
     );
     let model = w.home.path().join("model.bin");
     std::fs::write(&model, "").unwrap();
-    let config: TelegramConfig = toml::from_str("").unwrap();
+    let config: TelegramConfig = toml::from_str(settings).unwrap();
     let config = TelegramConfig { chat_id, ..config };
     let speech = Speech {
         ffmpeg,
@@ -254,6 +259,36 @@ async fn a_voice_message_is_transcribed_and_answered_by_voice() {
     // Les fichiers de travail sont effacés.
     let scratch = std::fs::read_dir(w.home.path().join("telegram")).unwrap();
     assert_eq!(scratch.count(), 0);
+}
+
+#[tokio::test]
+async fn without_voice_replies_a_voice_message_is_answered_in_text() {
+    let mut w = world();
+    let fake = bridge_with(&w, Some(CHAT), "voice_replies = false").await;
+    let assistant = w.assistant.id.clone();
+    assert!(!w.supervisor.channels().list()[0].capabilities.voice_out);
+
+    fake.push(message(
+        1,
+        CHAT,
+        json!({"voice": {"file_id": "v1", "duration": 2}}),
+    ));
+    until(&mut w.events, |event| {
+        matches!(event, DaemonEvent::Input { agent, text, .. }
+            if *agent == assistant && text.ends_with("Allume la lumière"))
+    })
+    .await;
+    // Le vocal est compris, la réponse part en texte, sans synthèse.
+    fake.wait_for("sendMessage", "reply 1").await;
+    assert!(fake.sent("sendVoice").is_empty());
+    let sent = channel_send(
+        &w,
+        json!({"channel": "telegram", "text": "Fait.", "voice": true}),
+    )
+    .await
+    .unwrap();
+    assert!(sent.contains("en texte"), "{sent}");
+    assert!(fake.sent("sendVoice").is_empty());
 }
 
 #[tokio::test]
