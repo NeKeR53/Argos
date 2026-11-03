@@ -4,7 +4,7 @@ Vocabulaire canonique du projet. Le code, les docs et les prompts des agents uti
 
 ## Hiérarchie
 
-- **Assistant** — L0, unique. La session avec laquelle l'utilisateur parle à la voix. Vit sur le hub. Gère des Agents, jamais des Workers.
+- **Assistant** — L0, unique. La session avec laquelle l'utilisateur parle à la voix. Vit sur un nœud, et peut changer de nœud (D48). Gère des Agents, jamais des Workers.
 - **Agent** — L1. Agent durable et nommé, dédié à un projet ou un domaine. Possède une charte, un board, une mémoire, des surfaces et des triggers. Exécute ses tâches et délègue à des Workers seulement si cela économise temps et tokens.
 - **Worker** — L2. Exécutant éphémère d'une seule tâche, sans mémoire persistante, sans interaction avec l'utilisateur.
 - **Moteur** — le CLI qui fait tourner un agent : `claude` (Claude Code) ou `codex`.
@@ -58,8 +58,10 @@ Vocabulaire canonique du projet. Le code, les docs et les prompts des agents uti
 
 - **Nœud** — machine qui fait tourner un daemon (Mac, VPS, Raspberry Pi).
 - **Daemon** — process Rust headless présent sur chaque nœud ; exécute, ne décide pas.
-- **Hub** — le nœud qui héberge l'Assistant et fédère les autres (le VPS).
-- **Mesh** — l'ensemble des nœuds reliés en étoile par SSH.
+- **Hub** — *(abandonné par D48)* le nœud central qui hébergeait l'Assistant et l'état de contrôle. Il n'y a plus que des nœuds pairs.
+- **Pair** — un autre nœud du maillage, relié par un lien qui sert dans les deux sens (D48).
+- **Annuaire** — la liste des agents de tout le maillage, que chaque nœud tient à jour avec ce que lui annoncent ses pairs (D48).
+- **Mesh** — l'ensemble des nœuds pairs, reliés entre eux par des tunnels SSH maillés (D48).
 - **GUI** — l'app Tauri sur le Mac : orbe, console, fenêtres de surfaces.
 - **Orbe** — la bulle vocale de l'Assistant, toujours au premier plan.
 - **Console** — panneau invocable au raccourci : arbre des Agents, état global, escalades, panic stop.
