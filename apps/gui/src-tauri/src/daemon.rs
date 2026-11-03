@@ -107,6 +107,15 @@ pub fn save_gui_value(home: &Path, key: &str, value: &str) -> Result<(), String>
     std::fs::write(&path, updated).map_err(|error| format!("{}: {error}", path.display()))
 }
 
+/// Adresse où écoute l'API (`[api] listen`), connue même avant le premier démarrage.
+pub fn api_address_in(home: &Path) -> Result<SocketAddr, String> {
+    let config = read_config(home)?;
+    let listen = config.api.listen.as_deref().unwrap_or(DEFAULT_LISTEN);
+    listen
+        .parse()
+        .map_err(|_| format!("adresse [api] listen invalide : {listen:?}"))
+}
+
 /// Base des URL de webhooks (`http://<[mcp] listen>`), servis par le daemon.
 pub fn hooks_base_in(home: &Path) -> Result<String, String> {
     hooks_base_from(read_config(home)?)

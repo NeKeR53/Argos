@@ -1,5 +1,6 @@
 mod daemon;
 mod dock;
+mod launcher;
 mod octopus;
 mod orb;
 mod shell;
@@ -322,6 +323,8 @@ fn invoke_handler() -> Box<InvokeHandler> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(unix)]
+    launcher::complete_path();
     let context = tauri::generate_context!();
     // Garde des navigations, posée par un plugin pour couvrir toutes les webviews. Le
     // serveur de dev n'est permis qu'en debug, quand l'app le charge.
@@ -376,6 +379,8 @@ pub fn run() {
                     );
                 }
             }
+            // Avant tout le reste : le front attend le daemon pour se connecter.
+            launcher::ensure_running();
             orb::restore(app.handle());
             dock::start(app.handle());
             let errors = shell::register_shortcuts(app.handle(), &gui);
